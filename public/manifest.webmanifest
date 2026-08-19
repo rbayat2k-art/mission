@@ -1,0 +1,12 @@
+{
+  "name": "راهکار | مدیریت عملیات میدانی",
+  "short_name": "راهکار",
+  "description": "سامانه مأموریت و فعالیت نیروهای میدانی",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#3867e8",
+  "dir": "rtl",
+  "lang": "fa",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

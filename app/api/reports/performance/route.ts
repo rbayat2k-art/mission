@@ -1,0 +1,10 @@
+import { requireRole } from "../../../../lib/auth";
+import { getPerformanceReport, type PerformancePeriod } from "../../../../lib/performance-report";
+
+export async function GET(request: Request) {
+  const auth = await requireRole(request, ["owner", "admin", "supervisor"]);
+  if ("error" in auth) return auth.error;
+  const requested = new URL(request.url).searchParams.get("period");
+  const period: PerformancePeriod = requested === "weekly" || requested === "monthly" ? requested : "daily";
+  return Response.json(await getPerformanceReport(auth.user, period), { headers: { "Cache-Control": "no-store" } });
+}

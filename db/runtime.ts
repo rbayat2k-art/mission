@@ -1,0 +1,75 @@
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { hashPassword } from "../lib/security";
+import { database } from "../lib/server-database";
+
+let initialization: Promise<void> | null = null;
+
+async function applySchema() {
+  const schemaPath = resolve(process.cwd(), "db/mysql-schema.sql");
+  const source = await readFile(schemaPath, "utf8");
+  const statements = source
+    .split("-- statement-breakpoint")
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+  for (const statement of statements) await database.prepare(statement).run();
+
+  const scoringColumns = [
+    { name: "score_penalty", definition: "INT NOT NULL DEFAULT 0 AFTER score_confirmed" },
+    { name: "score_note", definition: "VARCHAR(255) NULL AFTER score_penalty" },
+    { name: "start_latitude_e6", definition: "INT NULL AFTER started_at" },
+    { name: "start_longitude_e6", definition: "INT NULL AFTER start_latitude_e6" },
+    { name: "start_accuracy_cm", definition: "INT NULL AFTER start_longitude_e6" },
+    { name: "start_location_recorded_at", definition: "VARCHAR(40) NULL AFTER start_accuracy_cm" },
+    { name: "end_latitude_e6", definition: "INT NULL AFTER completed_at" },
+    { name: "end_longitude_e6", definition: "INT NULL AFTER end_latitude_e6" },
+    { name: "end_accuracy_cm", definition: "INT NULL AFTER end_longitude_e6" },
+    { name: "end_location_recorded_at", definition: "VARCHAR(40) NULL AFTER end_accuracy_cm" },
+  ];
+  for (const column of scoringColumns) {
+    const existing = await database.prepare("SELECT COLUMN_NAME AS columnName FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'missions' AND COLUMN_NAME = ?").bind(column.name).first();
+    if (!existing) await database.prepare(`ALTER TABLE missions ADD COLUMN ${column.name} ${column.definition}`).run();
+  }
+  const workSessionColumns = [
+    { name: "start_source", definition: "VARCHAR(24) NOT NULL DEFAULT 'live' AFTER end_note" },
+    { name: "end_source", definition: "VARCHAR(24) NULL AFTER start_source" },
+    { name: "work_type", definition: "VARCHAR(24) NOT NULL DEFAULT 'regular' AFTER end_source" },
+    { name: "approval_status", definition: "VARCHAR(24) NOT NULL DEFAULT 'approved' AFTER work_type" },
+    { name: "score_penalty", definition: "INT NOT NULL DEFAULT 0 AFTER approval_status" },
+    { name: "created_at", definition: "VARCHAR(40) NULL AFTER score_penalty" },
+  ];
+  for (const column of workSessionColumns) {
+    const existing = await database.prepare("SELECT COLUMN_NAME AS columnName FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'work_sessions' AND COLUMN_NAME = ?").bind(column.name).first();
+    if (!existing) await database.prepare(`ALTER TABLE work_sessions ADD COLUMN ${column.name} ${column.definition}`).run();
+  }
+  const notificationColumn = await database.prepare("SELECT COLUMN_NAME AS columnName FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'notification_enabled'").first();
+  if (!notificationColumn) await database.prepare("ALTER TABLE users ADD COLUMN notification_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER must_change_password").run();
+}
+
+async function seedDatabase() {
+  const existing = await database.prepare("SELECT COUNT(*) AS count FROM users").first<{ count: number }>();
+  if ((existing?.count ?? 0) > 0) return;
+
+  const now = new Date().toISOString();
+  const username = (process.env.INITIAL_ADMIN_USERNAME?.trim() || "admin").toLowerCase();
+  const password = process.env.INITIAL_ADMIN_PASSWORD || "123123456";
+  const fullName = process.env.INITIAL_ADMIN_NAME?.trim() || "مدیر سیستم";
+  const mobile = process.env.INITIAL_ADMIN_MOBILE?.trim() || "09000000000";
+  const credential = await hashPassword(password);
+  await database.prepare("INSERT INTO users (id, full_name, mobile, username, password_hash, password_salt, role, status, must_change_password, created_at) VALUES (?, ?, ?, ?, ?, ?, 'admin', 'active', 1, ?)")
+    .bind(crypto.randomUUID(), fullName, mobile, username, credential.hash, credential.salt, now)
+    .run();
+}
+
+export async function ensureDatabase() {
+  initialization ??= (async () => {
+    await database.ping();
+    if (process.env.AUTO_MIGRATE !== "false") await applySchema();
+    await seedDatabase();
+  })().catch((error) => {
+    initialization = null;
+    throw error;
+  });
+  await initialization;
+  return database;
+}
