@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "next dev -H 127.0.0.1",
-    "build": "next build && node scripts/package-server.mjs",
+    "build": "next build --webpack && node scripts/package-server.mjs",
     "start": "node --env-file-if-exists=.env app.cjs",
     "db:backup": "node --env-file-if-exists=.env scripts/backup-database.mjs",
     "db:migrate": "node --env-file-if-exists=.env scripts/migrate.mjs",
