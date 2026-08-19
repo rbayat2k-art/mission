@@ -376,6 +376,7 @@ test("lets employees inspect open missions and records a transparent no-start sc
   assert.match(reportEngine, /missedMissionStarts/);
   assert.match(reportEngine, /deductedScore/);
   assert.match(runtime, /INFORMATION_SCHEMA\.COLUMNS/);
+  assert.match(migration, /notification_enabled/);
   assert.match(migration, /verified mission scoring and work-session policy columns/);
 });
 

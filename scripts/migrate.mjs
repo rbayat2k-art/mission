@@ -22,6 +22,13 @@ try {
   const schema = await readFile(resolve(process.cwd(), "db/mysql-schema.sql"), "utf8");
   const statements = schema.split("-- statement-breakpoint").map((value) => value.trim()).filter(Boolean);
   for (const statement of statements) await connection.execute(statement);
+  const userColumns = [
+    ["notification_enabled", "TINYINT(1) NOT NULL DEFAULT 1 AFTER must_change_password"],
+  ];
+  for (const [name, definition] of userColumns) {
+    const [rows] = await connection.execute("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = ?", [name]);
+    if (!rows.length) await connection.execute(`ALTER TABLE users ADD COLUMN ${name} ${definition}`);
+  }
   const scoringColumns = [
     ["score_penalty", "INT NOT NULL DEFAULT 0 AFTER score_confirmed"],
     ["score_note", "VARCHAR(255) NULL AFTER score_penalty"],
@@ -50,7 +57,7 @@ try {
     const [rows] = await connection.execute("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'work_sessions' AND COLUMN_NAME = ?", [name]);
     if (!rows.length) await connection.execute(`ALTER TABLE work_sessions ADD COLUMN ${name} ${definition}`);
   }
-  console.log(`Applied ${statements.length} MySQL schema statements and verified mission scoring and work-session policy columns.`);
+  console.log(`Applied ${statements.length} MySQL schema statements and verified mission scoring and work-session policy columns plus user settings.`);
 } finally {
   await connection.end();
 }

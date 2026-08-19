@@ -7,7 +7,10 @@ export async function GET() {
     const db = await ensureDatabase();
     const result = await db.prepare("SELECT 1 AS ok").first<{ ok: number }>();
     if (Number(result?.ok) !== 1) throw new Error("Database health check failed");
-    return Response.json({ status: "ok" }, { headers: { "Cache-Control": "no-store" } });
+    return Response.json(
+      { status: "ok", version: process.env.APP_VERSION || "2.6.0" },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   } catch {
     return Response.json(
       { status: "unhealthy" },
