@@ -2,7 +2,7 @@ import { ensureDatabase } from "../db/runtime";
 
 export const REQUIRED_WORK_MINUTES = 8 * 60 + 30;
 export const OVERTIME_START_MINUTES = 9 * 60;
-export const MAX_GPS_GAP_MINUTES = 5;
+export const GPS_GAP_GRACE_MINUTES = 30;
 export const SELF_REPORTED_START_PENALTY = 3;
 const TEHRAN_OFFSET_MINUTES = 210;
 
@@ -36,15 +36,17 @@ function sessionIntervals(session: WorkSessionPolicyRow, allPoints: WorkLocation
     .map(point => Date.parse(point.recordedAt))
     .filter(timestamp => Number.isFinite(timestamp) && timestamp >= start && timestamp <= end)
     .sort((a, b) => a - b);
-  if (!points.length) return [] as WorkInterval[];
   const intervals: WorkInterval[] = [];
-  for (let index = 1; index < points.length; index++) {
-    const from = points[index - 1];
-    const to = points[index];
-    if (to > from && to - from <= MAX_GPS_GAP_MINUTES * 60_000) intervals.push({ sessionId: session.id, workType: session.workType, start: from, end: to });
+  const graceMilliseconds = GPS_GAP_GRACE_MINUTES * 60_000;
+  let coveredFrom = start;
+  for (const point of points) {
+    if (point <= coveredFrom) continue;
+    const coveredTo = Math.min(point, coveredFrom + graceMilliseconds);
+    if (coveredTo > coveredFrom) intervals.push({ sessionId: session.id, workType: session.workType, start: coveredFrom, end: coveredTo });
+    coveredFrom = point;
   }
-  const last = points[points.length - 1];
-  if (end > last && end - last <= MAX_GPS_GAP_MINUTES * 60_000) intervals.push({ sessionId: session.id, workType: session.workType, start: last, end });
+  const coveredTo = Math.min(end, coveredFrom + graceMilliseconds);
+  if (coveredTo > coveredFrom) intervals.push({ sessionId: session.id, workType: session.workType, start: coveredFrom, end: coveredTo });
   return intervals;
 }
 
@@ -91,6 +93,8 @@ export async function getDailyWorkMetrics(userId: string, now = new Date()) {
   const { intervals, intervalMilliseconds, regularMilliseconds, overtimeMilliseconds, rawMilliseconds, pendingCorrectionMilliseconds } = calculateWorkSessionMetrics(sessions, locationResult.results, start, end, now);
   return {
     start, end, sessions, intervals,
+    firstStartAt: sessions[0] ? new Date(Math.max(Date.parse(sessions[0].startedAt), Date.parse(start))).toISOString() : null,
+    lastEndAt: [...sessions].reverse().find(session => session.endedAt)?.endedAt ?? null,
     activeMinutes: Math.floor(intervalMilliseconds / 60_000),
     regularMinutes: Math.floor(regularMilliseconds / 60_000),
     overtimeMinutes: Math.floor(overtimeMilliseconds / 60_000),

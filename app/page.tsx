@@ -6,6 +6,7 @@ import OperationsMap, { type MapTracePoint } from "./components/OperationsMap";
 import AccountSettings from "./components/AccountSettings";
 import NotificationCenter from "./components/NotificationCenter";
 import NotificationSettings from "./components/NotificationSettings";
+import AppVersionGuard from "./components/AppVersionGuard";
 
 type EmployeeScreen = "home" | "missions" | "new" | "work" | "report" | "mission-detail" | "end-review" | "profile" | "notifications" | "notification-settings" | "account-settings";
 type AdminScreen = "dashboard" | "live" | "missions" | "access" | "approvals" | "integrity" | "reports" | "notifications" | "account";
@@ -61,6 +62,10 @@ function formatPersianTime(value?: string | null) {
 
 function currentPersianDate() {
   return new Intl.DateTimeFormat("fa-IR-u-ca-persian", { weekday:"long", year:"numeric", month:"long", day:"numeric" }).format(new Date());
+}
+
+function currentTehranDayKey(value = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tehran", year: "numeric", month: "2-digit", day: "2-digit" }).format(value);
 }
 
 function formatDurationSeconds(totalSeconds: number) {
@@ -120,8 +125,8 @@ function EmployeeDailySummaryView({ summary, onOpenMission }: { summary: Employe
   const hours = Math.floor(summary.activeMinutes / 60);
   const minutes = summary.activeMinutes % 60;
   return <div className="daily-summary-view">
-    <div className="daily-summary-metrics"><span><small>فعالیت ثبت‌شده</small><b>{hours.toLocaleString("fa-IR")} ساعت و {minutes.toLocaleString("fa-IR")} دقیقه</b></span><span><small>انجام‌شده واقعی</small><b>{summary.completed.filter(mission=>mission.result==="انجام شد").length.toLocaleString("fa-IR")}</b></span><span><small>باز / پیگیری مجدد</small><b>{summary.incomplete.length.toLocaleString("fa-IR")}</b></span></div>
-    <section className="work-session-summary"><div className="summary-section-title"><span>◷</span><div><h3>ساعت ورود، خروج و کارکرد</h3><p>{summary.period === "daily" ? "کارکرد امروز" : summary.period === "weekly" ? "کارکرد ۷ روز اخیر" : "کارکرد ۳۰ روز اخیر"}</p></div></div><div className="shift-times"><span><small>اولین ورود</small><b>{formatPersianTime(summary.firstStartAt)}</b></span><span><small>آخرین خروج</small><b>{summary.lastEndAt ? formatPersianTime(summary.lastEndAt) : summary.sessions.some(session=>session.status==="active") ? "در حال فعالیت" : "—"}</b></span><span><small>کارکرد دارای GPS</small><b>{hours.toLocaleString("fa-IR")}:{minutes.toLocaleString("fa-IR",{minimumIntegerDigits:2,useGrouping:false})}</b></span></div><div className="work-policy-breakdown"><span><small>حداقل روزانه</small><b>۸ ساعت و ۳۰ دقیقه</b></span><span><small>اضافه‌کاری</small><b>{formatMinutes(summary.overtimeMinutes)}</b></span><span className={summary.unverifiedGpsMinutes?"danger":""}><small>بدون GPS و محاسبه‌نشده</small><b>{formatMinutes(summary.unverifiedGpsMinutes)}</b></span><span className={summary.pendingCorrectionMinutes?"pending":""}><small>خوداظهاری در انتظار</small><b>{formatMinutes(summary.pendingCorrectionMinutes)}</b></span></div>{summary.sessions.length > 0 && <div className="session-history">{summary.sessions.map(session=><div key={session.id}><span>{formatPersianDateTime(session.startedAt)}</span><b>{formatPersianTime(session.startedAt)} تا {session.endedAt ? formatPersianTime(session.endedAt) : "اکنون"}</b><small>{session.durationMinutes.toLocaleString("fa-IR")} دقیقه {session.workType==="overtime"?"· اضافه‌کاری":session.startSource==="self_reported"?`· خوداظهاری ${session.approvalStatus==="pending"?"در انتظار":""}`:""}</small>{session.endNote && <p><strong>{session.startSource==="self_reported"?"دلیل خوداظهاری":"توضیحات پایان فعالیت"}:</strong> {session.endNote}</p>}</div>)}</div>}</section>
+    <div className="daily-summary-metrics"><span><small>کارکرد واقعی قابل‌تأیید</small><b>{hours.toLocaleString("fa-IR")} ساعت و {minutes.toLocaleString("fa-IR")} دقیقه</b></span><span><small>انجام‌شده واقعی</small><b>{summary.completed.filter(mission=>mission.result==="انجام شد").length.toLocaleString("fa-IR")}</b></span><span><small>باز / پیگیری مجدد</small><b>{summary.incomplete.length.toLocaleString("fa-IR")}</b></span></div>
+    <section className="work-session-summary"><div className="summary-section-title"><span>◷</span><div><h3>ساعت ورود، خروج و کارکرد</h3><p>{summary.period === "daily" ? "کارکرد امروز" : summary.period === "weekly" ? "کارکرد ۷ روز اخیر" : "کارکرد ۳۰ روز اخیر"}</p></div></div><div className="shift-times"><span><small>اولین ورود</small><b>{formatPersianTime(summary.firstStartAt)}</b></span><span><small>آخرین خروج</small><b>{summary.lastEndAt ? formatPersianTime(summary.lastEndAt) : summary.sessions.some(session=>session.status==="active") ? "در حال فعالیت" : "—"}</b></span><span><small>کارکرد واقعی</small><b>{hours.toLocaleString("fa-IR")}:{minutes.toLocaleString("fa-IR",{minimumIntegerDigits:2,useGrouping:false})}</b></span></div><div className="work-policy-breakdown"><span><small>حداقل روزانه</small><b>۸ ساعت و ۳۰ دقیقه</b></span><span><small>اضافه‌کاری</small><b>{formatMinutes(summary.overtimeMinutes)}</b></span><span className={summary.unverifiedGpsMinutes?"danger":""}><small>بیش از مهلت ۳۰ دقیقه بدون GPS</small><b>{formatMinutes(summary.unverifiedGpsMinutes)}</b></span><span className={summary.pendingCorrectionMinutes?"pending":""}><small>خوداظهاری در انتظار</small><b>{formatMinutes(summary.pendingCorrectionMinutes)}</b></span></div>{summary.sessions.length > 0 && <div className="session-history">{summary.sessions.map(session=><div key={session.id}><span>{formatPersianDateTime(session.startedAt)}</span><b>{formatPersianTime(session.startedAt)} تا {session.endedAt ? formatPersianTime(session.endedAt) : "اکنون"}</b><small>{session.durationMinutes.toLocaleString("fa-IR")} دقیقه {session.workType==="overtime"?"· اضافه‌کاری":session.startSource==="self_reported"?`· خوداظهاری ${session.approvalStatus==="pending"?"در انتظار":""}`:""}</small>{session.endNote && <p><strong>{session.startSource==="self_reported"?"دلیل خوداظهاری":"توضیحات پایان فعالیت"}:</strong> {session.endNote}</p>}</div>)}</div>}</section>
     {summary.performance && <section className="employee-performance-card"><div className="summary-section-title"><span>▤</span><div><h3>تحلیل عملکرد من</h3><p>بر پایه اطلاعات واقعی ثبت‌شده</p></div></div><div className="employee-performance-grid"><span><small>زمان مأموریت</small><b>{formatMinutes(summary.performance.movement.onSiteMinutes)}</b></span><span><small>زمان در مسیر</small><b>{formatMinutes(summary.performance.movement.travelMinutes)}</b></span><span><small>زمان در حرکت</small><b>{formatMinutes(summary.performance.movement.movingMinutes)}</b></span><span><small>مسافت مأموریت‌ها</small><b>{summary.performance.movement.missionDistanceKm.toLocaleString("fa-IR")} کیلومتر</b></span><span><small>زمان دسته‌بندی‌نشده</small><b>{formatMinutes(summary.performance.movement.unclassifiedMinutes)}</b></span><span><small>نرخ تکمیل</small><b>{summary.performance.missions.completionRate.toLocaleString("fa-IR")}٪</b></span><span><small>انجام به‌موقع</small><b>{summary.performance.missions.onTimeRate.toLocaleString("fa-IR")}٪</b></span><span><small>کارهای نیازمند پیگیری</small><b>{summary.performance.missions.followUpCount.toLocaleString("fa-IR")}</b></span><span><small>وقفه GPS/اینترنت</small><b>{summary.performance.integrity.gpsGapMinutes.toLocaleString("fa-IR")} دقیقه</b></span><span><small>هزینه ثبت‌شده</small><b>{summary.performance.finance.total.toLocaleString("fa-IR")} تومان</b></span></div><p className="performance-policy">{summary.policy?.note}</p></section>}
     <section className="today-places"><div className="summary-section-title"><span>⌖</span><div><h3>مقصدها و حضور امروز</h3><p>بدون نمایش نقشه مسیر</p></div></div><div className="location-window"><span><small>اولین ثبت موقعیت</small><b>{formatPersianTime(summary.locationSummary.firstAt)}</b></span><span><small>آخرین ثبت موقعیت</small><b>{formatPersianTime(summary.locationSummary.lastAt)}</b></span><span><small>نقاط ثبت‌شده</small><b>{summary.locationSummary.pointCount.toLocaleString("fa-IR")}</b></span></div>{summary.destinations.length ? <div className="destination-chips">{summary.destinations.map(destination=><span key={destination}>⌖ {destination}</span>)}</div> : <p className="summary-empty">امروز هنوز مقصدی در گزارش مأموریت ثبت نشده است.</p>}</section>
     <section className="daily-mission-section"><div className="summary-section-title"><span>✓</span><div><h3>مراجعات و نتایج ثبت‌شده امروز</h3><p>هر نتیجه ثبت‌شده؛ چه انجام‌شده و چه نیازمند پیگیری</p></div></div>{summary.completed.length ? <div className="daily-mission-items">{summary.completed.map(mission=>{const content=<><span className={mission.result === "انجام شد" ? "summary-result success" : "summary-result warning"}>{mission.result === "انجام شد" ? "✓" : "◷"} {mission.result ?? "گزارش ثبت‌شده"}</span><b>{mission.title}</b><small>{mission.destinationName ?? "بدون مقصد"} · {formatPersianTime(mission.completedAt)}</small><p>{mission.report ?? "بدون توضیح"}</p></>;return onOpenMission?<button key={mission.id} onClick={()=>onOpenMission(mission)}>{content}<i>مشاهده کامل ←</i></button>:<div key={mission.id}>{content}</div>})}</div>:<p className="summary-empty">امروز هنوز نتیجه مأموریتی ثبت نشده است.</p>}</section>
@@ -154,6 +159,7 @@ function EmployeeApp() {
   const [missedStartReason, setMissedStartReason] = useState("");
   const [missedStartSaving, setMissedStartSaving] = useState(false);
   const [clockTick, setClockTick] = useState(() => Date.now());
+  const [displayDayKey, setDisplayDayKey] = useState(() => currentTehranDayKey());
   const [missionTab, setMissionTab] = useState("open");
   const [workStep, setWorkStep] = useState(0);
   const [toast, setToast] = useState("");
@@ -245,6 +251,22 @@ function EmployeeApp() {
     const timer = window.setInterval(() => setClockTick(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [working]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const nextDayKey = currentTehranDayKey();
+      if (nextDayKey === displayDayKey) return;
+      setDisplayDayKey(nextDayKey);
+      setTodayWorkMinutes(0);
+      setTodayUnverifiedGpsMinutes(0);
+      setTodayPendingCorrectionMinutes(0);
+      setTodayFirstStartAt(working ? new Date().toISOString() : null);
+      setTodayLastEndAt(null);
+      setWorkMinutesSyncedAt(Date.now());
+      if (signedIn) loadEmployeeData().catch(() => undefined);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [displayDayKey, loadEmployeeData, signedIn, working]);
 
   useEffect(() => {
     if (!signedIn || !working) return;
@@ -511,12 +533,13 @@ function EmployeeApp() {
     if (!dailySummary || !summaryConfirmed) return notify("ابتدا تأیید کنید که فهرست فعالیت‌های امروز را بررسی کرده‌اید");
     if (endWorkNote.trim().length < 3) return notify("ثبت توضیحات پایان فعالیت الزامی است");
     try {
-      const location = await captureFreshGps();
-      const result = await sendJsonOrQueue<{session:{endedAt:string}}>("/api/work-sessions", "POST", { action:"end", confirmDailySummary:true, confirmedMissionIds:dailySummary.confirmationMissionIds, endNote:endWorkNote.trim(), location });
-      setWorking(false); setWorkSessionStartAt(null); setTodayLastEndAt(result.data?.session.endedAt ?? new Date().toISOString()); setTodayWorkMinutes(dailySummary.activeMinutes); setSummaryConfirmed(false); setEndWorkNote(""); setScreen("home");
+      const endTime = new Date().toISOString();
+      const location = latestGps && Date.now() - Date.parse(latestGps.recordedAt) <= 2 * 60_000 && latestGps.accuracy <= 100 ? latestGps : null;
+      const result = await sendJsonOrQueue<{session:{endedAt:string};today?:{activeMinutes:number;unverifiedGpsMinutes:number};gpsWarning?:boolean;deductedMinutes?:number}>("/api/work-sessions", "POST", { action:"end", endTime, confirmDailySummary:true, confirmedMissionIds:dailySummary.confirmationMissionIds, endNote:endWorkNote.trim(), location });
+      setWorking(false); setWorkSessionStartAt(null); setTodayLastEndAt(result.data?.session.endedAt ?? endTime); setTodayWorkMinutes(result.data?.today?.activeMinutes ?? dailySummary.activeMinutes); setTodayUnverifiedGpsMinutes(result.data?.today?.unverifiedGpsMinutes ?? dailySummary.unverifiedGpsMinutes); setWorkMinutesSyncedAt(Date.now()); setSummaryConfirmed(false); setEndWorkNote(""); setScreen("home");
       setPendingSync(await getOutboxCount());
       if (!result.queued) await loadEmployeeData();
-      notify(result.queued ? "تأیید و پایان کار روی گوشی ذخیره شد" : "گزارش امروز تأیید و فعالیت پایان یافت");
+      notify(result.queued ? "زمان پایان فعالیت روی گوشی ذخیره شد و پس از اتصال همگام می‌شود" : result.data?.gpsWarning ? "فعالیت پایان یافت؛ موقعیت پایان در دسترس نبود و برای بررسی ثبت شد" : "گزارش امروز تأیید و فعالیت پایان یافت");
     } catch (error) {
       if (error instanceof Error && error.message.includes("تغییر کرده")) await loadDailySummary().catch(() => undefined);
       notify(error instanceof Error ? error.message : "پایان فعالیت ناموفق بود");
@@ -591,12 +614,12 @@ function EmployeeApp() {
               <section className={`work-card ${working ? "active" : ""}`}>
                 <div className="work-card-top"><span className="live-dot"><i />{working ? gpsStatus === "active" ? "فعالیت و GPS در حال ثبت" : "فعالیت در حال ثبت" : "آماده شروع"}</span><button onClick={() => syncQueued().catch(() => undefined)}>↻</button></div>
                 <div className="timer">{formatDurationSeconds(todayWorkMinutes*60+(working?Math.max(0,(clockTick-workMinutesSyncedAt)/1000):0))}</div>
-                <p>{working ? `شروع این نوبت، ${formatPersianTime(workSessionStartAt)} · مجموع کار دارای GPS امروز` : todayLastEndAt ? `ورود ${formatPersianTime(todayFirstStartAt)} · خروج ${formatPersianTime(todayLastEndAt)} · مجموع کار دارای GPS` : "حداقل روزانه ۸:۳۰ · اضافه‌کاری فقط پس از ۹:۰۰"}</p>
+                <p>{working ? `شروع این نوبت، ${formatPersianTime(workSessionStartAt)} · کارکرد واقعی امروز` : todayLastEndAt ? `ورود ${formatPersianTime(todayFirstStartAt)} · خروج ${formatPersianTime(todayLastEndAt)} · کارکرد واقعی امروز` : "حداقل روزانه ۸:۳۰ · اضافه‌کاری فقط پس از ۹:۰۰"}</p>
                 <button className={`work-toggle ${working ? "stop" : "start"}`} onClick={toggleWork}><span>{working ? "■" : "▶"}</span>{working ? "پایان فعالیت" : "شروع فعالیت"}</button>
               </section>
               {!working&&<button className="missed-start-trigger" onClick={()=>setMissedStartOpen(current=>!current)}>◷ شروع فعالیت را فراموش کرده‌ام</button>}
               {!working&&missedStartOpen&&<form className="missed-start-form" onSubmit={submitMissedStart}><div><b>خوداظهاری شروع ثبت‌نشده</b><small>ساعت فقط برای امروز ثبت می‌شود، ۳ امتیاز کسر می‌گردد و تأیید سرپرست لازم است.</small></div><label>ساعت شروع واقعی<input type="time" value={missedStartTime} onChange={event=>setMissedStartTime(event.target.value)} required /></label><label>علت فراموشی<textarea value={missedStartReason} onChange={event=>setMissedStartReason(event.target.value)} maxLength={500} rows={3} placeholder="علت ثبت‌نشدن شروع فعالیت را کامل بنویسید..." required /></label><button className="primary-wide" type="submit" disabled={missedStartSaving}>{missedStartSaving?"در حال ثبت...":"ثبت خوداظهاری و شروع فعالیت فعلی"}</button></form>}
-              {(todayUnverifiedGpsMinutes>0||todayPendingCorrectionMinutes>0)&&<div className="work-integrity-summary">{todayUnverifiedGpsMinutes>0&&<span>⌖ {todayUnverifiedGpsMinutes.toLocaleString("fa-IR")} دقیقه بدون پوشش GPS و خارج از کارکرد قطعی</span>}{todayPendingCorrectionMinutes>0&&<span>◷ {todayPendingCorrectionMinutes.toLocaleString("fa-IR")} دقیقه خوداظهاری در انتظار تأیید</span>}</div>}
+              {(todayUnverifiedGpsMinutes>0||todayPendingCorrectionMinutes>0)&&<div className="work-integrity-summary">{todayUnverifiedGpsMinutes>0&&<span>⌖ {todayUnverifiedGpsMinutes.toLocaleString("fa-IR")} دقیقه اضافه بر مهلت ۳۰ دقیقه بدون GPS و خارج از کارکرد واقعی</span>}{todayPendingCorrectionMinutes>0&&<span>◷ {todayPendingCorrectionMinutes.toLocaleString("fa-IR")} دقیقه خوداظهاری در انتظار تأیید</span>}</div>}
 
               <div className="section-title"><div><h3>نمای امروز</h3><p>خلاصه عملکرد تا این لحظه</p></div></div>
               <div className="metric-grid">
@@ -1206,5 +1229,5 @@ function AdminPanel() {
 
 export default function Home() {
   const [mode, setMode] = useState<"employee" | "admin">("employee");
-  return <div className="prototype"><TopSwitcher mode={mode} setMode={setMode} />{mode === "employee" ? <EmployeeApp /> : <AdminPanel />}</div>;
+  return <div className="prototype"><AppVersionGuard /><TopSwitcher mode={mode} setMode={setMode} />{mode === "employee" ? <EmployeeApp /> : <AdminPanel />}</div>;
 }

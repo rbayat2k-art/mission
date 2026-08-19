@@ -222,8 +222,8 @@ test("locks mission work outside an active shift and reports daily weekly and mo
   assert.match(summaryHelper, /period === "weekly" \? 6 : period === "monthly" \? 29/);
   assert.match(summaryHelper, /firstStartAt/);
   assert.match(summaryHelper, /lastEndAt/);
-  assert.match(workSessions, /activeMinutes: today\.activeMinutes, firstStartAt: today\.sessions\[0\]\?\.startedAt \?\? null/);
-  assert.match(workSessions, /lastEndAt: \[\.\.\.today\.sessions\]\.reverse\(\)\.find\(session => session\.endedAt\)\?\.endedAt \?\? null/);
+  assert.match(workSessions, /activeMinutes: today\.activeMinutes, firstStartAt: today\.firstStartAt/);
+  assert.match(workSessions, /lastEndAt: today\.lastEndAt/);
 });
 
 test("provides a complete and safe user account lifecycle", async () => {
@@ -537,7 +537,7 @@ test("delivers role-scoped in-app and phone notifications with secure account se
   assert.match(environment, /VAPID_PRIVATE_KEY=/);
 });
 
-test("rotates login sessions atomically and prevents accidental first-login password changes", async () => {
+test("rotates login sessions atomically and supports cached legacy password forms", async () => {
   const [auth, changePassword, account, page] = await Promise.all([
     readFile(new URL("../lib/auth.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/auth/change-password/route.ts", import.meta.url), "utf8"),
@@ -549,10 +549,73 @@ test("rotates login sessions atomically and prevents accidental first-login pass
   assert.match(auth, /DELETE FROM sessions WHERE user_id = \?/);
   assert.match(auth, /INSERT INTO sessions/);
   assert.match(changePassword, /rotateSession\(user\.id/);
-  assert.match(changePassword, /password !== \(body\.confirmPassword/);
+  assert.match(changePassword, /body\.confirmPassword !== undefined/);
+  assert.match(changePassword, /password !== body\.confirmPassword/);
   assert.doesNotMatch(changePassword, /createSession\(user\.id\)/);
   assert.match(account, /rotateSession\(auth\.user\.id/);
   assert.match(page, /autoComplete="new-password"/);
   assert.match(page, /confirmNewPassword/);
   assert.match(page, /setPassword\(""\)/);
+});
+
+test("detects new releases without interrupting authenticated field work", async () => {
+  const [versionSource, versionRoute, versionGuard, page, styles, worker, health, nextConfig, packageJson, versionFile] = await Promise.all([
+    readFile(new URL("../lib/app-version.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/version/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/AppVersionGuard.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/health/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../VERSION", import.meta.url), "utf8"),
+  ]);
+  const releaseVersion = versionFile.trim();
+  assert.equal(JSON.parse(packageJson).version, releaseVersion);
+  assert.match(versionSource, new RegExp(`APP_VERSION = ["']${releaseVersion.replaceAll(".", "\\.")}["']`));
+  assert.match(versionRoute, /Cache-Control.*no-store/);
+  assert.match(versionGuard, /\/api\/version\?loaded=/);
+  assert.match(versionGuard, /cache: "no-store"/);
+  assert.match(versionGuard, /authResponse\.status === 401/);
+  assert.match(versionGuard, /window\.location\.replace/);
+  assert.match(versionGuard, /window\.history\.replaceState/);
+  assert.match(versionGuard, /setInterval\(checkForUpdate, 5 \* 60_000\)/);
+  assert.doesNotMatch(versionGuard, /indexedDB\.deleteDatabase|caches\.delete/);
+  assert.match(page, /<AppVersionGuard \/>/);
+  assert.match(styles, /\.app-update-banner/);
+  assert.match(worker, /self\.skipWaiting\(\)/);
+  assert.match(worker, /self\.clients\.claim\(\)/);
+  assert.match(health, /APP_VERSION/);
+  assert.match(nextConfig, /source: "\/"[\s\S]*Cache-Control[\s\S]*no-store/);
+});
+
+test("ends shifts without GPS blocking and deducts only beyond the 30 minute grace", async () => {
+  const [policy, workSessions, locations, page, performance, exportRoute] = await Promise.all([
+    readFile(new URL("../lib/work-session-policy.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/work-sessions/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/locations/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/performance-report.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/reports/export/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(policy, /GPS_GAP_GRACE_MINUTES = 30/);
+  assert.match(policy, /coveredFrom \+ graceMilliseconds/);
+  assert.doesNotMatch(policy, /MAX_GPS_GAP_MINUTES = 5/);
+  assert.match(locations, /work_session_id = \?/);
+  assert.match(locations, /> GPS_GAP_GRACE_MINUTES \* 60_000/);
+  assert.match(locations, /deductedMinutes: Math\.max\(0, gapMinutes - GPS_GAP_GRACE_MINUTES\)/);
+  assert.match(workSessions, /body\.action !== "end"/);
+  assert.match(workSessions, /endTime\?: string/);
+  assert.match(workSessions, /employee_without_gps/);
+  assert.match(workSessions, /gpsWarning: !location/);
+  assert.match(workSessions, /deductedMinutes > 0/);
+  assert.doesNotMatch(workSessions, /if \(!location\) return Response\.json\(\{ error: "پایان فعالیت فقط با موقعیت GPS/);
+  assert.match(page, /currentTehranDayKey/);
+  assert.match(page, /nextDayKey === displayDayKey/);
+  assert.match(page, /endTime, confirmDailySummary:true/);
+  assert.match(page, /latestGps && Date\.now\(\) - Date\.parse\(latestGps\.recordedAt\) <= 2 \* 60_000/);
+  assert.match(page, /موقعیت پایان در دسترس نبود و برای بررسی ثبت شد/);
+  assert.match(performance, /برای هر قطعی پیوسته GPS، ۳۰ دقیقه مهلت وجود دارد/);
+  assert.match(exportRoute, /زمان اضافه بر مهلت ۳۰ دقیقه بدون GPS/);
 });

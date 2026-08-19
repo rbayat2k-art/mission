@@ -1,6 +1,6 @@
 {
   "name": "rahkar-field-operations",
-  "version": "2.6.2",
+  "version": "2.6.4",
   "private": true,
   "engines": {
     "node": ">=22.13.0"

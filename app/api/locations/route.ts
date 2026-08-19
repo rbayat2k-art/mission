@@ -1,6 +1,6 @@
 import { ensureDatabase } from "../../../db/runtime";
 import { requireRole } from "../../../lib/auth";
-import { reconcileNineHourLimit } from "../../../lib/work-session-policy";
+import { GPS_GAP_GRACE_MINUTES, reconcileNineHourLimit } from "../../../lib/work-session-policy";
 
 type IncomingPoint = {
   clientEventId?: string;
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
   if (!session) return Response.json({ error: "برای ثبت موقعیت باید فعالیت باز باشد." }, { status: 409 });
 
   const receivedAt = new Date().toISOString();
-  const previous = await db.prepare("SELECT recorded_at AS recordedAt FROM location_points WHERE user_id = ? ORDER BY recorded_at DESC LIMIT 1").bind(auth.user.id).first<{ recordedAt: string }>();
+  const previous = await db.prepare("SELECT recorded_at AS recordedAt FROM location_points WHERE user_id = ? AND work_session_id = ? ORDER BY recorded_at DESC LIMIT 1").bind(auth.user.id, session.id).first<{ recordedAt: string }>();
   const statements = points.map((point) => db.prepare("INSERT IGNORE INTO location_points (id, client_event_id, user_id, work_session_id, latitude_e6, longitude_e6, accuracy_cm, altitude_cm, speed_cms, heading_deg, recorded_at, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(
     crypto.randomUUID(), point.clientEventId!, auth.user.id, session.id,
     Math.round(point.latitude! * 1_000_000), Math.round(point.longitude! * 1_000_000), Math.round(point.accuracy! * 100),
@@ -41,9 +41,10 @@ export async function POST(request: Request) {
   ));
 
   const firstRecorded = new Date(points[0].recordedAt!).toISOString();
-  if (previous && Date.parse(firstRecorded) - Date.parse(previous.recordedAt) > 5 * 60_000) {
+  if (previous && Date.parse(firstRecorded) - Date.parse(previous.recordedAt) > GPS_GAP_GRACE_MINUTES * 60_000) {
+    const gapMinutes = Math.round((Date.parse(firstRecorded) - Date.parse(previous.recordedAt)) / 60_000);
     statements.push(db.prepare("INSERT INTO integrity_events (id, user_id, work_session_id, type, severity, details, occurred_at, created_at) VALUES (?, ?, ?, 'gps_gap', 'high', ?, ?, ?)").bind(
-      crypto.randomUUID(), auth.user.id, session.id, JSON.stringify({ previousAt: previous.recordedAt, resumedAt: firstRecorded, gapMinutes: Math.round((Date.parse(firstRecorded) - Date.parse(previous.recordedAt)) / 60_000) }), firstRecorded, receivedAt,
+      crypto.randomUUID(), auth.user.id, session.id, JSON.stringify({ previousAt: previous.recordedAt, resumedAt: firstRecorded, gapMinutes, graceMinutes: GPS_GAP_GRACE_MINUTES, deductedMinutes: Math.max(0, gapMinutes - GPS_GAP_GRACE_MINUTES) }), firstRecorded, receivedAt,
     ));
   }
   const inaccurate = points.find((point) => point.accuracy! > 100);

@@ -293,6 +293,6 @@ export async function getPerformanceReport(viewer: { id: string; role: AppRole }
   }), { activeMinutes: 0, completedCount: 0, approvedCount: 0, overdueCount: 0, confirmedScore: 0, pendingScore: 0, distanceKm: 0, missionDistanceKm: 0, travelMinutes: 0, movingMinutes: 0, totalExpenses: 0, gpsGapMinutes: 0 });
   return {
     period, range: performancePeriodBounds(now, period), rows, totals,
-    policy: { standardStart: "۰۸:۳۰", standardDailyMinutes: STANDARD_DAY_MINUTES, overtimeStartMinutes: OVERTIME_START_MINUTES, note: "حداقل کار روزانه ۸ ساعت و ۳۰ دقیقه است؛ اضافه‌کاری فقط پس از تکمیل ۹ ساعت کار دارای GPS محاسبه می‌شود. فاصله بین پایان و شروع مجدد جزو کارکرد نیست." },
+    policy: { standardStart: "۰۸:۳۰", standardDailyMinutes: STANDARD_DAY_MINUTES, overtimeStartMinutes: OVERTIME_START_MINUTES, note: "حداقل کار روزانه ۸ ساعت و ۳۰ دقیقه است؛ اضافه‌کاری فقط پس از تکمیل ۹ ساعت کارکرد واقعی محاسبه می‌شود. برای هر قطعی پیوسته GPS، ۳۰ دقیقه مهلت وجود دارد و فقط زمان اضافه بر آن از کارکرد واقعی خارج می‌شود. فاصله بین پایان و شروع مجدد جزو کارکرد نیست." },
   };
 }

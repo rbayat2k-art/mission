@@ -10,7 +10,9 @@ export async function POST(request: Request) {
   if (password.length < 10 || !/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
     return Response.json({ error: "رمز جدید باید حداقل ۱۰ کاراکتر و شامل حرف و عدد باشد." }, { status: 400 });
   }
-  if (password !== (body.confirmPassword ?? "")) {
+  // Older installed/cached clients only send `newPassword`. Keep those clients
+  // compatible, while still enforcing confirmation whenever the field exists.
+  if (body.confirmPassword !== undefined && password !== body.confirmPassword) {
     return Response.json({ error: "تکرار رمز جدید یکسان نیست." }, { status: 400 });
   }
   const credential = await hashPassword(password);

@@ -2,7 +2,7 @@ import { ensureDatabase } from "../../../db/runtime";
 import { requireRole } from "../../../lib/auth";
 import { getEmployeeDailySummary } from "../../../lib/employee-daily-summary";
 import { parseMissionLocation } from "../../../lib/mission-location";
-import { getDailyWorkMetrics, OVERTIME_START_MINUTES, reconcileNineHourLimit, SELF_REPORTED_START_PENALTY, tehranDayBounds, tehranTimeTodayToIso } from "../../../lib/work-session-policy";
+import { getDailyWorkMetrics, GPS_GAP_GRACE_MINUTES, OVERTIME_START_MINUTES, reconcileNineHourLimit, SELF_REPORTED_START_PENALTY, tehranDayBounds, tehranTimeTodayToIso } from "../../../lib/work-session-policy";
 
 type WorkSessionBody = {
   action?: "start" | "end" | "self_report_start";
@@ -12,6 +12,7 @@ type WorkSessionBody = {
   confirmDailySummary?: boolean;
   confirmedMissionIds?: string[];
   endNote?: string;
+  endTime?: string;
 };
 
 function freshLocation(input: unknown, now = new Date()) {
@@ -36,8 +37,8 @@ export async function GET(request: Request) {
     current,
     autoEnded: reconciliation.autoEnded,
     today: {
-      activeMinutes: today.activeMinutes, firstStartAt: today.sessions[0]?.startedAt ?? null,
-      lastEndAt: [...today.sessions].reverse().find(session => session.endedAt)?.endedAt ?? null,
+      activeMinutes: today.activeMinutes, firstStartAt: today.firstStartAt,
+      lastEndAt: today.lastEndAt,
       requiredMinutes: today.requiredMinutes, overtimeStartsAtMinutes: today.overtimeStartsAtMinutes,
       overtimeMinutes: today.overtimeMinutes, unverifiedGpsMinutes: today.unverifiedGpsMinutes,
       pendingCorrectionMinutes: today.pendingCorrectionMinutes,
@@ -52,7 +53,7 @@ export async function POST(request: Request) {
   const db = await ensureDatabase();
   const nowDate = new Date();
   const now = nowDate.toISOString();
-  await reconcileNineHourLimit(auth.user.id, nowDate);
+  if (body.action !== "end") await reconcileNineHourLimit(auth.user.id, nowDate);
 
   if (body.action === "start") {
     const location = freshLocation(body.location, nowDate);
@@ -114,23 +115,38 @@ export async function POST(request: Request) {
 
   if (body.action === "end") {
     const location = freshLocation(body.location, nowDate);
-    if (!location) return Response.json({ error: "پایان فعالیت فقط با موقعیت GPS تازه و دقت حداکثر ۱۰۰ متر امکان‌پذیر است." }, { status: 400 });
-    const current = await db.prepare("SELECT id FROM work_sessions WHERE user_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1").bind(auth.user.id).first<{ id: string }>();
+    const current = await db.prepare("SELECT id, started_at AS startedAt FROM work_sessions WHERE user_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1").bind(auth.user.id).first<{ id: string; startedAt: string }>();
     if (!current) return Response.json({ error: "فعالیت بازی وجود ندارد." }, { status: 409 });
+    const requestedEndTime = Date.parse(body.endTime ?? "");
+    const requestedEndIsValid = Number.isFinite(requestedEndTime) && requestedEndTime >= Date.parse(current.startedAt) && requestedEndTime <= nowDate.getTime() + 2 * 60_000;
+    const endedAt = new Date(requestedEndIsValid ? Math.min(requestedEndTime, nowDate.getTime()) : nowDate.getTime()).toISOString();
+    const endedAtDate = new Date(endedAt);
     if (!body.confirmDailySummary) return Response.json({ error: "تأیید فهرست فعالیت‌های امروز برای پایان کار الزامی است." }, { status: 400 });
     const endNote = body.endNote?.trim() ?? "";
     if (endNote.length < 3) return Response.json({ error: "ثبت توضیحات پایان فعالیت الزامی است." }, { status: 400 });
     if (endNote.length > 1000) return Response.json({ error: "توضیحات پایان فعالیت نباید بیشتر از ۱۰۰۰ کاراکتر باشد." }, { status: 400 });
-    const summary = await getEmployeeDailySummary(auth.user.id, nowDate);
+    const summary = await getEmployeeDailySummary(auth.user.id, endedAtDate);
     const confirmedMissionIds = [...new Set(body.confirmedMissionIds ?? [])].sort();
     if (JSON.stringify(confirmedMissionIds) !== JSON.stringify(summary.confirmationMissionIds)) return Response.json({ error: "فهرست فعالیت‌ها تغییر کرده است؛ گزارش امروز را دوباره مرور و تأیید کنید." }, { status: 409 });
-    await db.batch([
-      locationInsert(db, auth.user.id, current.id, location, now),
-      db.prepare("UPDATE work_sessions SET status = 'ended', ended_at = ?, end_source = 'employee', end_note = ? WHERE id = ?").bind(now, endNote, current.id),
-      db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'work_session.daily_summary_confirmed', 'work_session', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, current.id, JSON.stringify({ completedCount: summary.completed.length, incompleteCount: summary.incomplete.length, missionIds: summary.confirmationMissionIds, endNoteRecorded: true, endNoteLength: endNote.length, gpsRecordedAt: location.recordedAt }), now),
-    ]);
-    const metrics = await getDailyWorkMetrics(auth.user.id, nowDate);
-    return Response.json({ session: { id: current.id, status: "ended", endedAt: now }, today: metrics });
+    const previousPoint = await db.prepare("SELECT recorded_at AS recordedAt FROM location_points WHERE user_id = ? AND work_session_id = ? AND recorded_at <= ? ORDER BY recorded_at DESC LIMIT 1")
+      .bind(auth.user.id, current.id, endedAt).first<{ recordedAt: string }>();
+    const gapStartedAt = previousPoint?.recordedAt ?? current.startedAt;
+    const gapEndedAt = location?.recordedAt ?? endedAt;
+    const gapMinutes = Math.max(0, Math.floor((Date.parse(gapEndedAt) - Date.parse(gapStartedAt)) / 60_000));
+    const deductedMinutes = Math.max(0, gapMinutes - GPS_GAP_GRACE_MINUTES);
+    const statements = [
+      db.prepare("UPDATE work_sessions SET status = 'ended', ended_at = ?, end_source = ?, end_note = ? WHERE id = ?").bind(endedAt, location ? "employee" : "employee_without_gps", endNote, current.id),
+      db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'work_session.daily_summary_confirmed', 'work_session', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, current.id, JSON.stringify({ completedCount: summary.completed.length, incompleteCount: summary.incomplete.length, missionIds: summary.confirmationMissionIds, endNoteRecorded: true, endNoteLength: endNote.length, endedAt, clientEndTimeAccepted: requestedEndIsValid, gpsAtEnd: Boolean(location), gpsRecordedAt: location?.recordedAt ?? null, gpsGraceMinutes: GPS_GAP_GRACE_MINUTES, deductedMinutes }), now),
+    ];
+    if (location) statements.unshift(locationInsert(db, auth.user.id, current.id, location, now));
+    if (deductedMinutes > 0) {
+      statements.push(db.prepare("INSERT INTO integrity_events (id, user_id, work_session_id, type, severity, details, occurred_at, created_at) VALUES (?, ?, ?, 'gps_gap', 'high', ?, ?, ?)").bind(
+        crypto.randomUUID(), auth.user.id, current.id, JSON.stringify({ previousAt: gapStartedAt, resumedAt: location?.recordedAt ?? null, endedAt, gapMinutes, graceMinutes: GPS_GAP_GRACE_MINUTES, deductedMinutes, detectedAtWorkEnd: true }), endedAt, now,
+      ));
+    }
+    await db.batch(statements);
+    const metrics = await getDailyWorkMetrics(auth.user.id, endedAtDate);
+    return Response.json({ session: { id: current.id, status: "ended", endedAt }, today: metrics, gpsAtEnd: Boolean(location), gpsWarning: !location, deductedMinutes });
   }
   return Response.json({ error: "عملیات نامعتبر است." }, { status: 400 });
 }

@@ -47,7 +47,7 @@ export async function getEmployeeActivitySummary(userId: string, period: ReportP
   const sessions = sessionResult.results.map(session => {
     const sessionStart = Math.max(Date.parse(session.startedAt), Date.parse(start));
     const sessionEnd = Math.min(Date.parse(session.endedAt ?? now.toISOString()), Date.parse(end));
-    return { ...session, durationMinutes: Math.max(0, Math.round((sessionEnd - sessionStart) / 60_000)) };
+    return { ...session, startedAt: new Date(sessionStart).toISOString(), endedAt: session.endedAt ? new Date(sessionEnd).toISOString() : null, durationMinutes: Math.max(0, Math.round((sessionEnd - sessionStart) / 60_000)) };
   });
   const workMetrics = calculateWorkSessionMetrics(sessionResult.results, workLocationResult.results, start, end, now);
   const activeMinutes = Math.floor(workMetrics.intervalMilliseconds / 60_000);
