@@ -136,6 +136,7 @@ function EmployeeApp() {
   const [loginError, setLoginError] = useState("");
   const [needsPasswordChange, setNeedsPasswordChange] = useState(false);
   const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
   const [employeeDisplayName, setEmployeeDisplayName] = useState("کاربر");
   const [employeeNotificationEnabled,setEmployeeNotificationEnabled]=useState(true);
   const [notificationCounts,setNotificationCounts]=useState({unread:0,open:0});
@@ -438,6 +439,8 @@ function EmployeeApp() {
       setEmployeeDisplayName(result.user.fullName);
       setUsername(result.user.username);
       setEmployeeNotificationEnabled(result.user.notificationEnabled);
+      setPassword("");
+      setScreen("home");
       setLoginError("");
     } catch (error) { setLoginError(error instanceof Error ? error.message : "ورود ناموفق بود"); }
   };
@@ -522,9 +525,10 @@ function EmployeeApp() {
 
   const changePassword = async (e: FormEvent) => {
     e.preventDefault();
+    if (newPassword !== confirmNewPassword) { setLoginError("تکرار رمز جدید یکسان نیست."); return; }
     try {
-      await api("/api/auth/change-password", {method:"POST",body:JSON.stringify({newPassword})});
-      setNeedsPasswordChange(false);setNewPassword("");notify("رمز شما با موفقیت تغییر کرد");
+      await api("/api/auth/change-password", {method:"POST",body:JSON.stringify({newPassword,confirmPassword:confirmNewPassword})});
+      setNeedsPasswordChange(false);setNewPassword("");setConfirmNewPassword("");setLoginError("");notify("رمز شما با موفقیت تغییر کرد و ورود شما حفظ شد");
     } catch (error) { setLoginError(error instanceof Error ? error.message : "تغییر رمز ناموفق بود"); }
   };
 
@@ -556,7 +560,7 @@ function EmployeeApp() {
     );
   }
 
-  if (needsPasswordChange) return <main className="employee-stage login-stage" dir="rtl"><section className="phone-shell login-shell"><div className="phone-status"><span>۹:۴۱</span><span className="phone-island" /><span>▂ ▅ ◉</span></div><div className="login-screen"><div className="login-brand"><span className="brand-mark">ر</span><b>راهکار</b><small>امنیت حساب</small></div><div className="login-copy"><h1>رمز موقت را تغییر دهید</h1><p>برای ادامه، یک رمز شخصی و جدید انتخاب کنید.</p></div><form onSubmit={changePassword}><label>رمز جدید<input type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="حداقل ۱۰ کاراکتر، شامل حرف و عدد" /></label>{loginError&&<div className="login-error">! {loginError}</div>}<button className="primary-wide" type="submit">ثبت رمز جدید و ادامه</button></form><div className="security-note"><Icon>◇</Icon><p><b>رمز در پایگاه داده به‌صورت هش‌شده ذخیره می‌شود</b><small>مدیر بعداً رمز شخصی شما را نمی‌بیند.</small></p></div></div></section></main>;
+  if (needsPasswordChange) return <main className="employee-stage login-stage" dir="rtl"><section className="phone-shell login-shell"><div className="phone-status"><span>۹:۴۱</span><span className="phone-island" /><span>▂ ▅ ◉</span></div><div className="login-screen"><div className="login-brand"><span className="brand-mark">ر</span><b>راهکار</b><small>امنیت حساب</small></div><div className="login-copy"><h1>رمز موقت را تغییر دهید</h1><p>برای ادامه، یک رمز شخصی و جدید انتخاب کنید.</p></div><form onSubmit={changePassword}><label>رمز جدید<input type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} autoComplete="new-password" placeholder="حداقل ۱۰ کاراکتر، شامل حرف و عدد" /></label><label>تکرار رمز جدید<input type="password" value={confirmNewPassword} onChange={e=>setConfirmNewPassword(e.target.value)} autoComplete="new-password" placeholder="رمز جدید را دوباره وارد کنید" /></label>{loginError&&<div className="login-error">! {loginError}</div>}<button className="primary-wide" type="submit">ثبت رمز جدید و ادامه</button></form><div className="security-note"><Icon>◇</Icon><p><b>رمز در پایگاه داده به‌صورت هش‌شده ذخیره می‌شود</b><small>مدیر بعداً رمز شخصی شما را نمی‌بیند.</small></p></div></div></section></main>;
 
   return (
     <main className="employee-stage" dir="rtl">
@@ -707,7 +711,7 @@ function EmployeeApp() {
           {screen === "notifications" && <NotificationCenter onOpenMissions={()=>setScreen("missions")} onCounts={setNotificationCounts}/>}
           {screen === "notification-settings" && <NotificationSettings onMessage={notify} onEnabledChange={setEmployeeNotificationEnabled}/>}
           {screen === "account-settings" && <AccountSettings initialFullName={employeeDisplayName} initialUsername={username} onSaved={user=>{setEmployeeDisplayName(user.fullName);setUsername(user.username)}} onMessage={notify}/>}
-          {screen === "profile" && <div className="profile-screen"><div className="avatar large">{employeeDisplayName.slice(0,2)}</div><h2>{employeeDisplayName}</h2><p>کارشناس امور اداری</p><div className="profile-list"><button onClick={()=>setScreen("account-settings")}><span>نام کاربری، رمز و اطلاعات حساب</span>←</button><button onClick={()=>setScreen("notification-settings")}><span>تنظیمات اعلان‌ها</span><b>{employeeNotificationEnabled?"فعال":"غیرفعال"}</b></button><button onClick={()=>setScreen("notifications")}><span>درخواست‌های باز</span><b>{notificationCounts.open.toLocaleString("fa-IR")}</b></button><button onClick={() => syncQueued().catch(() => undefined)}><span>همگام‌سازی اطلاعات</span><b>{pendingSync ? `${pendingSync.toLocaleString("fa-IR")} مورد` : "همگام"}</b></button><button><span>راهنمای استفاده</span>←</button><button className="logout" onClick={async () => {await api("/api/auth/logout",{method:"POST"});setSignedIn(false);}}><span>خروج از حساب</span>←</button></div></div>}
+          {screen === "profile" && <div className="profile-screen"><div className="avatar large">{employeeDisplayName.slice(0,2)}</div><h2>{employeeDisplayName}</h2><p>کارشناس امور اداری</p><div className="profile-list"><button onClick={()=>setScreen("account-settings")}><span>نام کاربری، رمز و اطلاعات حساب</span>←</button><button onClick={()=>setScreen("notification-settings")}><span>تنظیمات اعلان‌ها</span><b>{employeeNotificationEnabled?"فعال":"غیرفعال"}</b></button><button onClick={()=>setScreen("notifications")}><span>درخواست‌های باز</span><b>{notificationCounts.open.toLocaleString("fa-IR")}</b></button><button onClick={() => syncQueued().catch(() => undefined)}><span>همگام‌سازی اطلاعات</span><b>{pendingSync ? `${pendingSync.toLocaleString("fa-IR")} مورد` : "همگام"}</b></button><button><span>راهنمای استفاده</span>←</button><button className="logout" onClick={async () => {await api("/api/auth/logout",{method:"POST"});setScreen("home");setPassword("");setSignedIn(false);}}><span>خروج از حساب</span>←</button></div></div>}
         </div>
 
         <nav className="bottom-nav" aria-label="ناوبری اپ">

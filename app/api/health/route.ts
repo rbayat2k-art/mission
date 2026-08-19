@@ -8,7 +8,7 @@ export async function GET() {
     const result = await db.prepare("SELECT 1 AS ok").first<{ ok: number }>();
     if (Number(result?.ok) !== 1) throw new Error("Database health check failed");
     return Response.json(
-      { status: "ok", version: process.env.APP_VERSION || "2.6.1" },
+      { status: "ok", version: process.env.APP_VERSION || "2.6.2" },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch {

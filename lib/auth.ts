@@ -1,4 +1,5 @@
 import { ensureDatabase } from "../db/runtime";
+import type { PreparedStatement } from "./server-database";
 import { hashToken, randomToken } from "./security";
 
 export type AppRole = "owner" | "admin" | "supervisor" | "employee";
@@ -20,6 +21,21 @@ export async function createSession(userId: string) {
   const now = new Date();
   const expires = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
   await db.prepare("INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)").bind(crypto.randomUUID(), userId, tokenHash, expires.toISOString(), now.toISOString()).run();
+  return { token, expires };
+}
+
+export async function rotateSession(userId: string, statements: PreparedStatement[] = []) {
+  const db = await ensureDatabase();
+  const token = randomToken();
+  const tokenHash = await hashToken(token);
+  const now = new Date();
+  const expires = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  await db.batch([
+    ...statements,
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId),
+    db.prepare("INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(crypto.randomUUID(), userId, tokenHash, expires.toISOString(), now.toISOString()),
+  ]);
   return { token, expires };
 }
 

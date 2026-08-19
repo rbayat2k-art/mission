@@ -1,4 +1,4 @@
-import { createSession, isSecureRequest, requireRole, sessionCookie } from "../../../lib/auth";
+import { isSecureRequest, requireRole, rotateSession, sessionCookie } from "../../../lib/auth";
 import { ensureDatabase } from "../../../db/runtime";
 import { hashPassword, verifyPassword } from "../../../lib/security";
 
@@ -19,14 +19,12 @@ export async function PATCH(request: Request) {
   if (duplicate) return Response.json({ error: "این نام کاربری قبلاً استفاده شده است." }, { status: 409 });
   const credential = body.newPassword ? await hashPassword(body.newPassword) : null;
   const now = new Date().toISOString();
-  await db.batch([
+  const { token, expires } = await rotateSession(auth.user.id, [
     credential
       ? db.prepare("UPDATE users SET full_name = ?, username = ?, password_hash = ?, password_salt = ?, must_change_password = 0 WHERE id = ?").bind(fullName, username, credential.hash, credential.salt, auth.user.id)
       : db.prepare("UPDATE users SET full_name = ?, username = ? WHERE id = ?").bind(fullName, username, auth.user.id),
-    db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(auth.user.id),
     db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'account.updated', 'user', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, auth.user.id, JSON.stringify({ usernameChanged: username !== auth.user.username, passwordChanged: Boolean(credential) }), now),
   ]);
-  const { token, expires } = await createSession(auth.user.id);
   const response = Response.json({ user: { ...auth.user, fullName, username, mustChangePassword:false } });
   response.headers.set("Set-Cookie", sessionCookie(token, expires, isSecureRequest(request)));
   return response;

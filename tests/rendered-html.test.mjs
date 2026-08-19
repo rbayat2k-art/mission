@@ -528,11 +528,31 @@ test("delivers role-scoped in-app and phone notifications with secure account se
   assert.match(page, /اعلان‌ها و درخواست‌های باز/);
   assert.match(page, /notificationCounts\.open/);
   assert.match(account, /verifyPassword/);
-  assert.match(account, /DELETE FROM sessions WHERE user_id/);
+  assert.match(account, /rotateSession/);
   assert.match(accountUi, /نام کاربری، رمز و اطلاعات حساب|حساب و امنیت/);
   assert.match(notificationUi, /فعال‌سازی اعلان روی گوشی/);
   assert.match(notificationUi, /Notification\.requestPermission/);
   assert.match(packageJson, /"web-push": "3\.6\.7"/);
   assert.match(environment, /VAPID_PUBLIC_KEY=/);
   assert.match(environment, /VAPID_PRIVATE_KEY=/);
+});
+
+test("rotates login sessions atomically and prevents accidental first-login password changes", async () => {
+  const [auth, changePassword, account, page] = await Promise.all([
+    readFile(new URL("../lib/auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/auth/change-password/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/account/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(auth, /export async function rotateSession/);
+  assert.match(auth, /db\.batch\(\[/);
+  assert.match(auth, /DELETE FROM sessions WHERE user_id = \?/);
+  assert.match(auth, /INSERT INTO sessions/);
+  assert.match(changePassword, /rotateSession\(user\.id/);
+  assert.match(changePassword, /password !== \(body\.confirmPassword/);
+  assert.doesNotMatch(changePassword, /createSession\(user\.id\)/);
+  assert.match(account, /rotateSession\(auth\.user\.id/);
+  assert.match(page, /autoComplete="new-password"/);
+  assert.match(page, /confirmNewPassword/);
+  assert.match(page, /setPassword\(""\)/);
 });
