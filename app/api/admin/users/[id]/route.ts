@@ -72,6 +72,7 @@ export async function PATCH(request: Request, context: RouteContext) {
   }
 
   const now = new Date().toISOString();
+  const disabling = target.status !== "disabled" && status === "disabled";
   let passwordHash: string | null = null;
   let passwordSalt: string | null = null;
   if (password) {
@@ -96,9 +97,14 @@ export async function PATCH(request: Request, context: RouteContext) {
         statusTo: status,
         supervisorId,
         passwordReset: Boolean(password),
+        liveTrackingRevoked: disabling,
       }), now),
   ];
   if (password || status === "disabled") statements.push(db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id));
+  if (disabling) {
+    statements.push(db.prepare("UPDATE work_sessions SET status = 'ended', ended_at = ?, end_source = 'account_disabled' WHERE user_id = ? AND status = 'active'").bind(now, id));
+    statements.push(db.prepare("DELETE FROM push_subscriptions WHERE user_id = ?").bind(id));
+  }
   await db.batch(statements);
 
   return Response.json({ user: { id, fullName, mobile, username, role, supervisorId, status, mustChangePassword: password ? true : undefined } });

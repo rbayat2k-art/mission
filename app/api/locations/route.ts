@@ -65,8 +65,10 @@ export async function GET(request: Request) {
   const requestedUser = url.searchParams.get("userId");
   const canViewTeam = ["owner", "admin", "supervisor"].includes(auth.user.role);
   const userId = canViewTeam ? requestedUser : auth.user.id;
+  const liveSince = new Date(Date.now() - 2 * 60_000).toISOString();
 
-  const baseSelect = `SELECT lp.id, lp.user_id AS userId, u.full_name AS fullName, lp.work_session_id AS workSessionId, lp.latitude_e6 AS latitudeE6, lp.longitude_e6 AS longitudeE6, lp.accuracy_cm AS accuracyCm, lp.speed_cms AS speedCms, lp.recorded_at AS recordedAt, lp.received_at AS receivedAt FROM location_points lp JOIN users u ON u.id = lp.user_id`;
+  const baseSelect = `SELECT lp.id, lp.user_id AS userId, u.full_name AS fullName, lp.work_session_id AS workSessionId, lp.latitude_e6 AS latitudeE6, lp.longitude_e6 AS longitudeE6, lp.accuracy_cm AS accuracyCm, lp.speed_cms AS speedCms, lp.recorded_at AS recordedAt, lp.received_at AS receivedAt FROM location_points lp JOIN users u ON u.id = lp.user_id JOIN work_sessions ws ON ws.id = lp.work_session_id`;
+  const latestLivePoint = `lp.id = (SELECT latest.id FROM location_points latest JOIN work_sessions latest_ws ON latest_ws.id = latest.work_session_id WHERE latest.user_id = lp.user_id AND latest_ws.status = 'active' AND latest.recorded_at >= ? ORDER BY latest.recorded_at DESC LIMIT 1)`;
   let result;
   if (auth.user.role === "supervisor") {
     if (userId) {
@@ -74,12 +76,12 @@ export async function GET(request: Request) {
       if (!allowed) return Response.json({ error: "forbidden" }, { status: 403 });
       result = await db.prepare(`${baseSelect} WHERE lp.user_id = ? ORDER BY lp.recorded_at DESC LIMIT 250`).bind(userId).all<Record<string, number | string | null>>();
     } else {
-      result = await db.prepare(`${baseSelect} WHERE (u.supervisor_id = ? OR u.id = ?) AND lp.id = (SELECT latest.id FROM location_points latest WHERE latest.user_id = lp.user_id ORDER BY latest.recorded_at DESC LIMIT 1) ORDER BY lp.recorded_at DESC`).bind(auth.user.id, auth.user.id).all<Record<string, number | string | null>>();
+      result = await db.prepare(`${baseSelect} WHERE (u.supervisor_id = ? OR u.id = ?) AND u.status = 'active' AND ws.status = 'active' AND lp.recorded_at >= ? AND ${latestLivePoint} ORDER BY lp.recorded_at DESC`).bind(auth.user.id, auth.user.id, liveSince, liveSince).all<Record<string, number | string | null>>();
     }
   } else {
     result = userId
       ? await db.prepare(`${baseSelect} WHERE lp.user_id = ? ORDER BY lp.recorded_at DESC LIMIT 250`).bind(userId).all<Record<string, number | string | null>>()
-      : await db.prepare(`${baseSelect} WHERE lp.id = (SELECT latest.id FROM location_points latest WHERE latest.user_id = lp.user_id ORDER BY latest.recorded_at DESC LIMIT 1) ORDER BY lp.recorded_at DESC`).all<Record<string, number | string | null>>();
+      : await db.prepare(`${baseSelect} WHERE u.status = 'active' AND ws.status = 'active' AND lp.recorded_at >= ? AND ${latestLivePoint} ORDER BY lp.recorded_at DESC`).bind(liveSince, liveSince).all<Record<string, number | string | null>>();
   }
 
   return Response.json({ locations: result.results.map((row) => ({

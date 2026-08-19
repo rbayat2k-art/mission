@@ -96,6 +96,7 @@ export async function GET(request: Request) {
   const period = rawPeriod === "weekly" || rawPeriod === "monthly" ? rawPeriod : "daily";
   const { start, end, endDateKey } = periodBounds(period, url.searchParams.get("date"));
   const requestedUserId = url.searchParams.get("userId");
+  const liveOnly = url.searchParams.get("live") === "1";
   const db = await ensureDatabase();
 
   const clauses = ["md.recorded_at >= ?", "md.recorded_at < ?"];
@@ -110,6 +111,12 @@ export async function GET(request: Request) {
   } else if (requestedUserId) {
     clauses.push("md.user_id = ?");
     values.push(requestedUserId);
+  }
+  if (liveOnly) {
+    const liveSince = new Date(Date.now() - 2 * 60_000).toISOString();
+    clauses.push("u.status = 'active'");
+    clauses.push("EXISTS (SELECT 1 FROM location_points live_lp JOIN work_sessions live_ws ON live_ws.id = live_lp.work_session_id WHERE live_lp.user_id = md.user_id AND live_ws.status = 'active' AND live_lp.recorded_at >= ?)");
+    values.push(liveSince);
   }
 
   const result = await db.prepare(`SELECT md.id, md.mission_id AS missionId, m.title AS missionTitle, md.user_id AS userId, u.full_name AS fullName,

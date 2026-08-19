@@ -473,6 +473,27 @@ test("routes every non-success result into a durable follow-up workflow", async 
   assert.match(page, /گزارش ثبت و پیگیری بعدی ساخته شد/);
 });
 
+test("shows live tracking only for active online users with fresh GPS", async () => {
+  const [locations, destinations, users, page] = await Promise.all([
+    readFile(new URL("../app/api/locations/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/destinations/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/admin/users/[id]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(locations, /Date\.now\(\) - 2 \* 60_000/);
+  assert.match(locations, /u\.status = 'active'/);
+  assert.match(locations, /ws\.status = 'active'/);
+  assert.match(locations, /latest_ws\.status = 'active'/);
+  assert.match(destinations, /url\.searchParams\.get\("live"\) === "1"/);
+  assert.match(destinations, /live_ws\.status = 'active'/);
+  assert.match(users, /status = 'ended'[\s\S]*end_source = 'account_disabled'/);
+  assert.match(users, /DELETE FROM push_subscriptions WHERE user_id = \?/);
+  assert.match(page, /period=daily&live=1/);
+  assert.match(page, /setLiveLocations\(current => current\.filter\(location => location\.userId !== user\.id\)\)/);
+  assert.match(page, /setInterval\([\s\S]*30_000/);
+});
+
 test("delivers role-scoped in-app and phone notifications with secure account settings", async () => {
   const [schema, runtime, missions, notifications, settings, subscriptions, push, worker, page, account, accountUi, notificationUi, packageJson, environment] = await Promise.all([
     readFile(new URL("../db/mysql-schema.sql", import.meta.url), "utf8"),

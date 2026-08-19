@@ -828,13 +828,13 @@ function AdminPanel() {
     if (target === "approvals") setApprovalItems((await api<{approvals:ApiApproval[]}>("/api/approvals")).approvals);
     if (target === "dashboard") {
       const [locations, destinations, missions, users, approvals, integrity] = await Promise.all([
-        api<{locations:ApiLocation[]}>("/api/locations"), api<{destinations:ApiDestination[]}>("/api/destinations?period=daily"),
+        api<{locations:ApiLocation[]}>("/api/locations"), api<{destinations:ApiDestination[]}>("/api/destinations?period=daily&live=1"),
         api<{missions:ApiMission[]}>("/api/missions"), api<{users:ApiUser[]}>("/api/admin/users"), api<{approvals:ApiApproval[]}>("/api/approvals"), api<{events:ApiIntegrityEvent[]}>("/api/integrity"),
       ]);
       setLiveLocations(locations.locations); setDestinationPins(destinations.destinations); setAdminMissions(missions.missions); setAdminUsers(users.users); setApprovalItems(approvals.approvals); setIntegrityEvents(integrity.events);
     }
     if (target === "live") {
-      const [locations, destinations] = await Promise.all([api<{locations:ApiLocation[]}>("/api/locations"), api<{destinations:ApiDestination[]}>("/api/destinations?period=daily")]);
+      const [locations, destinations] = await Promise.all([api<{locations:ApiLocation[]}>("/api/locations"), api<{destinations:ApiDestination[]}>("/api/destinations?period=daily&live=1")]);
       setLiveLocations(locations.locations); setDestinationPins(destinations.destinations);
     }
     if (target === "integrity") setIntegrityEvents((await api<{events:ApiIntegrityEvent[]}>("/api/integrity")).events);
@@ -861,6 +861,13 @@ function AdminPanel() {
     // Report period intentionally refreshes only the report collection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adminReportPeriod]);
+  useEffect(() => {
+    if (!adminSignedIn || (screen !== "dashboard" && screen !== "live")) return;
+    const timer = window.setInterval(() => loadAdminData("live").catch(error => notify(error.message)), 30_000);
+    return () => window.clearInterval(timer);
+    // Live tracking refreshes independently so stale or disabled users disappear without a page reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminSignedIn, screen]);
   useEffect(() => { api<{user:{id:string;role:"owner"|"admin"|"supervisor"|"employee";fullName:string;username:string}}>("/api/auth/me").then(({user})=>{if(['owner','admin','supervisor'].includes(user.role)){setAdminUserId(user.id);setAdminRole(user.role as "owner"|"admin"|"supervisor");setAdminDisplayName(user.fullName);setAdminUsername(user.username);setAdminSignedIn(true)}}).catch(()=>undefined); }, []);
   useEffect(()=>{if(!adminSignedIn)return;let active=true;const load=()=>api<{unreadCount:number;openRequestCount:number}>("/api/notifications").then(result=>{if(active)setAdminNotificationCounts({unread:result.unreadCount,open:result.openRequestCount})}).catch(()=>undefined);load();const timer=window.setInterval(load,60_000);return()=>{active=false;window.clearInterval(timer)}},[adminSignedIn]);
 
@@ -892,6 +899,11 @@ function AdminPanel() {
         setAccessStage("list"); setAdminUsername(employeeUsername); setAdminPassword(""); setAdminSignedIn(false);
         setAdminError("رمز حساب شما تغییر کرد. برای ادامه با رمز جدید دوباره وارد شوید.");
         return;
+      }
+      if (editing && accessEditingId && accessStatus === "disabled") {
+        setLiveLocations(current => current.filter(location => location.userId !== accessEditingId));
+        setDestinationPins(current => current.filter(destination => destination.userId !== accessEditingId));
+        setSelected(0);
       }
       await loadAdminData("access");
       if (editing) { setAccessStage("list"); notify(temporaryPassword ? "اطلاعات و رمز جدید ذخیره شد" : "اطلاعات کاربر ذخیره شد"); }
@@ -925,6 +937,11 @@ function AdminPanel() {
     if (nextStatus === "disabled" && !window.confirm(`حساب «${user.fullName}» غیرفعال شود؟ ورودهای باز او نیز بسته می‌شود.`)) return;
     try {
       await api(`/api/admin/users/${user.id}`, { method:"PATCH", body:JSON.stringify({status:nextStatus}) });
+      if (nextStatus === "disabled") {
+        setLiveLocations(current => current.filter(location => location.userId !== user.id));
+        setDestinationPins(current => current.filter(destination => destination.userId !== user.id));
+        setSelected(0);
+      }
       await loadAdminData("access");
       notify(nextStatus === "active" ? "حساب کاربر فعال شد" : "حساب کاربر غیرفعال شد");
     } catch (error) { notify(error instanceof Error ? error.message : "تغییر وضعیت حساب ناموفق بود"); }
