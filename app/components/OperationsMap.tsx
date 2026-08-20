@@ -5,6 +5,7 @@ import type { Map as LeafletMap } from "leaflet";
 
 export type MapCurrentLocation = {
   id: string; userId: string; fullName: string; latitude: number; longitude: number; accuracy: number; recordedAt: string;
+  receivedAt?: string; isLive?: boolean; workSessionStatus?: string;
 };
 
 export type MapDestination = {
@@ -45,6 +46,22 @@ function routeColor(userId: string) {
   return palette[hash % palette.length];
 }
 
+function locationPresentation(location: MapCurrentLocation) {
+  const ageMinutes = Math.max(0, Math.floor((Date.now() - Date.parse(location.recordedAt)) / 60_000));
+  if (location.isLive) return { color: "#18a77d", fill: "#5ed7b2", className: "live", status: "زنده" };
+  if (ageMinutes <= 30) return { color: "#d88919", fill: "#f4b84a", className: "recent", status: "آخرین موقعیت؛ تازه" };
+  return { color: "#778397", fill: "#aab3c0", className: "stale", status: "آخرین موقعیت؛ زنده نیست" };
+}
+
+function relativeLocationTime(recordedAt: string) {
+  const ageMinutes = Math.max(0, Math.floor((Date.now() - Date.parse(recordedAt)) / 60_000));
+  if (ageMinutes < 1) return "کمتر از یک دقیقه قبل";
+  if (ageMinutes < 60) return `${ageMinutes.toLocaleString("fa-IR")} دقیقه قبل`;
+  const hours = Math.floor(ageMinutes / 60);
+  if (hours < 24) return `${hours.toLocaleString("fa-IR")} ساعت قبل`;
+  return `${Math.floor(hours / 24).toLocaleString("fa-IR")} روز قبل`;
+}
+
 export default function OperationsMap({ currentLocations, destinations, tracePoints = [], large = false }: { currentLocations: MapCurrentLocation[]; destinations: MapDestination[]; tracePoints?: MapTracePoint[]; large?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LeafletMap | null>(null);
@@ -66,10 +83,11 @@ export default function OperationsMap({ currentLocations, destinations, tracePoi
       const bounds: [number, number][] = [];
       for (const location of currentLocations) {
         const point: [number, number] = [location.latitude, location.longitude];
+        const presentation = locationPresentation(location);
         bounds.push(point);
-        L.circle(point, { radius: Math.max(3, location.accuracy), color: "#1f9d78", weight: 1, fillColor: "#5ed7b2", fillOpacity: 0.12 }).addTo(map);
-        L.circleMarker(point, { radius: 9, color: "#ffffff", weight: 3, fillColor: "#18a77d", fillOpacity: 1, className: "operations-live-marker" })
-          .bindPopup(popupContent("مکان فعلی", [["کارمند", location.fullName], ["زمان", new Date(location.recordedAt).toLocaleString("fa-IR")], ["دقت", `${Math.round(location.accuracy).toLocaleString("fa-IR")} متر`]]))
+        L.circle(point, { radius: Math.max(3, location.accuracy), color: presentation.color, weight: 1, fillColor: presentation.fill, fillOpacity: 0.12 }).addTo(map);
+        L.circleMarker(point, { radius: 9, color: "#ffffff", weight: 3, fillColor: presentation.color, fillOpacity: 1, className: `operations-location-marker ${presentation.className}` })
+          .bindPopup(popupContent(location.isLive ? "مکان فعلی" : "آخرین موقعیت ثبت‌شده", [["کارمند", location.fullName], ["وضعیت", presentation.status], ["زمان", new Date(location.recordedAt).toLocaleString("fa-IR")], ["فاصله زمانی", relativeLocationTime(location.recordedAt)], ["دقت", `${Math.round(location.accuracy).toLocaleString("fa-IR")} متر`], ["مختصات", `${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}`]]))
           .addTo(map);
       }
 
@@ -120,6 +138,6 @@ export default function OperationsMap({ currentLocations, destinations, tracePoi
 
   return <div className={`operations-map ${large ? "large" : ""}`}>
     <div ref={containerRef} className="operations-map-canvas" aria-label="نقشه موقعیت فعلی و مقصدهای ثبت‌شده" />
-    <div className="operations-map-legend">{tracePoints.length ? <><span><i className="trace-start" />شروع</span><span><i className="trace-destination" />مقصد</span><span><i className="trace-end" />پایان</span></> : <><span><i className="live" />مکان فعلی</span><span><i className="pin" />مقصدهای شماره‌دار</span></>}</div>
+    <div className="operations-map-legend">{tracePoints.length ? <><span><i className="trace-start" />شروع</span><span><i className="trace-destination" />مقصد</span><span><i className="trace-end" />پایان</span></> : <><span><i className="live" />زنده</span>{currentLocations.some(location=>!location.isLive)&&<><span><i className="recent" />تا ۳۰ دقیقه</span><span><i className="stale" />قدیمی</span></>}<span><i className="pin" />مقصدهای شماره‌دار</span></>}</div>
   </div>;
 }

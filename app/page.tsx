@@ -55,7 +55,7 @@ type ApiMissionEvent = { id:string;attemptNo:number|null;actorId:string;actorNam
 type ApiUser = { id: string; fullName: string; mobile: string; username: string; role: string; status: string; supervisorId?: string | null; supervisorName?: string | null; lastLoginAt?: string | null };
 type ApiApproval = { id: string; missionId: string; title: string; employeeName: string; referrerName?: string | null; result: string; report: string; destinationName: string; expenseAmount: number; scorePending: number };
 type UiMission = Omit<Partial<ApiMission>, "id"> & { id: string | number; title: string; meta: string; type: string; priority: string; status: string; backendStatus?: string };
-type ApiLocation = { id: string; userId: string; fullName: string; latitude: number; longitude: number; accuracy: number; speed: number | null; recordedAt: string };
+type ApiLocation = { id: string; userId: string; fullName: string; latitude: number; longitude: number; accuracy: number; speed: number | null; recordedAt: string; receivedAt?: string; isLive: boolean; workSessionStatus?: string };
 type ApiDestination = { id: string; missionId: string; missionTitle: string; userId: string; fullName: string; destinationName: string; latitude: number; longitude: number; accuracy: number; recordedAt: string; dateKey: string; sequence: number };
 type ApiMissionTrace = {
   mission:{id:string;title:string;description:string;employeeName:string;status:string;result:string|null;report:string|null;startedAt:string|null;completedAt:string;scorePending:number;scoreConfirmed:number;scorePenalty:number;scoreNote:string|null};
@@ -98,6 +98,23 @@ function formatPersianTime(value?: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   return new Intl.DateTimeFormat("fa-IR", { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+}
+
+function locationAgeLabel(value?: string | null) {
+  if (!value) return "بدون داده";
+  const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 60_000));
+  if (!Number.isFinite(minutes)) return "زمان نامعتبر";
+  if (minutes < 1) return "کمتر از یک دقیقه قبل";
+  if (minutes < 60) return `${minutes.toLocaleString("fa-IR")} دقیقه قبل`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours.toLocaleString("fa-IR")} ساعت قبل`;
+  return `${Math.floor(hours / 24).toLocaleString("fa-IR")} روز قبل`;
+}
+
+function locationFreshness(location?: ApiLocation) {
+  if (!location) return "missing";
+  if (location.isLive) return "live";
+  return Date.now() - Date.parse(location.recordedAt) <= 30 * 60_000 ? "recent" : "stale";
 }
 
 function currentPersianDate() {
@@ -993,6 +1010,8 @@ function AdminPanel() {
   const [missionTraceScoreSaving, setMissionTraceScoreSaving] = useState(false);
   const [approvalItems, setApprovalItems] = useState<ApiApproval[]>([]);
   const [liveLocations, setLiveLocations] = useState<ApiLocation[]>([]);
+  const [lastLocations, setLastLocations] = useState<ApiLocation[]>([]);
+  const [locationView, setLocationView] = useState<"live"|"last">("live");
   const [destinationPins, setDestinationPins] = useState<ApiDestination[]>([]);
   const [reportDestinations, setReportDestinations] = useState<ApiDestination[]>([]);
   const [integrityEvents, setIntegrityEvents] = useState<ApiIntegrityEvent[]>([]);
@@ -1024,15 +1043,15 @@ function AdminPanel() {
     }
     if (target === "approvals") setApprovalItems((await api<{approvals:ApiApproval[]}>("/api/approvals")).approvals);
     if (target === "dashboard") {
-      const [locations, destinations, missions, users, approvals, integrity] = await Promise.all([
-        api<{locations:ApiLocation[]}>("/api/locations"), api<{destinations:ApiDestination[]}>("/api/destinations?period=daily&live=1"),
+      const [locations, lastKnown, destinations, missions, users, approvals, integrity] = await Promise.all([
+        api<{locations:ApiLocation[]}>("/api/locations"), api<{locations:ApiLocation[]}>("/api/locations?mode=last"), api<{destinations:ApiDestination[]}>("/api/destinations?period=daily&live=1"),
         api<{missions:ApiMission[]}>("/api/missions"), api<{users:ApiUser[]}>("/api/admin/users"), api<{approvals:ApiApproval[]}>("/api/approvals"), api<{events:ApiIntegrityEvent[]}>("/api/integrity"),
       ]);
-      setLiveLocations(locations.locations); setDestinationPins(destinations.destinations); setAdminMissions(missions.missions); setAdminUsers(users.users); setApprovalItems(approvals.approvals); setIntegrityEvents(integrity.events);
+      setLiveLocations(locations.locations); setLastLocations(lastKnown.locations); setDestinationPins(destinations.destinations); setAdminMissions(missions.missions); setAdminUsers(users.users); setApprovalItems(approvals.approvals); setIntegrityEvents(integrity.events);
     }
     if (target === "live") {
-      const [locations, destinations] = await Promise.all([api<{locations:ApiLocation[]}>("/api/locations"), api<{destinations:ApiDestination[]}>("/api/destinations?period=daily&live=1")]);
-      setLiveLocations(locations.locations); setDestinationPins(destinations.destinations);
+      const [locations, lastKnown, destinations] = await Promise.all([api<{locations:ApiLocation[]}>("/api/locations"), api<{locations:ApiLocation[]}>("/api/locations?mode=last"), api<{destinations:ApiDestination[]}>("/api/destinations?period=daily&live=1")]);
+      setLiveLocations(locations.locations); setLastLocations(lastKnown.locations); setDestinationPins(destinations.destinations);
     }
     if (target === "integrity") setIntegrityEvents((await api<{events:ApiIntegrityEvent[]}>("/api/integrity")).events);
     if (target === "reports") {
@@ -1099,6 +1118,7 @@ function AdminPanel() {
       }
       if (editing && accessEditingId && accessStatus === "disabled") {
         setLiveLocations(current => current.filter(location => location.userId !== accessEditingId));
+        setLastLocations(current => current.filter(location => location.userId !== accessEditingId));
         setDestinationPins(current => current.filter(destination => destination.userId !== accessEditingId));
         setSelected(0);
       }
@@ -1136,6 +1156,7 @@ function AdminPanel() {
       await api(`/api/admin/users/${user.id}`, { method:"PATCH", body:JSON.stringify({status:nextStatus}) });
       if (nextStatus === "disabled") {
         setLiveLocations(current => current.filter(location => location.userId !== user.id));
+        setLastLocations(current => current.filter(location => location.userId !== user.id));
         setDestinationPins(current => current.filter(destination => destination.userId !== user.id));
         setSelected(0);
       }
@@ -1247,8 +1268,10 @@ function AdminPanel() {
     } catch (error) { notify(error instanceof Error ? error.message : "ثبت تصمیم ناموفق بود"); }
   };
 
-  const selectedLocation = liveLocations[selected] ?? liveLocations[0];
+  const displayedLocations = locationView === "live" ? liveLocations : lastLocations;
+  const selectedLocation = displayedLocations[selected] ?? displayedLocations[0];
   const activeEmployeeCount = new Set(liveLocations.map(location=>location.userId)).size;
+  const lastKnownEmployeeCount = new Set(lastLocations.map(location=>location.userId)).size;
   const totalEmployeeCount = adminUsers.filter(user=>user.role==="employee" && user.status==="active").length;
   const todayKey = new Date().toLocaleDateString("en-CA", { timeZone:"Asia/Tehran" });
   const isToday = (value?:string|null) => Boolean(value && new Date(value).toLocaleDateString("en-CA", { timeZone:"Asia/Tehran" }) === todayKey);
@@ -1301,9 +1324,9 @@ function AdminPanel() {
             <div className="kpi"><span className="kpi-icon red">◇</span><span><small>هشدار یکپارچگی</small><b>{openIntegrityCount.toLocaleString("fa-IR")} <em>هشدار باز</em></b></span><i className={openIntegrityCount?"warning":""}>{openIntegrityCount?"بررسی":"بدون هشدار"}</i></div>
           </div>
           <div className="dashboard-grid">
-            <section className="panel map-panel"><div className="panel-head"><div><h2>موقعیت فعلی و مقصدهای امروز</h2><p>{`${liveLocations.length.toLocaleString("fa-IR")} موقعیت زنده · ${destinationPins.length.toLocaleString("fa-IR")} مقصد شماره‌دار`}</p></div><button onClick={() => setScreen("live")}>نمایش نقشه کامل ←</button></div><LiveMap locations={liveLocations} destinations={destinationPins} /></section>
-            <section className="panel active-staff"><div className="panel-head"><div><h2>نیروهای دارای موقعیت</h2><p>{activeEmployeeCount.toLocaleString("fa-IR")} نفر با موقعیت ثبت‌شده</p></div><button onClick={()=>loadAdminData("dashboard").catch(error=>notify(error.message))}>↻</button></div>
-              <div className="staff-list">{liveLocations.length ? liveLocations.map((location,i)=><button key={location.id} onClick={()=>{setSelected(i);setScreen("live")}}><span className="avatar blue">{location.fullName.slice(0,2)}</span><span><b>{location.fullName}</b><small><i/> آخرین موقعیت واقعی</small></span><time>{new Date(location.recordedAt).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"})}<small>ثبت GPS</small></time></button>) : <div className="empty-state compact"><span>⌖</span><h3>هنوز نیروی فعالی نیست</h3><p>بعد از شروع فعالیت کارمند، اطلاعات این قسمت تکمیل می‌شود.</p></div>}</div>
+            <section className="panel map-panel"><div className="panel-head"><div><h2>{locationView === "live" ? "موقعیت زنده و مقصدهای امروز" : "آخرین موقعیت ثبت‌شده نیروها"}</h2><p>{locationView === "live" ? `${liveLocations.length.toLocaleString("fa-IR")} موقعیت زنده · ${destinationPins.length.toLocaleString("fa-IR")} مقصد شماره‌دار` : `${lastKnownEmployeeCount.toLocaleString("fa-IR")} کارمند دارای سابقه موقعیت؛ نقاط خاکستری زنده نیستند`}</p></div><div className="location-panel-actions"><div className="location-view-toggle"><button className={locationView==="live"?"active":""} onClick={()=>{setLocationView("live");setSelected(0)}}>زنده</button><button className={locationView==="last"?"active":""} onClick={()=>{setLocationView("last");setSelected(0)}}>آخرین موقعیت</button></div><button onClick={() => setScreen("live")}>نمایش کامل ←</button></div></div><LiveMap locations={displayedLocations} destinations={destinationPins} /></section>
+            <section className="panel active-staff"><div className="panel-head"><div><h2>{locationView === "live" ? "نیروهای دارای موقعیت زنده" : "آخرین موقعیت نیروها"}</h2><p>{(locationView === "live" ? activeEmployeeCount : lastKnownEmployeeCount).toLocaleString("fa-IR")} نفر با موقعیت ثبت‌شده</p></div><button onClick={()=>loadAdminData("dashboard").catch(error=>notify(error.message))}>↻</button></div>
+              <div className="staff-list">{displayedLocations.length ? displayedLocations.map((location,i)=>{const freshness=locationFreshness(location);return <button key={location.id} onClick={()=>{setSelected(i);setScreen("live")}}><span className="avatar blue">{location.fullName.slice(0,2)}</span><span><b>{location.fullName}</b><small><i className={freshness}/>{location.isLive ? " موقعیت زنده" : " آخرین موقعیت ثبت‌شده"}</small></span><time>{new Date(location.recordedAt).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"})}<small>{locationAgeLabel(location.recordedAt)}</small></time></button>}) : <div className="empty-state compact"><span>⌖</span><h3>{locationView === "live" ? "هنوز نیروی فعالی نیست" : "هنوز موقعیتی ثبت نشده است"}</h3><p>{locationView === "live" ? "پس از شروع فعالیت و دریافت GPS، نیروی آنلاین اینجا دیده می‌شود." : "حتی یک موقعیت معتبر پس از رسیدن به سرور در این قسمت باقی می‌ماند."}</p></div>}</div>
             </section>
             <section className="panel approvals-preview"><div className="panel-head"><div><h2>نیازمند اقدام شما</h2><p>تأییدها و هشدارهای اخیر</p></div><button onClick={() => setScreen("approvals")}>مشاهده همه ←</button></div>
               {approvalItems.slice(0,2).map(item=><div className="action-row" key={item.id}><span className="avatar blue">{item.employeeName.slice(0,2)}</span><div><b>{item.title}</b><small>{item.employeeName} · مأموریت خودساخته</small></div><span className="tag amber">تأیید مأموریت</span><button onClick={()=>setScreen("approvals")}>بررسی</button></div>)}
@@ -1315,8 +1338,8 @@ function AdminPanel() {
         </>}
 
         {screen === "live" && <div className="live-layout">
-          <section className="panel live-map-panel"><div className="map-toolbar"><div className="map-tabs"><button className="active">امروز؛ موقعیت و مقصدها</button><button>{liveLocations.length.toLocaleString("fa-IR")} نیرو · {destinationPins.length.toLocaleString("fa-IR")} پین</button></div><div><button>OpenStreetMap</button><button onClick={()=>loadAdminData("live").catch(error=>notify(error.message))}>↻ به‌روزرسانی</button></div></div><LiveMap locations={liveLocations} destinations={destinationPins} focus /></section>
-          <aside className="person-detail"><div className="detail-head"><span className="avatar large blue">{selectedLocation?.fullName.slice(0,2) ?? "—"}</span><div><h2>{selectedLocation?.fullName ?? "بدون موقعیت زنده"}</h2><p><i/> {selectedLocation ? `آخرین ثبت ${new Date(selectedLocation.recordedAt).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"})}` : "منتظر دریافت GPS"}</p></div><button>×</button></div><div className="detail-metrics"><span><small>دقت GPS</small><b>{selectedLocation ? `${Math.round(selectedLocation.accuracy).toLocaleString("fa-IR")} متر` : "—"}</b></span><span><small>سرعت ثبت‌شده</small><b>{selectedLocation?.speed == null ? "—" : `${Math.round(selectedLocation.speed*3.6).toLocaleString("fa-IR")} km/h`}</b></span></div><div className="current-mission"><small>موقعیت فعلی</small><h3>{selectedLocation ? `${selectedLocation.latitude.toFixed(5)}, ${selectedLocation.longitude.toFixed(5)}` : "هنوز ثبت نشده"}</h3><p>اطلاعات مستقیماً از GPS گوشی کارمند دریافت می‌شود</p><span>{selectedLocation ? "زنده" : "بدون داده"}</span></div><h3 className="timeline-title">خط زمانی موقعیت</h3><div className="timeline"><div className="green"><time>{selectedLocation ? new Date(selectedLocation.recordedAt).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"}) : "—"}</time><span><b>آخرین موقعیت GPS</b><small>{selectedLocation ? `دقت ${Math.round(selectedLocation.accuracy).toLocaleString("fa-IR")} متر` : "در انتظار ثبت از گوشی"}</small></span></div><div className="blue"><time>—</time><span><b>همگام‌سازی امن</b><small>نقاط آفلاین پس از اتصال به ترتیب ارسال می‌شوند</small></span></div></div><button className="outline-wide" onClick={()=>loadAdminData("live").catch(error=>notify(error.message))}>به‌روزرسانی اطلاعات</button></aside>
+          <section className="panel live-map-panel"><div className="map-toolbar"><div className="map-tabs"><button className={locationView==="live"?"active":""} onClick={()=>{setLocationView("live");setSelected(0)}}>موقعیت زنده</button><button className={locationView==="last"?"active":""} onClick={()=>{setLocationView("last");setSelected(0)}}>آخرین موقعیت</button><button>{displayedLocations.length.toLocaleString("fa-IR")} نیرو · {destinationPins.length.toLocaleString("fa-IR")} مقصد</button></div><div><button>OpenStreetMap</button><button onClick={()=>loadAdminData("live").catch(error=>notify(error.message))}>↻ به‌روزرسانی</button></div></div><LiveMap locations={displayedLocations} destinations={destinationPins} focus /></section>
+          <aside className="person-detail"><div className={`detail-head location-${locationFreshness(selectedLocation)}`}><span className="avatar large blue">{selectedLocation?.fullName.slice(0,2) ?? "—"}</span><div><h2>{selectedLocation?.fullName ?? (locationView === "live" ? "بدون موقعیت زنده" : "بدون سابقه موقعیت")}</h2><p><i/> {selectedLocation ? `${selectedLocation.isLive ? "ثبت زنده" : "آخرین دریافت"} · ${locationAgeLabel(selectedLocation.recordedAt)}` : "منتظر دریافت GPS"}</p></div><button>×</button></div><div className="detail-metrics"><span><small>دقت GPS</small><b>{selectedLocation ? `${Math.round(selectedLocation.accuracy).toLocaleString("fa-IR")} متر` : "—"}</b></span><span><small>سرعت ثبت‌شده</small><b>{selectedLocation?.speed == null ? "—" : `${Math.round(selectedLocation.speed*3.6).toLocaleString("fa-IR")} km/h`}</b></span></div><div className={`current-mission location-${locationFreshness(selectedLocation)}`}><small>{selectedLocation?.isLive ? "موقعیت فعلی" : "آخرین موقعیت ثبت‌شده"}</small><h3>{selectedLocation ? `${selectedLocation.latitude.toFixed(5)}, ${selectedLocation.longitude.toFixed(5)}` : "هنوز ثبت نشده"}</h3><p>{selectedLocation ? `${formatPersianDateTime(selectedLocation.recordedAt)} · دقت ${Math.round(selectedLocation.accuracy).toLocaleString("fa-IR")} متر` : "بعد از دریافت اولین GPS معتبر تکمیل می‌شود"}</p><span>{selectedLocation ? selectedLocation.isLive ? "زنده" : "زنده نیست" : "بدون داده"}</span></div><h3 className="timeline-title">خط زمانی موقعیت</h3><div className="timeline"><div className={selectedLocation?.isLive ? "green" : "gray"}><time>{selectedLocation ? new Date(selectedLocation.recordedAt).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"}) : "—"}</time><span><b>{selectedLocation?.isLive ? "آخرین موقعیت زنده GPS" : "آخرین موقعیت دریافت‌شده"}</b><small>{selectedLocation ? `${locationAgeLabel(selectedLocation.recordedAt)} · دقت ${Math.round(selectedLocation.accuracy).toLocaleString("fa-IR")} متر` : "در انتظار ثبت از گوشی"}</small></span></div><div className="blue"><time>—</time><span><b>همگام‌سازی امن</b><small>نقاط آفلاین پس از اتصال به ترتیب ارسال می‌شوند</small></span></div></div><button className="outline-wide" onClick={()=>loadAdminData("live").catch(error=>notify(error.message))}>به‌روزرسانی اطلاعات</button></aside>
         </div>}
 
         {screen === "missions" && <section className="panel table-panel"><div className="table-toolbar"><div className="filter-tabs">{adminMissionFilters.map(filter=><button key={filter.id} className={adminMissionFilter===filter.id?"active":""} onClick={()=>setAdminMissionFilter(filter.id)}>{filter.label} <span>{adminMissions.filter(mission=>missionMatchesFilter(mission,filter.id)).length.toLocaleString("fa-IR")}</span></button>)}</div><button onClick={()=>openMissionForm()}>＋ تخصیص مأموریت</button></div>{filteredAdminMissions.length ? <table><thead><tr><th>مأموریت</th><th>مسئول</th><th>ایجادکننده</th><th>تاریخ و ساعت ثبت</th><th>مهلت</th><th>وضعیت</th><th>امتیاز</th><th>عملیات</th></tr></thead><tbody>{filteredAdminMissions.map((m)=><tr key={m.id} className={m.completedAt ? "clickable-mission-row" : ""} onClick={()=>m.completedAt&&openMissionTrace(m)}><td><b>{m.title}</b><small>{m.destinationName || m.description || "مقصد هنگام انجام ثبت می‌شود"}{Number(m.attemptCount ?? 0)>0?` · ${Number(m.attemptCount).toLocaleString("fa-IR")} مراجعه`:""}</small>{Number(m.startCancellationCount ?? 0)>0&&<small className="mission-cancel-audit">انصراف از شروع: {m.lastStartCancellationReason || "بدون توضیح"} · {formatPersianDateTime(m.lastStartCancelledAt ?? undefined)}</small>}</td><td><span className="mini-user blue">{m.employeeName?.slice(0,2) ?? "—"}</span>{m.employeeName ?? "کاربر"}</td><td>{m.source === "employee" ? "کارمند" : adminRole === "supervisor" ? "سرپرست" : "مدیر"}</td><td className="mission-created-at"><b>{formatPersianDateTime(m.createdAt)}</b><small>ثبت خودکار سرور</small></td><td>{m.deadline || "بدون مهلت"}</td><td><span className={`status ${m.status === "open" || m.status === "revision" ? "open" : m.status === "in_progress" ? "running" : ["pending","pending_approval"].includes(m.status) ? "pending" : ["follow_up","follow_up_pending"].includes(m.status) ? "follow-up" : "done"}`}>{m.status === "open" ? "باز" : m.status === "in_progress" ? "در حال انجام" : ["pending","pending_approval"].includes(m.status) ? "منتظر تأیید" : m.status === "follow_up_pending" ? "پیگیری مجدد · منتظر بررسی" : m.status === "follow_up" ? "پیگیری مجدد" : m.status === "approved" ? "انجام‌شده" : m.status === "revision" ? "نیازمند اصلاح" : m.status === "rejected" ? "ردشده" : "انجام‌شده"}</span></td><td>{["pending","pending_approval","follow_up_pending"].includes(m.status) ? <span className="score-pending">Pending</span> : Number(m.scoreConfirmed) > 0 ? `+${Number(m.scoreConfirmed).toLocaleString("fa-IR")}` : "—"}</td><td>{m.status === "open" ? <div className="mission-row-actions"><button className="edit" onClick={event=>{event.stopPropagation();openMissionForm(m)}}><Icon>✎</Icon> ویرایش</button><button className="delete" onClick={event=>{event.stopPropagation();deleteMission(m)}}><Icon>×</Icon> حذف</button></div> : m.completedAt ? <button className="mission-trace-action" onClick={event=>{event.stopPropagation();openMissionTrace(m)}}><Icon>⌖</Icon> بررسی مراجعه ثبت‌شده</button> : <span className="mission-locked"><Icon>▣</Icon> قفل‌شده پس از شروع</span>}</td></tr>)}</tbody></table> : <div className="empty-state"><span>▣</span><h3>موردی در این دسته نیست</h3><p>با تغییر وضعیت مأموریت، آن مورد به‌صورت خودکار در دسته درست نمایش داده می‌شود.</p></div>}</section>}

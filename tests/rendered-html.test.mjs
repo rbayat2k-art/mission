@@ -417,7 +417,7 @@ test("stores numbered daily mission destinations and maps them only in managemen
   assert.match(page, /setLatestGps\(\{ latitude:position\.coords\.latitude/);
   assert.match(page, /sendJsonOrQueue\("\/api\/destinations", "POST"/);
   assert.match(page, /نقشه فقط در پنل مدیر نمایش داده می‌شود/);
-  assert.match(page, /موقعیت فعلی و مقصدهای امروز/);
+  assert.match(page, /موقعیت زنده و مقصدهای امروز/);
   assert.match(page, /نقشه مقصدهای \{selected\.fullName\}/);
   assert.match(map, /L\.circleMarker/);
   assert.match(map, /destination\.sequence\.toLocaleString\("fa-IR"\)/);
@@ -509,6 +509,25 @@ test("shows live tracking only for active online users with fresh GPS", async ()
   assert.match(page, /period=daily&live=1/);
   assert.match(page, /setLiveLocations\(current => current\.filter\(location => location\.userId !== user\.id\)\)/);
   assert.match(page, /setInterval\([\s\S]*30_000/);
+});
+
+test("keeps the latest accepted GPS point available to managers without presenting it as live", async () => {
+  const [locations, page, map] = await Promise.all([
+    readFile(new URL("../app/api/locations/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/OperationsMap.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(locations, /url\.searchParams\.get\("mode"\) === "last"/);
+  assert.match(locations, /latestAnyPoint/);
+  assert.match(locations, /u\.status = 'active'/);
+  assert.match(locations, /workSessionStatus === "active"/);
+  assert.match(page, /\/api\/locations\?mode=last/);
+  assert.match(page, /آخرین موقعیت ثبت‌شده/);
+  assert.match(page, /setLastLocations\(current => current\.filter/);
+  assert.match(map, /location\.isLive/);
+  assert.match(map, /آخرین موقعیت؛ زنده نیست/);
+  assert.match(map, /آخرین موقعیت ثبت‌شده/);
 });
 
 test("delivers role-scoped in-app and phone notifications with secure account settings", async () => {

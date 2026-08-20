@@ -64,31 +64,42 @@ export async function GET(request: Request) {
   const db = await ensureDatabase();
   const url = new URL(request.url);
   const requestedUser = url.searchParams.get("userId");
+  const mode = url.searchParams.get("mode") === "last" ? "last" : "live";
   const canViewTeam = ["owner", "admin", "supervisor"].includes(auth.user.role);
   const userId = canViewTeam ? requestedUser : auth.user.id;
   const liveSince = new Date(Date.now() - 2 * 60_000).toISOString();
 
-  const baseSelect = `SELECT lp.id, lp.user_id AS userId, u.full_name AS fullName, lp.work_session_id AS workSessionId, lp.latitude_e6 AS latitudeE6, lp.longitude_e6 AS longitudeE6, lp.accuracy_cm AS accuracyCm, lp.speed_cms AS speedCms, lp.recorded_at AS recordedAt, lp.received_at AS receivedAt FROM location_points lp JOIN users u ON u.id = lp.user_id JOIN work_sessions ws ON ws.id = lp.work_session_id`;
+  const baseSelect = `SELECT lp.id, lp.user_id AS userId, u.full_name AS fullName, lp.work_session_id AS workSessionId, lp.latitude_e6 AS latitudeE6, lp.longitude_e6 AS longitudeE6, lp.accuracy_cm AS accuracyCm, lp.speed_cms AS speedCms, lp.recorded_at AS recordedAt, lp.received_at AS receivedAt, ws.status AS workSessionStatus FROM location_points lp JOIN users u ON u.id = lp.user_id JOIN work_sessions ws ON ws.id = lp.work_session_id`;
   const latestLivePoint = `lp.id = (SELECT latest.id FROM location_points latest JOIN work_sessions latest_ws ON latest_ws.id = latest.work_session_id WHERE latest.user_id = lp.user_id AND latest_ws.status = 'active' AND latest.recorded_at >= ? ORDER BY latest.recorded_at DESC LIMIT 1)`;
+  const latestAnyPoint = `lp.id = (SELECT latest.id FROM location_points latest WHERE latest.user_id = lp.user_id ORDER BY latest.recorded_at DESC, latest.received_at DESC LIMIT 1)`;
   let result;
   if (auth.user.role === "supervisor") {
     if (userId) {
       const allowed = await db.prepare("SELECT id FROM users WHERE id = ? AND (supervisor_id = ? OR id = ?)").bind(userId, auth.user.id, auth.user.id).first();
       if (!allowed) return Response.json({ error: "forbidden" }, { status: 403 });
       result = await db.prepare(`${baseSelect} WHERE lp.user_id = ? ORDER BY lp.recorded_at DESC LIMIT 250`).bind(userId).all<Record<string, number | string | null>>();
+    } else if (mode === "last") {
+      result = await db.prepare(`${baseSelect} WHERE (u.supervisor_id = ? OR u.id = ?) AND u.status = 'active' AND ${latestAnyPoint} ORDER BY lp.recorded_at DESC`).bind(auth.user.id, auth.user.id).all<Record<string, number | string | null>>();
     } else {
       result = await db.prepare(`${baseSelect} WHERE (u.supervisor_id = ? OR u.id = ?) AND u.status = 'active' AND ws.status = 'active' AND lp.recorded_at >= ? AND ${latestLivePoint} ORDER BY lp.recorded_at DESC`).bind(auth.user.id, auth.user.id, liveSince, liveSince).all<Record<string, number | string | null>>();
     }
   } else {
     result = userId
       ? await db.prepare(`${baseSelect} WHERE lp.user_id = ? ORDER BY lp.recorded_at DESC LIMIT 250`).bind(userId).all<Record<string, number | string | null>>()
-      : await db.prepare(`${baseSelect} WHERE u.status = 'active' AND ws.status = 'active' AND lp.recorded_at >= ? AND ${latestLivePoint} ORDER BY lp.recorded_at DESC`).bind(liveSince, liveSince).all<Record<string, number | string | null>>();
+      : mode === "last"
+        ? await db.prepare(`${baseSelect} WHERE u.status = 'active' AND ${latestAnyPoint} ORDER BY lp.recorded_at DESC`).all<Record<string, number | string | null>>()
+        : await db.prepare(`${baseSelect} WHERE u.status = 'active' AND ws.status = 'active' AND lp.recorded_at >= ? AND ${latestLivePoint} ORDER BY lp.recorded_at DESC`).bind(liveSince, liveSince).all<Record<string, number | string | null>>();
   }
 
-  return Response.json({ locations: result.results.map((row) => ({
-    id: row.id, userId: row.userId, fullName: row.fullName, workSessionId: row.workSessionId,
-    latitude: Number(row.latitudeE6) / 1_000_000, longitude: Number(row.longitudeE6) / 1_000_000,
-    accuracy: Number(row.accuracyCm) / 100, speed: row.speedCms == null ? null : Number(row.speedCms) / 100,
-    recordedAt: row.recordedAt, receivedAt: row.receivedAt,
-  })) });
+  const freshnessThreshold = Date.now() - 2 * 60_000;
+  return Response.json({ mode, locations: result.results.map((row) => {
+    const recordedAt = String(row.recordedAt);
+    return {
+      id: row.id, userId: row.userId, fullName: row.fullName, workSessionId: row.workSessionId,
+      latitude: Number(row.latitudeE6) / 1_000_000, longitude: Number(row.longitudeE6) / 1_000_000,
+      accuracy: Number(row.accuracyCm) / 100, speed: row.speedCms == null ? null : Number(row.speedCms) / 100,
+      recordedAt, receivedAt: row.receivedAt, workSessionStatus: row.workSessionStatus,
+      isLive: row.workSessionStatus === "active" && Date.parse(recordedAt) >= freshnessThreshold,
+    };
+  }) });
 }
