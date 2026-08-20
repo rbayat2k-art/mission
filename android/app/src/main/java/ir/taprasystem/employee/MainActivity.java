@@ -26,10 +26,10 @@ import android.widget.Toast;
 import java.util.ArrayList;
 import java.util.List;
 
-import androidx.core.content.ContextCompat;
-
 public class MainActivity extends Activity {
     private static final String APP_URL = "https://taprasystem.ir/";
+    private static final String INTERNAL_BROADCAST_PERMISSION =
+        "ir.taprasystem.employee.permission.INTERNAL_BROADCAST";
     private static final int PERMISSION_REQUEST = 41;
     private static final int FILE_CHOOSER_REQUEST = 42;
 
@@ -183,7 +183,7 @@ public class MainActivity extends Activity {
 
     private void registerTrackingReceiver() {
         IntentFilter filter = new IntentFilter(LocationTrackingService.ACTION_SESSION_ENDED);
-        ContextCompat.registerReceiver(this, trackingReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        registerReceiver(trackingReceiver, filter, INTERNAL_BROADCAST_PERMISSION, null);
         receiverRegistered = true;
     }
 

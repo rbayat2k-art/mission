@@ -45,6 +45,8 @@ public class LocationTrackingService extends Service implements LocationListener
     private static final String BASE_URL = "https://taprasystem.ir";
     private static final String LOCATION_ENDPOINT = BASE_URL + "/api/locations";
     private static final String CHANNEL_ID = "tapra_active_tracking";
+    private static final String INTERNAL_BROADCAST_PERMISSION =
+        "ir.taprasystem.employee.permission.INTERNAL_BROADCAST";
     private static final int NOTIFICATION_ID = 201;
     private static final long UPDATE_INTERVAL_MS = 20_000L;
     private static final float UPDATE_DISTANCE_METERS = 8f;
@@ -295,7 +297,7 @@ public class LocationTrackingService extends Service implements LocationListener
     private void stopTrackingForServerEnd() {
         stopTracking(false);
         Intent intent = new Intent(ACTION_SESSION_ENDED).setPackage(getPackageName());
-        sendBroadcast(intent);
+        sendBroadcast(intent, INTERNAL_BROADCAST_PERMISSION);
     }
 
     private void stopTracking(boolean requestedByUser) {
