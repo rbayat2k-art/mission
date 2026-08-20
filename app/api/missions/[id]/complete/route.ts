@@ -42,18 +42,18 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const now = new Date().toISOString();
   const rawExpenseAmount = Number(body.expenseAmount ?? 0);
   const expenseAmount = Number.isFinite(rawExpenseAmount) ? Math.max(0, Math.round(rawExpenseAmount)) : 0;
-  const needsApproval = mission.source === "employee";
   const needsFollowUp = workResult !== "انجام شد";
   const requestSupervisorAction = needsFollowUp && body.requestSupervisorAction === true;
+  const needsFinalApproval = mission.source === "employee" && !needsFollowUp;
   if (requestSupervisorAction && (!mission.supervisorId || mission.supervisorStatus !== "active")) return Response.json({ error: "برای ارجاع پیگیری، باید یک سرپرست فعال برای کارمند تعیین شده باشد." }, { status: 409 });
-  const status = needsFollowUp ? (needsApproval ? "follow_up_pending" : "follow_up") : needsApproval ? "pending" : "approved";
+  const status = needsFollowUp ? "follow_up" : needsFinalApproval ? "pending" : "approved";
   const baseScore = 12;
   const completedWithoutStart = !mission.startedAt;
   const scorePenalty = completedWithoutStart ? 3 : 0;
   const awardedScore = Math.max(0, baseScore - scorePenalty);
   const scoreNote = completedWithoutStart ? "۳ امتیاز کسر شد؛ شروع کار روی مأموریت ثبت نشده بود." : null;
-  const pendingScore = needsApproval ? awardedScore : 0;
-  const confirmedScore = needsApproval ? 0 : awardedScore;
+  const pendingScore = needsFinalApproval ? awardedScore : 0;
+  const confirmedScore = needsFinalApproval ? 0 : awardedScore;
   const attempt = await db.prepare("SELECT COALESCE(MAX(attempt_no), 0) + 1 AS attemptNo FROM mission_attempts WHERE mission_id = ?")
     .bind(id).first<{ attemptNo: number }>();
   const attemptNo = Number(attempt?.attemptNo ?? 1);
@@ -61,7 +61,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const followUpMessageId = requestSupervisorAction ? crypto.randomUUID() : null;
   const statements = [
     db.prepare("UPDATE missions SET status = ?, destination_name = ?, result = ?, report = ?, expense_amount = ?, score_pending = ?, score_confirmed = ?, score_penalty = ?, score_note = ?, completed_at = ?, end_latitude_e6 = ?, end_longitude_e6 = ?, end_accuracy_cm = ?, end_location_recorded_at = ? WHERE id = ?").bind(status, registeredDestination.destinationName, workResult, body.report.trim(), expenseAmount, pendingScore, confirmedScore, scorePenalty, scoreNote, now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, id),
-    db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.completed', 'mission', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ status, baseScore, awardedScore, scorePenalty, scoreNote, completedWithoutStart, result: workResult, expenseAmount, endLocationRecordedAt, endAccuracy: Math.round(endLocation.accuracy) }), now),
+    db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.completed', 'mission', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ status, baseScore, awardedScore, scorePenalty, scoreNote, completedWithoutStart, result: workResult, expenseAmount, requestSupervisorAction, endLocationRecordedAt, endAccuracy: Math.round(endLocation.accuracy) }), now),
     db.prepare(`INSERT INTO mission_attempts (
       id, mission_id, attempt_no, result, report, destination_name, expense_amount, score_awarded, score_penalty,
       started_at, completed_at, start_latitude_e6, start_longitude_e6, start_accuracy_cm, start_location_recorded_at,
@@ -72,7 +72,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       awardedScore, scorePenalty, mission.startedAt, now, mission.startLatitudeE6, mission.startLongitudeE6,
       mission.startAccuracyCm, mission.startLocationRecordedAt, registeredDestination.latitudeE6,
       registeredDestination.longitudeE6, registeredDestination.accuracyCm, registeredDestination.recordedAt,
-      endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, needsApproval ? "pending" : "not_required", now,
+      endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, needsFinalApproval ? "pending" : "not_required", now,
     ),
   ];
   if (completedWithoutStart && Number(mission.scorePenalty ?? 0) === 0) {
@@ -80,7 +80,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       crypto.randomUUID(), auth.user.id, activeSession?.id ?? null, JSON.stringify({ missionId: id, baseScore, awardedScore, scorePenalty, reason: scoreNote }), now, now,
     ));
   }
-  if (needsApproval) statements.push(db.prepare("INSERT INTO approvals (id, mission_id, status, created_at) VALUES (?, ?, 'pending', ?) ON DUPLICATE KEY UPDATE status = 'pending', reason = NULL, decided_at = NULL").bind(crypto.randomUUID(), id, now));
+  if (needsFinalApproval) statements.push(db.prepare("INSERT INTO approvals (id, mission_id, status, created_at) VALUES (?, ?, 'pending', ?) ON DUPLICATE KEY UPDATE status = 'pending', reason = NULL, decided_at = NULL").bind(crypto.randomUUID(), id, now));
   if (followUpRequestId && followUpMessageId && mission.supervisorId) {
     const category = normalizeFollowUpCategory(body.followUpCategory);
     statements.push(
@@ -91,5 +91,5 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
   await db.batch(statements);
   if (followUpRequestId && mission.supervisorId) await createUserNotification(mission.supervisorId, { type:"follow_up_created", title:"درخواست اقدام جدید", message:`برای مأموریت «${mission.title}» درخواست پیگیری ثبت شد.`, entityType:"follow_up_request", entityId:followUpRequestId, url:"/?panel=admin&screen=actions" });
-  return Response.json({ mission: { id, status, attemptNo, needsFollowUp, followUpRequestId, scorePending: pendingScore, scoreConfirmed: confirmedScore, scorePenalty, scoreNote, completedWithoutStart, endLocation } });
+  return Response.json({ mission: { id, status, attemptNo, needsFollowUp, requestSupervisorAction, followUpRequestId, scorePending: pendingScore, scoreConfirmed: confirmedScore, scorePenalty, scoreNote, completedWithoutStart, endLocation } });
 }

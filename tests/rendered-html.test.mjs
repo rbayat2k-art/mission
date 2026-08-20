@@ -148,7 +148,7 @@ test("makes every mission result selectable and persists the selected value", as
     assert.match(page, new RegExp(result));
     assert.match(completeRoute, new RegExp(result));
   }
-  assert.match(page, /onClick=\{\(\)=>\{setWorkResult\(option\.label\);setWorkReport\(option\.defaultReport\)\}\}/);
+  assert.match(page, /onClick=\{\(\)=>\{setWorkResult\(option\.label\);setWorkReport\(option\.defaultReport\)/);
   assert.match(page, /result: workResult, report: workReport\.trim\(\)/);
   assert.match(page, /aria-pressed=\{workResult === option\.label\}/);
   assert.match(completeRoute, /allowedResults\.includes\(workResult\)/);
@@ -463,7 +463,7 @@ test("captures and audits mission start destination and end points for manager s
   assert.match(map, /markerLabel/);
 });
 
-test("routes every non-success result into a durable follow-up workflow", async () => {
+test("routes every non-success result into follow-up and makes supervisor action optional", async () => {
   const [page, schema, missionsRoute, completeRoute, startRoute, decisionRoute] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../db/mysql-schema.sql", import.meta.url), "utf8"),
@@ -477,11 +477,13 @@ test("routes every non-success result into a durable follow-up workflow", async 
   assert.match(schema, /UNIQUE KEY uq_mission_attempt_no/);
   assert.match(missionsRoute, /attemptCount/);
   assert.match(completeRoute, /const needsFollowUp = workResult !== "انجام شد"/);
-  assert.match(completeRoute, /"follow_up_pending" : "follow_up"/);
+  assert.match(completeRoute, /const requestSupervisorAction = needsFollowUp && body\.requestSupervisorAction === true/);
+  assert.match(completeRoute, /const status = needsFollowUp \? "follow_up"/);
   assert.match(completeRoute, /INSERT INTO mission_attempts/);
   assert.match(startRoute, /"open", "follow_up", "revision"/);
   assert.match(startRoute, /mission\.follow_up_started/);
   assert.match(decisionRoute, /approval\.missionStatus === "follow_up_pending" \? "follow_up"/);
+  assert.match(page, /checked=\{requestSupervisorAction\}/);
   assert.match(page, /label:"پیگیری مجدد"/);
   assert.match(page, /setAdminMissionFilter\(filter\.id\)/);
   assert.match(page, /filteredAdminMissions\.map/);
@@ -680,11 +682,14 @@ test("supports minimal employee escalation and audited mission follow-up convers
   assert.match(schema, /CREATE TABLE IF NOT EXISTS mission_follow_up_requests/);
   assert.match(schema, /CREATE TABLE IF NOT EXISTS mission_follow_up_messages/);
   assert.match(schema, /follow_up_message_id CHAR\(36\) NULL/);
-  assert.match(page, /علت پیگیری/);
-  assert.match(page, /همین توضیح بالا خودکار برای سرپرست ارسال می‌شود/);
+  assert.match(page, /این پیگیری نیاز به اقدام سرپرست دارد/);
+  assert.match(page, /پیش‌فرض خاموش است/);
   assert.doesNotMatch(page, /انتخاب گیرنده پیگیری|انتخاب مدیر برای پیگیری/);
-  assert.match(page, /requestSupervisorAction:workResult !== "انجام شد"/);
+  assert.match(page, /checked=\{requestSupervisorAction\}/);
+  assert.match(page, /requestSupervisorAction:workResult !== "انجام شد" && requestSupervisorAction/);
   assert.match(complete, /u\.supervisor_id AS supervisorId/);
+  assert.match(complete, /const requestSupervisorAction = needsFollowUp && body\.requestSupervisorAction === true/);
+  assert.match(complete, /const status = needsFollowUp \? "follow_up"/);
   assert.match(complete, /INSERT INTO mission_follow_up_requests/);
   assert.match(complete, /createUserNotification\(mission\.supervisorId/);
   assert.match(start, /awaiting_supervisor.*awaiting_employee.*escalated/);
@@ -700,4 +705,32 @@ test("supports minimal employee escalation and audited mission follow-up convers
   assert.match(attachments, /audio\/mpeg/);
   assert.match(attachments, /messageId/);
   assert.match(notifications, /mission_follow_up_requests/);
+});
+
+test("limits concurrent mission starts and allows an audited five minute cancellation", async () => {
+  const [page, start, policy, database, missions] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/missions/[id]/start/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/mission-start-policy.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/server-database.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/missions/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(policy, /MAX_CONCURRENT_MISSIONS = 3/);
+  assert.match(policy, /MISSION_START_CANCEL_WINDOW_MS = 5 \* 60_000/);
+  assert.match(database, /async transaction<T>/);
+  assert.match(start, /SELECT id FROM users WHERE id = \? FOR UPDATE/);
+  assert.match(start, /status = 'in_progress'/);
+  assert.match(start, /activeCount >= MAX_CONCURRENT_MISSIONS/);
+  assert.match(start, /مأموریت در حال انجام دارید/);
+  assert.match(start, /export async function DELETE/);
+  assert.match(start, /missionStartCancellationState\(mission\.startedAt\)/);
+  assert.match(start, /mission\.start_cancelled/);
+  assert.match(start, /پس از ثبت مقصد، انصراف از شروع مأموریت امکان‌پذیر نیست/);
+  assert.match(page, /id:"in_progress",label:"در حال انجام"/);
+  assert.match(page, /status:"in_progress"/);
+  assert.match(page, /activeMissionCount >= MAX_CONCURRENT_MISSIONS/);
+  assert.match(page, /method: "DELETE"/);
+  assert.match(page, /علت انصراف از شروع/);
+  assert.match(missions, /startCancellationCount/);
+  assert.match(missions, /lastStartCancellationReason/);
 });

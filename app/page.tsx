@@ -9,6 +9,7 @@ import NotificationSettings from "./components/NotificationSettings";
 import AppVersionGuard from "./components/AppVersionGuard";
 import PushNotificationBootstrap from "./components/PushNotificationBootstrap";
 import { EmployeeFollowUpPanel, FollowUpActionCenter } from "./components/FollowUpCenter";
+import { MAX_CONCURRENT_MISSIONS, missionStartCancellationState } from "../lib/mission-start-policy";
 
 type EmployeeScreen = "home" | "missions" | "new" | "work" | "report" | "mission-detail" | "end-review" | "profile" | "notifications" | "notification-settings" | "account-settings";
 type AdminScreen = "dashboard" | "live" | "missions" | "actions" | "access" | "approvals" | "integrity" | "reports" | "notifications" | "account";
@@ -49,7 +50,7 @@ function persistNavigation(panel: PanelMode, screen?: EmployeeScreen | AdminScre
   window.history.replaceState(window.history.state, "", url.toString());
 }
 
-type ApiMission = { id: string; title: string; description: string; source: "manager" | "employee"; status: string; priority: string; assignedTo?: string; destinationName?: string | null; result?: string | null; report?: string | null; expenseAmount?: number; deadline?: string | null; scorePending: number; scoreConfirmed: number; scorePenalty?: number; scoreNote?: string | null; startedAt?: string | null; employeeName?: string; completedAt?: string | null; createdAt?: string; attemptCount?: number; followUpRequestStatus?:string|null };
+type ApiMission = { id: string; title: string; description: string; source: "manager" | "employee"; status: string; priority: string; assignedTo?: string; destinationName?: string | null; result?: string | null; report?: string | null; expenseAmount?: number; deadline?: string | null; scorePending: number; scoreConfirmed: number; scorePenalty?: number; scoreNote?: string | null; startedAt?: string | null; employeeName?: string; completedAt?: string | null; createdAt?: string; attemptCount?: number; followUpRequestStatus?:string|null; startCancellationCount?:number; lastStartCancellationReason?:string|null; lastStartCancelledAt?:string|null };
 type ApiUser = { id: string; fullName: string; mobile: string; username: string; role: string; status: string; supervisorId?: string | null; supervisorName?: string | null; lastLoginAt?: string | null };
 type ApiApproval = { id: string; missionId: string; title: string; employeeName: string; result: string; report: string; destinationName: string; expenseAmount: number; scorePending: number };
 type UiMission = Omit<Partial<ApiMission>, "id"> & { id: string | number; title: string; meta: string; type: string; priority: string; status: string; backendStatus?: string };
@@ -228,6 +229,10 @@ function EmployeeApp() {
   const [workResult, setWorkResult] = useState("انجام شد");
   const [workReport, setWorkReport] = useState<string>(workResultOptions[0].defaultReport);
   const [followUpCategory, setFollowUpCategory] = useState("missing_documents");
+  const [requestSupervisorAction, setRequestSupervisorAction] = useState(false);
+  const [cancelStartOpen, setCancelStartOpen] = useState(false);
+  const [cancelStartReason, setCancelStartReason] = useState("");
+  const [cancelStartSaving, setCancelStartSaving] = useState(false);
   const [completionScore, setCompletionScore] = useState(12);
   const [completionPenalty, setCompletionPenalty] = useState(0);
   const [completionScoreNote, setCompletionScoreNote] = useState<string | null>(null);
@@ -283,7 +288,7 @@ function EmployeeApp() {
       type: mission.source === "employee" ? "خودم" : "مدیر",
       priority: mission.priority === "urgent" ? "فوری" : "عادی",
       backendStatus: mission.status,
-      status: ["follow_up", "follow_up_pending"].includes(mission.status) ? "follow_up" : ["approved", "completed", "rejected"].includes(mission.status) ? "done" : ["in_progress", "revision"].includes(mission.status) ? "open" : mission.status,
+      status: ["follow_up", "follow_up_pending"].includes(mission.status) ? "follow_up" : ["approved", "completed", "rejected"].includes(mission.status) ? "done" : mission.status === "revision" ? "open" : mission.status,
     })));
   }, [notify]);
 
@@ -304,10 +309,10 @@ function EmployeeApp() {
   }, [signedIn, loadEmployeeData, notify]);
 
   useEffect(() => {
-    if (!working) return;
+    if (!working && selectedMission.backendStatus !== "in_progress") return;
     const timer = window.setInterval(() => setClockTick(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [working]);
+  }, [working, selectedMission.backendStatus]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -403,6 +408,7 @@ function EmployeeApp() {
     setWorkResult("انجام شد");
     setWorkReport(workResultOptions[0].defaultReport);
     setFollowUpCategory("missing_documents");
+    setRequestSupervisorAction(false);
     setAttachments([]);
     setExpenseEnabled(false);
     setExpenseAmount("");
@@ -440,11 +446,33 @@ function EmployeeApp() {
       const result = mission.backendStatus !== "in_progress"
         ? await api<{mission:{startedAt:string}}> (`/api/missions/${mission.id}/start`, { method:"POST", body:JSON.stringify({location:latestGps}) })
         : null;
-      const startedMission = { ...mission, backendStatus:"in_progress", status:"open", startedAt: result?.mission.startedAt ?? mission.startedAt ?? new Date().toISOString(), completedAt:null };
+      const startedMission = { ...mission, backendStatus:"in_progress", status:"in_progress", startedAt: result?.mission.startedAt ?? mission.startedAt ?? new Date().toISOString(), completedAt:null };
       setMissions(current => current.map(item => item.id === mission.id ? startedMission : item));
       prepareMissionWork(startedMission);
       notify(mission.backendStatus === "in_progress" ? "ادامه مأموریت" : "مأموریت شروع شد و ویرایش آن قفل شد");
     } catch (error) { notify(error instanceof Error ? error.message : "شروع مأموریت ناموفق بود"); }
+  };
+
+  const cancelMissionStart = async () => {
+    if (!selectedMission.id || selectedMission.backendStatus !== "in_progress") return;
+    if (cancelStartReason.trim().length < 3) return notify("علت انصراف از شروع را بنویسید");
+    const cancellation = missionStartCancellationState(selectedMission.startedAt);
+    if (!cancellation.allowed) return notify("مهلت ۵ دقیقه‌ای انصراف از شروع تمام شده است");
+    setCancelStartSaving(true);
+    try {
+      const result = await api<{ mission: { status: string; startedAt: null } }>(`/api/missions/${selectedMission.id}/start`, {
+        method: "DELETE",
+        body: JSON.stringify({ reason: cancelStartReason.trim() }),
+      });
+      const restoredTab = result.mission.status === "follow_up" ? "follow_up" : "open";
+      setCancelStartOpen(false);
+      setCancelStartReason("");
+      setMissionTab(restoredTab);
+      setScreen("missions");
+      await loadEmployeeData();
+      notify("شروع مأموریت لغو شد؛ دلیل آن در سابقه مدیریتی ثبت گردید");
+    } catch (error) { notify(error instanceof Error ? error.message : "انصراف از شروع مأموریت ناموفق بود"); }
+    finally { setCancelStartSaving(false); }
   };
 
   const reportMissionWithoutStart = (mission: UiMission) => {
@@ -460,7 +488,7 @@ function EmployeeApp() {
     if (!latestGps || Date.now() - Date.parse(latestGps.recordedAt) > 2 * 60_000) return notify("برای ثبت نقطه پایان، منتظر موقعیت تازه GPS بمانید و دوباره بزنید");
     try {
       const predictedPenalty = selectedMission.startedAt || selectedMission.backendStatus === "in_progress" ? 0 : 3;
-      const result = await sendJsonOrQueue<{mission:{status:string;needsFollowUp:boolean;followUpRequestId?:string|null;scorePending:number;scoreConfirmed:number;scorePenalty:number;scoreNote:string|null;completedWithoutStart:boolean}}>(`/api/missions/${selectedMission.id}/complete`, "POST", { destinationName: destinationName.trim() || selectedMission.destinationName || "مقصد ثبت‌شده", result: workResult, report: workReport.trim(), expenseAmount: expenseEnabled ? parseExpenseAmount(expenseAmount) : 0, endLocation:latestGps, requestSupervisorAction:workResult !== "انجام شد", followUpCategory });
+      const result = await sendJsonOrQueue<{mission:{status:string;needsFollowUp:boolean;requestSupervisorAction:boolean;followUpRequestId?:string|null;scorePending:number;scoreConfirmed:number;scorePenalty:number;scoreNote:string|null;completedWithoutStart:boolean}}>(`/api/missions/${selectedMission.id}/complete`, "POST", { destinationName: destinationName.trim() || selectedMission.destinationName || "مقصد ثبت‌شده", result: workResult, report: workReport.trim(), expenseAmount: expenseEnabled ? parseExpenseAmount(expenseAmount) : 0, endLocation:latestGps, requestSupervisorAction:workResult !== "انجام شد" && requestSupervisorAction, followUpCategory });
       const penalty = Number(result.data?.mission.scorePenalty ?? predictedPenalty);
       const score = Number(result.data?.mission.scorePending || result.data?.mission.scoreConfirmed || Math.max(0, 12 - penalty));
       const scoreNote = result.data?.mission.scoreNote ?? (penalty ? "۳ امتیاز کسر شد؛ شروع کار روی مأموریت ثبت نشده بود." : null);
@@ -527,6 +555,8 @@ function EmployeeApp() {
 
   const openMissionDetail = (mission: UiMission | ApiMission, returnScreen: "missions" | "report" = "missions") => {
     setSelectedMission(mission as UiMission);
+    setCancelStartOpen(false);
+    setCancelStartReason("");
     setDetailReturnScreen(returnScreen);
     setScreen("mission-detail");
   };
@@ -636,6 +666,10 @@ function EmployeeApp() {
     } catch (error) { setLoginError(error instanceof Error ? error.message : "تغییر رمز ناموفق بود"); }
   };
 
+  const activeMissionCount = missions.filter(mission => mission.backendStatus === "in_progress").length;
+  const selectedStartCancellation = missionStartCancellationState(selectedMission.startedAt, clockTick);
+  const cancellationRemainingSeconds = Math.ceil(selectedStartCancellation.remainingMs / 1000);
+
   if (!signedIn) {
     return (
       <main className="employee-stage login-stage" dir="rtl">
@@ -724,16 +758,18 @@ function EmployeeApp() {
           {screen === "missions" && (
             <>
               <div className="mission-tabs">
-                {[{id:"open",label:"باز"},{id:"follow_up",label:"پیگیری مجدد"},{id:"pending",label:"منتظر تأیید"},{id:"done",label:"انجام‌شده"}].map(t => <button key={t.id} className={missionTab === t.id ? "active" : ""} onClick={() => setMissionTab(t.id)}>{t.label}<span>{missions.filter(m=>m.status===t.id).length}</span></button>)}
+                {[{id:"open",label:"باز"},{id:"in_progress",label:"در حال انجام"},{id:"follow_up",label:"پیگیری مجدد"},{id:"pending",label:"منتظر تأیید"},{id:"done",label:"انجام‌شده"}].map(t => <button key={t.id} className={missionTab === t.id ? "active" : ""} onClick={() => setMissionTab(t.id)}>{t.label}<span>{missions.filter(m=>m.status===t.id).length}</span></button>)}
               </div>
+              <div className={`active-mission-capacity ${activeMissionCount >= MAX_CONCURRENT_MISSIONS ? "full" : ""}`}><Icon>▣</Icon><span><b>{activeMissionCount.toLocaleString("fa-IR")} از {MAX_CONCURRENT_MISSIONS.toLocaleString("fa-IR")} مأموریت هم‌زمان</b><small>{activeMissionCount >= MAX_CONCURRENT_MISSIONS ? "برای شروع مأموریت جدید، ابتدا یکی از کارهای در حال انجام را تعیین‌تکلیف کنید." : "می‌توانید مأموریت دیگری را نیز شروع کنید."}</small></span></div>
               <div className="mission-list">
                 {missions.filter(m => m.status === missionTab).map(m => (
                   <div className="mission-list-card" role="button" key={m.id} onClick={() => openMissionDetail(m)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openMissionDetail(m); } }} tabIndex={0}>
                     <div className="list-card-top"><span className={m.priority === "فوری" ? "priority" : "normal"}>{m.priority}</span><span className="source">{m.type === "خودم" ? "ایجادشده توسط من" : "توسط مدیر"}</span></div>
-                    <h3>{m.title}</h3><p><Icon>◷</Icon>{m.meta}{Number(m.attemptCount ?? 0) > 0 ? ` · مراجعه ${Number(m.attemptCount).toLocaleString("fa-IR")}` : ""}</p>{["open","follow_up"].includes(m.status) && <small className="mission-description-preview">{m.description?.trim() || "برای دیدن شرح کامل این مأموریت روی کارت بزنید."}</small>}
+                    <h3>{m.title}</h3><p><Icon>◷</Icon>{m.meta}{Number(m.attemptCount ?? 0) > 0 ? ` · مراجعه ${Number(m.attemptCount).toLocaleString("fa-IR")}` : ""}</p>{["open","in_progress","follow_up"].includes(m.status) && <small className="mission-description-preview">{m.description?.trim() || "برای دیدن شرح کامل این مأموریت روی کارت بزنید."}</small>}
                     {m.status === "pending" ? <div className="approval-strip"><Icon>◌</Icon><span><b>{m.result ?? "در انتظار بررسی سرپرست"}</b><small>مشاهده گزارش ثبت‌شده ←</small></span></div> : m.status === "follow_up" ? <div className="follow-up-strip"><Icon>↻</Icon><span><b>{m.result ?? "نیازمند مراجعه و پیگیری دوباره"}</b><small>{m.backendStatus === "follow_up_pending" ? "گزارش قبلی در انتظار بررسی سرپرست است" : "مشاهده سابقه و شروع پیگیری بعدی ←"}</small></span></div> : m.status === "done" ? <div className={`done-strip ${m.result && m.result !== "انجام شد" ? "not-completed" : ""}`}>{m.result === "انجام شد" ? "✓" : "◷"} {m.result ?? "گزارش ثبت‌شده"} <b>مشاهده جزئیات ←</b></div> : <button className="card-arrow" aria-label="مشاهده شرح وظیفه">{m.backendStatus === "in_progress" ? "مشاهده و ادامه" : "مشاهده شرح وظیفه"} ←</button>}
                   </div>
                 ))}
+                {!missions.some(m => m.status === missionTab) && <div className="mission-tab-empty"><Icon>▣</Icon><b>مأموریتی در این بخش نیست</b><small>با تغییر وضعیت هر مأموریت، خودکار به بخش درست منتقل می‌شود.</small></div>}
               </div>
               <button className="fab" onClick={() => setScreen("new")}><Icon>＋</Icon> ثبت مأموریت جدید</button>
             </>
@@ -767,9 +803,9 @@ function EmployeeApp() {
               </section>}
               {workStep === 1 && <section className="flow-panel">
                 <span className="flow-icon">✓</span><h2>نتیجه کار چه بود؟</h2><p>یکی از گزینه‌ها را برای ثبت گزارش انتخاب کنید.</p>
-                <div className="result-grid">{workResultOptions.map((option) => <button type="button" aria-pressed={workResult === option.label} className={workResult === option.label ? "selected" : ""} key={option.label} onClick={()=>{setWorkResult(option.label);setWorkReport(option.defaultReport)}}><Icon>{option.icon}</Icon>{option.label}</button>)}</div>
+                <div className="result-grid">{workResultOptions.map((option) => <button type="button" aria-pressed={workResult === option.label} className={workResult === option.label ? "selected" : ""} key={option.label} onClick={()=>{setWorkResult(option.label);setWorkReport(option.defaultReport);if(option.label === "انجام شد")setRequestSupervisorAction(false)}}><Icon>{option.icon}</Icon>{option.label}</button>)}</div>
                 <label>توضیح نتیجه <b>*</b><textarea value={workReport} onChange={event=>setWorkReport(event.target.value)} placeholder={workResult === "سایر" ? "نتیجه کار را کامل توضیح دهید..." : "جزئیات نتیجه را بنویسید..."} required /></label>
-                {workResult !== "انجام شد" && <div className="compact-follow-up-field"><label htmlFor="follow-up-category"><b>علت پیگیری</b><small>همین توضیح بالا خودکار برای سرپرست ارسال می‌شود.</small></label><select id="follow-up-category" value={followUpCategory} onChange={event=>setFollowUpCategory(event.target.value)}><option value="missing_documents">کسری مدارک</option><option value="coordination">تأیید یا هماهنگی</option><option value="payment">پرداخت</option><option value="administrative">اقدام اداری</option><option value="other">سایر</option></select></div>}
+                {workResult !== "انجام شد" && <><div className="toggle-label supervisor-action-toggle"><span><b>این پیگیری نیاز به اقدام سرپرست دارد</b><small>پیش‌فرض خاموش است؛ اگر خودتان باید دوباره مراجعه کنید، فعالش نکنید.</small></span><input aria-label="ارجاع پیگیری به سرپرست" type="checkbox" checked={requestSupervisorAction} onChange={event=>setRequestSupervisorAction(event.target.checked)} /></div>{requestSupervisorAction && <div className="compact-follow-up-field"><label htmlFor="follow-up-category"><b>نوع اقدام سرپرست</b><small>توضیحات نتیجه و مدارک این مأموریت برای سرپرست ارسال می‌شود.</small></label><select id="follow-up-category" value={followUpCategory} onChange={event=>setFollowUpCategory(event.target.value)}><option value="missing_documents">آماده‌کردن یا تکمیل مدارک</option><option value="coordination">تأیید یا هماهنگی</option><option value="payment">پرداخت</option><option value="administrative">اقدام اداری</option><option value="other">سایر</option></select></div>}</>}
                 <button className="primary-wide" onClick={() => workReport.trim() ? setWorkStep(2) : notify("توضیح نتیجه را وارد کنید")}>ادامه</button>
               </section>}
               {workStep === 2 && <section className="flow-panel">
@@ -781,12 +817,12 @@ function EmployeeApp() {
                 <button className="primary-wide" onClick={() => expenseEnabled && parseExpenseAmount(expenseAmount) <= 0 ? notify("مبلغ هزینه را وارد کنید") : setWorkStep(3)}>مرور نهایی</button>
               </section>}
               {workStep === 3 && <section className="flow-panel review-panel">
-                <span className="flow-icon">◈</span><h2>مرور و ارسال گزارش</h2><p>اطلاعات زیر برای سرپرست ارسال خواهد شد.</p>
-                <div className="review-card"><span>مأموریت</span><b>{selectedMission?.title}</b><span>مقصد</span><b>{selectedMission?.destinationName ?? "مقصد ثبت‌شده"}</b><span>نتیجه</span><b className={workResult === "انجام شد" ? "green" : "amber"}>{workResult === "انجام شد" ? "✓" : "◷"} {workResult}</b><span>توضیحات</span><b>{workReport}</b><span>مدارک</span><b>{attachments.length ? `${attachments.length.toLocaleString("fa-IR")} فایل` : "بدون فایل"}</b>{expenseEnabled && <><span>هزینه انجام‌شده</span><b>{parseExpenseAmount(expenseAmount).toLocaleString("fa-IR")} تومان</b></>}</div>
-                <div className="pending-callout"><Icon>◷</Icon><p><b>امتیاز در وضعیت Pending می‌ماند</b><small>پس از تأیید سرپرست، امتیاز قطعی خواهد شد.</small></p></div>
-                <button className="primary-wide" onClick={finishWork}>پایان مأموریت و ارسال</button>
+                <span className="flow-icon">◈</span><h2>مرور و ارسال گزارش</h2><p>{requestSupervisorAction ? "این پیگیری برای اقدام سرپرست ارسال می‌شود." : workResult !== "انجام شد" ? "این مأموریت برای پیگیری بعدی خودتان ذخیره می‌شود." : "گزارش نهایی مأموریت ثبت می‌شود."}</p>
+                <div className="review-card"><span>مأموریت</span><b>{selectedMission?.title}</b><span>مقصد</span><b>{selectedMission?.destinationName ?? "مقصد ثبت‌شده"}</b><span>نتیجه</span><b className={workResult === "انجام شد" ? "green" : "amber"}>{workResult === "انجام شد" ? "✓" : "◷"} {workResult}</b><span>توضیحات</span><b>{workReport}</b>{workResult !== "انجام شد" && <><span>مسئول اقدام بعدی</span><b>{requestSupervisorAction ? "سرپرست" : "خودم"}</b></>}<span>مدارک</span><b>{attachments.length ? `${attachments.length.toLocaleString("fa-IR")} فایل` : "بدون فایل"}</b>{expenseEnabled && <><span>هزینه انجام‌شده</span><b>{parseExpenseAmount(expenseAmount).toLocaleString("fa-IR")} تومان</b></>}</div>
+                {requestSupervisorAction ? <div className="pending-callout"><Icon>◷</Icon><p><b>در انتظار اقدام سرپرست</b><small>بعد از اقدام و ارجاع مجدد سرپرست، مأموریت برای شما فعال می‌شود.</small></p></div> : workResult === "انجام شد" && (selectedMission.source === "employee" || selectedMission.type === "خودم") ? <div className="pending-callout"><Icon>◷</Icon><p><b>امتیاز در وضعیت Pending می‌ماند</b><small>پس از تأیید گزارش نهایی توسط سرپرست، امتیاز قطعی خواهد شد.</small></p></div> : null}
+                <button className="primary-wide" onClick={finishWork}>{requestSupervisorAction ? "پایان مراجعه و ارجاع به سرپرست" : "پایان مأموریت و ثبت گزارش"}</button>
               </section>}
-              {workStep === 4 && <section className="success-panel"><span>{completionPenalty ? "!" : workResult !== "انجام شد" ? "↻" : "✓"}</span><h2>{workResult !== "انجام شد" ? "گزارش ثبت و پیگیری بعدی ساخته شد" : "گزارش با موفقیت ارسال شد"}</h2><p>{completionPenalty ? completionScoreNote : workResult !== "انجام شد" ? selectedMission.source === "employee" || selectedMission.type === "خودم" ? "این مأموریت در پیگیری مجدد است؛ پس از بررسی گزارش فعلی توسط سرپرست، مراجعه بعدی را شروع کنید." : "این مأموریت مختومه نشده و برای مراجعه یا پیگیری بعدی دوباره وارد روال کار شد." : selectedMission.source === "employee" || selectedMission.type === "خودم" ? "سرپرست گزارش را بررسی می‌کند. تا آن زمان امتیاز این مأموریت در انتظار است." : "مأموریت انجام شد و امتیاز آن قطعی است."}</p><div className={completionPenalty ? "score-with-penalty" : ""}><b>+{completionScore.toLocaleString("fa-IR")}</b><small>{completionPenalty ? `امتیاز نهایی · ${completionPenalty.toLocaleString("fa-IR")} امتیاز کسر شد` : selectedMission.source === "employee" || selectedMission.type === "خودم" ? "امتیاز Pending" : "امتیاز ثبت‌شده"}</small></div><button className="primary-wide" onClick={() => {setScreen("missions"); setMissionTab(workResult !== "انجام شد" ? "follow_up" : selectedMission.source === "employee" || selectedMission.type === "خودم" ? "pending" : "done");}}>مشاهده وضعیت مأموریت</button></section>}
+              {workStep === 4 && <section className="success-panel"><span>{completionPenalty ? "!" : workResult !== "انجام شد" ? "↻" : "✓"}</span><h2>{requestSupervisorAction ? "درخواست برای سرپرست ارسال شد" : workResult !== "انجام شد" ? "گزارش ثبت و پیگیری بعدی ساخته شد" : "گزارش با موفقیت ارسال شد"}</h2><p>{completionPenalty ? completionScoreNote : requestSupervisorAction ? "سرپرست اقدام لازم را انجام می‌دهد و سپس مأموریت را دوباره به شما ارجاع می‌دهد." : workResult !== "انجام شد" ? "این مأموریت در بخش پیگیری مجدد شما قرار گرفت و برای شروع مراجعه بعدی آماده است." : selectedMission.source === "employee" || selectedMission.type === "خودم" ? "سرپرست گزارش نهایی را بررسی می‌کند. تا آن زمان امتیاز این مأموریت در انتظار است." : "مأموریت انجام شد و امتیاز آن قطعی است."}</p><div className={completionPenalty ? "score-with-penalty" : ""}><b>+{completionScore.toLocaleString("fa-IR")}</b><small>{completionPenalty ? `امتیاز نهایی · ${completionPenalty.toLocaleString("fa-IR")} امتیاز کسر شد` : workResult === "انجام شد" && (selectedMission.source === "employee" || selectedMission.type === "خودم") ? "امتیاز Pending" : "امتیاز ثبت‌شده"}</small></div><button className="primary-wide" onClick={() => {setScreen("missions"); setMissionTab(workResult !== "انجام شد" ? "follow_up" : selectedMission.source === "employee" || selectedMission.type === "خودم" ? "pending" : "done");}}>مشاهده وضعیت مأموریت</button></section>}
             </div>
           )}
 
@@ -802,9 +838,17 @@ function EmployeeApp() {
             <div className="mission-detail-hero"><span className={selectedMission.result === "انجام شد" ? "success" : "warning"}>{selectedMission.result === "انجام شد" ? "✓" : selectedMission.result ? "◷" : "▣"}</span><div><small>{selectedMission.type === "خودم" || selectedMission.source === "employee" ? "مأموریت خودساخته" : "مأموریت مدیر"}</small><h2>{selectedMission.title}</h2><p>{selectedMission.status === "follow_up" ? `نتیجه مراجعه قبلی: ${selectedMission.result ?? "نیازمند پیگیری"}` : selectedMission.completedAt ? `ثبت نتیجه در ${formatPersianDateTime(selectedMission.completedAt)}` : selectedMission.backendStatus === "in_progress" ? "شروع کار ثبت شده و مأموریت در حال انجام است" : "شرح وظیفه را بخوانید و سپس روش ادامه را انتخاب کنید"}</p></div></div>
             {(!selectedMission.completedAt || selectedMission.status === "follow_up") && <section className="mission-task-description"><span>شرح وظیفه</span><p>{selectedMission.description?.trim() || "برای این مأموریت توضیح جداگانه‌ای ثبت نشده است؛ در صورت ابهام با مدیر یا سرپرست هماهنگ کنید."}</p><div><small>تاریخ ثبت</small><b>{formatPersianDateTime(selectedMission.createdAt)}</b><small>مهلت</small><b>{selectedMission.deadline ?? "بدون مهلت"}</b><small>اولویت</small><b>{selectedMission.priority ?? "عادی"}</b>{Number(selectedMission.attemptCount ?? 0) > 0 && <><small>تعداد مراجعات ثبت‌شده</small><b>{Number(selectedMission.attemptCount).toLocaleString("fa-IR")}</b></>}</div></section>}
             <div className="mission-detail-card"><span>نتیجه آخرین مراجعه</span><b className={selectedMission.result === "انجام شد" ? "green" : "amber"}>{selectedMission.result ?? "هنوز نتیجه‌ای ثبت نشده"}</b><span>گزارش من</span><b>{selectedMission.report ?? "هنوز گزارشی ثبت نشده است."}</b><span>مقصد</span><b>{selectedMission.destinationName ?? "مقصد ثبت نشده"}</b>{Number(selectedMission.expenseAmount ?? 0) > 0 && <><span>هزینه انجام‌شده</span><b>{Number(selectedMission.expenseAmount).toLocaleString("fa-IR")} تومان</b></>}{Number(selectedMission.scorePenalty ?? 0) > 0 && <><span>کسر امتیاز</span><b className="score-penalty">−{Number(selectedMission.scorePenalty).toLocaleString("fa-IR")} · {selectedMission.scoreNote}</b></>}<span>وضعیت</span><b>{selectedMission.backendStatus === "follow_up_pending" ? "پیگیری مجدد · منتظر بررسی گزارش قبلی" : selectedMission.backendStatus === "follow_up" ? "آماده پیگیری مجدد" : selectedMission.backendStatus === "pending" || selectedMission.status === "pending" ? "در انتظار تأیید سرپرست" : selectedMission.backendStatus === "rejected" ? "ردشده" : selectedMission.backendStatus === "revision" ? "نیازمند اصلاح" : selectedMission.backendStatus === "in_progress" ? "در حال انجام" : selectedMission.completedAt ? "ثبت و تکمیل‌شده" : "باز"}</b></div>
-            {selectedMission.id && selectedMission.result && selectedMission.result !== "انجام شد" && <EmployeeFollowUpPanel missionId={String(selectedMission.id)} onMessage={notify}/>}
+            {selectedMission.id && selectedMission.followUpRequestStatus && selectedMission.result && selectedMission.result !== "انجام شد" && <EmployeeFollowUpPanel missionId={String(selectedMission.id)} onMessage={notify}/>}
             {!["awaiting_supervisor","awaiting_employee","escalated"].includes(selectedMission.followUpRequestStatus??"") && <>
-            {["open","follow_up"].includes(selectedMission.status) && selectedMission.backendStatus !== "follow_up_pending" && <section className="mission-detail-actions">{!working && <div className="mission-start-lock"><Icon>▣</Icon><span><b>فعالیت روزانه شروع نشده است</b><small>برای شروع یا پایان این مأموریت ابتدا از خانه «شروع فعالیت» را بزنید.</small></span></div>}<button className="primary-wide" disabled={!working} onClick={()=>startMission(selectedMission)}>{selectedMission.backendStatus === "in_progress" ? "ادامه کار روی این مأموریت" : selectedMission.backendStatus === "follow_up" ? "شروع پیگیری مجدد این مأموریت" : "شروع کار روی این مأموریت"}</button><button className="mission-report-direct" disabled={!working} onClick={()=>reportMissionWithoutStart(selectedMission)}>{selectedMission.backendStatus === "in_progress" ? "ثبت مقصد و نتیجه کار" : selectedMission.backendStatus === "follow_up" ? "ثبت نتیجه پیگیری بدون زدن شروع کار" : "ثبت مقصد بدون زدن شروع کار"}</button>{selectedMission.backendStatus !== "in_progress" && <small className="direct-score-note">در صورت پایان مأموریت از این مسیر، ۳ امتیاز کسر و دلیل آن در گزارش شما ثبت می‌شود.</small>}<button className="choose-another-mission" onClick={()=>{setMissionTab(selectedMission.status === "follow_up" ? "follow_up" : "open");setScreen("missions")}}>انتخاب مأموریت دیگر از فهرست</button></section>}
+            {["open","in_progress","follow_up"].includes(selectedMission.status) && selectedMission.backendStatus !== "follow_up_pending" && <section className="mission-detail-actions">
+              {!working && <div className="mission-start-lock"><Icon>▣</Icon><span><b>فعالیت روزانه شروع نشده است</b><small>برای شروع یا پایان این مأموریت ابتدا از خانه «شروع فعالیت» را بزنید.</small></span></div>}
+              {selectedMission.backendStatus !== "in_progress" && activeMissionCount >= MAX_CONCURRENT_MISSIONS && <div className="mission-start-lock capacity-lock"><Icon>۳</Icon><span><b>ظرفیت مأموریت‌های هم‌زمان تکمیل است</b><small>ابتدا یکی از سه مأموریت در حال انجام را تعیین‌تکلیف کنید.</small></span></div>}
+              <button className="primary-wide" disabled={!working || (selectedMission.backendStatus !== "in_progress" && activeMissionCount >= MAX_CONCURRENT_MISSIONS)} onClick={()=>startMission(selectedMission)}>{selectedMission.backendStatus === "in_progress" ? "ادامه کار روی این مأموریت" : selectedMission.backendStatus === "follow_up" ? "شروع پیگیری مجدد این مأموریت" : "شروع کار روی این مأموریت"}</button>
+              <button className="mission-report-direct" disabled={!working} onClick={()=>reportMissionWithoutStart(selectedMission)}>{selectedMission.backendStatus === "in_progress" ? "ثبت مقصد و نتیجه کار" : selectedMission.backendStatus === "follow_up" ? "ثبت نتیجه پیگیری بدون زدن شروع کار" : "ثبت مقصد بدون زدن شروع کار"}</button>
+              {selectedMission.backendStatus !== "in_progress" && <small className="direct-score-note">در صورت پایان مأموریت از این مسیر، ۳ امتیاز کسر و دلیل آن در گزارش شما ثبت می‌شود.</small>}
+              {selectedMission.backendStatus === "in_progress" && <div className="mission-cancel-start">{selectedStartCancellation.allowed ? cancelStartOpen ? <div className="mission-cancel-form"><label>علت انصراف از شروع <b>*</b><textarea value={cancelStartReason} onChange={event=>setCancelStartReason(event.target.value)} maxLength={500} placeholder="مثلاً: این مأموریت را اشتباهی انتخاب کردم..." /></label><small>این دلیل همراه زمان شروع و انصراف در سابقه مدیریتی ثبت می‌شود.</small><div><button type="button" onClick={()=>{setCancelStartOpen(false);setCancelStartReason("")}} disabled={cancelStartSaving}>بازگشت</button><button type="button" onClick={cancelMissionStart} disabled={cancelStartSaving || cancelStartReason.trim().length < 3}>{cancelStartSaving ? "در حال ثبت..." : "تأیید انصراف"}</button></div></div> : <button type="button" onClick={()=>setCancelStartOpen(true)}>انصراف از شروع · {Math.floor(cancellationRemainingSeconds / 60).toLocaleString("fa-IR")}:{(cancellationRemainingSeconds % 60).toLocaleString("fa-IR",{minimumIntegerDigits:2,useGrouping:false})} باقی‌مانده</button> : <small className="mission-cancel-expired">مهلت ۵ دقیقه‌ای انصراف از شروع پایان یافته است.</small>}</div>}
+              <button className="choose-another-mission" onClick={()=>{setMissionTab(selectedMission.backendStatus === "in_progress" ? "in_progress" : selectedMission.status === "follow_up" ? "follow_up" : "open");setScreen("missions")}}>انتخاب مأموریت دیگر از فهرست</button>
+            </section>}
             </>}
             {selectedMission.backendStatus === "follow_up_pending" && <div className="pending-callout"><Icon>◷</Icon><p><b>پیگیری بعدی بعد از بررسی سرپرست فعال می‌شود</b><small>سابقه این مراجعه حفظ شده و با تأیید گزارش، دکمه شروع پیگیری مجدد نمایش داده می‌شود.</small></p></div>}
             {["awaiting_supervisor","awaiting_employee","escalated"].includes(selectedMission.followUpRequestStatus??"") && <div className="pending-callout"><Icon>↻</Icon><p><b>این مأموریت هنوز در حال بررسی است</b><small>بعد از اقدام سرپرست، شروع پیگیری مجدد برای شما فعال می‌شود.</small></p></div>}
@@ -825,7 +869,7 @@ function EmployeeApp() {
 
         <nav className="bottom-nav" aria-label="ناوبری اپ">
           <button className={screen === "home" ? "active" : ""} onClick={() => setScreen("home")}><Icon>⌂</Icon><span>خانه</span></button>
-          <button className={screen === "missions" || screen === "work" || screen === "new" || screen === "mission-detail" ? "active" : ""} onClick={() => setScreen("missions")}><Icon>▣</Icon><span>مأموریت‌ها</span><i>{missions.filter(m=>["open","follow_up"].includes(m.status)).length.toLocaleString("fa-IR")}</i></button>
+          <button className={screen === "missions" || screen === "work" || screen === "new" || screen === "mission-detail" ? "active" : ""} onClick={() => setScreen("missions")}><Icon>▣</Icon><span>مأموریت‌ها</span><i>{missions.filter(m=>["open","in_progress","follow_up"].includes(m.status)).length.toLocaleString("fa-IR")}</i></button>
           <button onClick={() => setScreen("new")} className="nav-add" aria-label="مأموریت جدید"><Icon>＋</Icon></button>
           <button className={screen === "report" || screen === "end-review" ? "active" : ""} onClick={openMyReport}><Icon>▤</Icon><span>گزارش من</span></button>
           <button className={["profile","notification-settings","account-settings"].includes(screen) ? "active" : ""} onClick={() => setScreen("profile")}><Icon>♙</Icon><span>حساب</span></button>
@@ -1235,7 +1279,7 @@ function AdminPanel() {
           <aside className="person-detail"><div className="detail-head"><span className="avatar large blue">{selectedLocation?.fullName.slice(0,2) ?? "—"}</span><div><h2>{selectedLocation?.fullName ?? "بدون موقعیت زنده"}</h2><p><i/> {selectedLocation ? `آخرین ثبت ${new Date(selectedLocation.recordedAt).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"})}` : "منتظر دریافت GPS"}</p></div><button>×</button></div><div className="detail-metrics"><span><small>دقت GPS</small><b>{selectedLocation ? `${Math.round(selectedLocation.accuracy).toLocaleString("fa-IR")} متر` : "—"}</b></span><span><small>سرعت ثبت‌شده</small><b>{selectedLocation?.speed == null ? "—" : `${Math.round(selectedLocation.speed*3.6).toLocaleString("fa-IR")} km/h`}</b></span></div><div className="current-mission"><small>موقعیت فعلی</small><h3>{selectedLocation ? `${selectedLocation.latitude.toFixed(5)}, ${selectedLocation.longitude.toFixed(5)}` : "هنوز ثبت نشده"}</h3><p>اطلاعات مستقیماً از GPS گوشی کارمند دریافت می‌شود</p><span>{selectedLocation ? "زنده" : "بدون داده"}</span></div><h3 className="timeline-title">خط زمانی موقعیت</h3><div className="timeline"><div className="green"><time>{selectedLocation ? new Date(selectedLocation.recordedAt).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"}) : "—"}</time><span><b>آخرین موقعیت GPS</b><small>{selectedLocation ? `دقت ${Math.round(selectedLocation.accuracy).toLocaleString("fa-IR")} متر` : "در انتظار ثبت از گوشی"}</small></span></div><div className="blue"><time>—</time><span><b>همگام‌سازی امن</b><small>نقاط آفلاین پس از اتصال به ترتیب ارسال می‌شوند</small></span></div></div><button className="outline-wide" onClick={()=>loadAdminData("live").catch(error=>notify(error.message))}>به‌روزرسانی اطلاعات</button></aside>
         </div>}
 
-        {screen === "missions" && <section className="panel table-panel"><div className="table-toolbar"><div className="filter-tabs">{adminMissionFilters.map(filter=><button key={filter.id} className={adminMissionFilter===filter.id?"active":""} onClick={()=>setAdminMissionFilter(filter.id)}>{filter.label} <span>{adminMissions.filter(mission=>missionMatchesFilter(mission,filter.id)).length.toLocaleString("fa-IR")}</span></button>)}</div><button onClick={()=>openMissionForm()}>＋ تخصیص مأموریت</button></div>{filteredAdminMissions.length ? <table><thead><tr><th>مأموریت</th><th>مسئول</th><th>ایجادکننده</th><th>تاریخ و ساعت ثبت</th><th>مهلت</th><th>وضعیت</th><th>امتیاز</th><th>عملیات</th></tr></thead><tbody>{filteredAdminMissions.map((m)=><tr key={m.id} className={m.completedAt ? "clickable-mission-row" : ""} onClick={()=>m.completedAt&&openMissionTrace(m)}><td><b>{m.title}</b><small>{m.destinationName || m.description || "مقصد هنگام انجام ثبت می‌شود"}{Number(m.attemptCount ?? 0)>0?` · ${Number(m.attemptCount).toLocaleString("fa-IR")} مراجعه`:""}</small></td><td><span className="mini-user blue">{m.employeeName?.slice(0,2) ?? "—"}</span>{m.employeeName ?? "کاربر"}</td><td>{m.source === "employee" ? "کارمند" : adminRole === "supervisor" ? "سرپرست" : "مدیر"}</td><td className="mission-created-at"><b>{formatPersianDateTime(m.createdAt)}</b><small>ثبت خودکار سرور</small></td><td>{m.deadline || "بدون مهلت"}</td><td><span className={`status ${m.status === "open" || m.status === "revision" ? "open" : m.status === "in_progress" ? "running" : ["pending","pending_approval"].includes(m.status) ? "pending" : ["follow_up","follow_up_pending"].includes(m.status) ? "follow-up" : "done"}`}>{m.status === "open" ? "باز" : m.status === "in_progress" ? "در حال انجام" : ["pending","pending_approval"].includes(m.status) ? "منتظر تأیید" : m.status === "follow_up_pending" ? "پیگیری مجدد · منتظر بررسی" : m.status === "follow_up" ? "پیگیری مجدد" : m.status === "approved" ? "انجام‌شده" : m.status === "revision" ? "نیازمند اصلاح" : m.status === "rejected" ? "ردشده" : "انجام‌شده"}</span></td><td>{["pending","pending_approval","follow_up_pending"].includes(m.status) ? <span className="score-pending">Pending</span> : Number(m.scoreConfirmed) > 0 ? `+${Number(m.scoreConfirmed).toLocaleString("fa-IR")}` : "—"}</td><td>{m.status === "open" ? <div className="mission-row-actions"><button className="edit" onClick={event=>{event.stopPropagation();openMissionForm(m)}}><Icon>✎</Icon> ویرایش</button><button className="delete" onClick={event=>{event.stopPropagation();deleteMission(m)}}><Icon>×</Icon> حذف</button></div> : m.completedAt ? <button className="mission-trace-action" onClick={event=>{event.stopPropagation();openMissionTrace(m)}}><Icon>⌖</Icon> بررسی مراجعه ثبت‌شده</button> : <span className="mission-locked"><Icon>▣</Icon> قفل‌شده پس از شروع</span>}</td></tr>)}</tbody></table> : <div className="empty-state"><span>▣</span><h3>موردی در این دسته نیست</h3><p>با تغییر وضعیت مأموریت، آن مورد به‌صورت خودکار در دسته درست نمایش داده می‌شود.</p></div>}</section>}
+        {screen === "missions" && <section className="panel table-panel"><div className="table-toolbar"><div className="filter-tabs">{adminMissionFilters.map(filter=><button key={filter.id} className={adminMissionFilter===filter.id?"active":""} onClick={()=>setAdminMissionFilter(filter.id)}>{filter.label} <span>{adminMissions.filter(mission=>missionMatchesFilter(mission,filter.id)).length.toLocaleString("fa-IR")}</span></button>)}</div><button onClick={()=>openMissionForm()}>＋ تخصیص مأموریت</button></div>{filteredAdminMissions.length ? <table><thead><tr><th>مأموریت</th><th>مسئول</th><th>ایجادکننده</th><th>تاریخ و ساعت ثبت</th><th>مهلت</th><th>وضعیت</th><th>امتیاز</th><th>عملیات</th></tr></thead><tbody>{filteredAdminMissions.map((m)=><tr key={m.id} className={m.completedAt ? "clickable-mission-row" : ""} onClick={()=>m.completedAt&&openMissionTrace(m)}><td><b>{m.title}</b><small>{m.destinationName || m.description || "مقصد هنگام انجام ثبت می‌شود"}{Number(m.attemptCount ?? 0)>0?` · ${Number(m.attemptCount).toLocaleString("fa-IR")} مراجعه`:""}</small>{Number(m.startCancellationCount ?? 0)>0&&<small className="mission-cancel-audit">انصراف از شروع: {m.lastStartCancellationReason || "بدون توضیح"} · {formatPersianDateTime(m.lastStartCancelledAt ?? undefined)}</small>}</td><td><span className="mini-user blue">{m.employeeName?.slice(0,2) ?? "—"}</span>{m.employeeName ?? "کاربر"}</td><td>{m.source === "employee" ? "کارمند" : adminRole === "supervisor" ? "سرپرست" : "مدیر"}</td><td className="mission-created-at"><b>{formatPersianDateTime(m.createdAt)}</b><small>ثبت خودکار سرور</small></td><td>{m.deadline || "بدون مهلت"}</td><td><span className={`status ${m.status === "open" || m.status === "revision" ? "open" : m.status === "in_progress" ? "running" : ["pending","pending_approval"].includes(m.status) ? "pending" : ["follow_up","follow_up_pending"].includes(m.status) ? "follow-up" : "done"}`}>{m.status === "open" ? "باز" : m.status === "in_progress" ? "در حال انجام" : ["pending","pending_approval"].includes(m.status) ? "منتظر تأیید" : m.status === "follow_up_pending" ? "پیگیری مجدد · منتظر بررسی" : m.status === "follow_up" ? "پیگیری مجدد" : m.status === "approved" ? "انجام‌شده" : m.status === "revision" ? "نیازمند اصلاح" : m.status === "rejected" ? "ردشده" : "انجام‌شده"}</span></td><td>{["pending","pending_approval","follow_up_pending"].includes(m.status) ? <span className="score-pending">Pending</span> : Number(m.scoreConfirmed) > 0 ? `+${Number(m.scoreConfirmed).toLocaleString("fa-IR")}` : "—"}</td><td>{m.status === "open" ? <div className="mission-row-actions"><button className="edit" onClick={event=>{event.stopPropagation();openMissionForm(m)}}><Icon>✎</Icon> ویرایش</button><button className="delete" onClick={event=>{event.stopPropagation();deleteMission(m)}}><Icon>×</Icon> حذف</button></div> : m.completedAt ? <button className="mission-trace-action" onClick={event=>{event.stopPropagation();openMissionTrace(m)}}><Icon>⌖</Icon> بررسی مراجعه ثبت‌شده</button> : <span className="mission-locked"><Icon>▣</Icon> قفل‌شده پس از شروع</span>}</td></tr>)}</tbody></table> : <div className="empty-state"><span>▣</span><h3>موردی در این دسته نیست</h3><p>با تغییر وضعیت مأموریت، آن مورد به‌صورت خودکار در دسته درست نمایش داده می‌شود.</p></div>}</section>}
 
         {screen === "actions" && <FollowUpActionCenter onMessage={notify} onCountChange={updateFollowUpCount}/>}
 

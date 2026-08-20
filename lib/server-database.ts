@@ -39,30 +39,30 @@ export function getMySqlPool() {
 export class PreparedStatement {
   private values: unknown[] = [];
 
-  constructor(private readonly sql: string) {}
+  constructor(private readonly sql: string, private readonly executor?: QueryExecutor) {}
 
   bind(...values: unknown[]) {
     this.values = values;
     return this;
   }
 
-  private async execute(executor: QueryExecutor) {
-    return executor.execute(this.sql, this.values);
+  private async execute(executor?: QueryExecutor) {
+    return (executor ?? this.executor ?? getMySqlPool()).execute(this.sql, this.values);
   }
 
   async first<T = Record<string, unknown>>() {
-    const [rows] = await this.execute(getMySqlPool());
+    const [rows] = await this.execute();
     if (!Array.isArray(rows)) return null;
     return (rows[0] as T | undefined) ?? null;
   }
 
   async all<T = Record<string, unknown>>(): Promise<DatabaseResult<T>> {
-    const [rows] = await this.execute(getMySqlPool());
+    const [rows] = await this.execute();
     return { success: true, results: (Array.isArray(rows) ? rows : []) as T[], meta: {} };
   }
 
   async run<T = Record<string, unknown>>(): Promise<DatabaseResult<T>> {
-    return this.runWith<T>(getMySqlPool());
+    return this.runWith<T>(this.executor ?? getMySqlPool());
   }
 
   async runWith<T = Record<string, unknown>>(executor: QueryExecutor): Promise<DatabaseResult<T>> {
@@ -73,6 +73,14 @@ export class PreparedStatement {
       results: (Array.isArray(result) ? result : []) as T[],
       meta: { changes: header.affectedRows ?? 0, lastRowId: header.insertId ?? 0 },
     };
+  }
+}
+
+class MySqlTransaction {
+  constructor(private readonly connection: PoolConnection) {}
+
+  prepare(query: string) {
+    return new PreparedStatement(query, this.connection);
   }
 }
 
@@ -90,6 +98,21 @@ export class MySqlDatabase {
       for (const statement of statements) results.push(await statement.runWith<T>(connection));
       await connection.commit();
       return results;
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
+  async transaction<T>(callback: (transaction: MySqlTransaction) => Promise<T>) {
+    const connection = await getMySqlPool().getConnection();
+    try {
+      await connection.beginTransaction();
+      const result = await callback(new MySqlTransaction(connection));
+      await connection.commit();
+      return result;
     } catch (error) {
       await connection.rollback();
       throw error;
