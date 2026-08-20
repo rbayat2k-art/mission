@@ -1,18 +1,22 @@
 import { ensureDatabase } from "../../../../../db/runtime";
 import { requireRole } from "../../../../../lib/auth";
 import { locationSqlValues, parseMissionLocation } from "../../../../../lib/mission-location";
+import { normalizeFollowUpCategory } from "../../../../../lib/follow-up";
+import { createUserNotification } from "../../../../../lib/push-notifications";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const auth = await requireRole(request, ["owner", "admin", "supervisor", "employee"]);
   if ("error" in auth) return auth.error;
   const { id } = await context.params;
   const db = await ensureDatabase();
-  const mission = await db.prepare(`SELECT id, source, assigned_to AS assignedTo, status, started_at AS startedAt,
-    score_penalty AS scorePenalty, start_latitude_e6 AS startLatitudeE6, start_longitude_e6 AS startLongitudeE6,
-    start_accuracy_cm AS startAccuracyCm, start_location_recorded_at AS startLocationRecordedAt
-    FROM missions WHERE id = ?`).bind(id).first<{
+  const mission = await db.prepare(`SELECT m.id, m.source, m.assigned_to AS assignedTo, m.status, m.started_at AS startedAt,
+    m.score_penalty AS scorePenalty, m.start_latitude_e6 AS startLatitudeE6, m.start_longitude_e6 AS startLongitudeE6,
+    m.start_accuracy_cm AS startAccuracyCm, m.start_location_recorded_at AS startLocationRecordedAt,
+    u.supervisor_id AS supervisorId, s.status AS supervisorStatus, m.title
+    FROM missions m JOIN users u ON u.id = m.assigned_to LEFT JOIN users s ON s.id = u.supervisor_id WHERE m.id = ?`).bind(id).first<{
       id: string; source: string; assignedTo: string; status: string; startedAt: string | null; scorePenalty: number;
       startLatitudeE6: number | null; startLongitudeE6: number | null; startAccuracyCm: number | null; startLocationRecordedAt: string | null;
+      supervisorId: string | null; supervisorStatus: string | null; title: string;
     }>();
   if (!mission) return Response.json({ error: "مأموریت پیدا نشد." }, { status: 404 });
   if (mission.assignedTo !== auth.user.id) return Response.json({ error: "فقط مسئول مأموریت می‌تواند نتیجه آن را ثبت کند." }, { status: 403 });
@@ -27,7 +31,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       destinationName: string; latitudeE6: number; longitudeE6: number; accuracyCm: number; recordedAt: string;
     }>();
   if (!registeredDestination) return Response.json({ error: "ابتدا مقصد این مأموریت را با GPS ثبت کنید." }, { status: 409 });
-  const body = await request.json().catch(() => ({})) as { destinationName?: string; result?: string; report?: string; expenseAmount?: number; endLocation?: unknown };
+  const body = await request.json().catch(() => ({})) as { destinationName?: string; result?: string; report?: string; expenseAmount?: number; endLocation?: unknown; requestSupervisorAction?: boolean; followUpCategory?: string };
   if (!body.result?.trim() || !body.report?.trim()) return Response.json({ error: "نتیجه و توضیح گزارش الزامی است." }, { status: 400 });
   const endLocation = parseMissionLocation(body.endLocation);
   if (!endLocation) return Response.json({ error: "برای پایان مأموریت، موقعیت GPS معتبر لازم است." }, { status: 400 });
@@ -40,6 +44,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const expenseAmount = Number.isFinite(rawExpenseAmount) ? Math.max(0, Math.round(rawExpenseAmount)) : 0;
   const needsApproval = mission.source === "employee";
   const needsFollowUp = workResult !== "انجام شد";
+  const requestSupervisorAction = needsFollowUp && body.requestSupervisorAction === true;
+  if (requestSupervisorAction && (!mission.supervisorId || mission.supervisorStatus !== "active")) return Response.json({ error: "برای ارجاع پیگیری، باید یک سرپرست فعال برای کارمند تعیین شده باشد." }, { status: 409 });
   const status = needsFollowUp ? (needsApproval ? "follow_up_pending" : "follow_up") : needsApproval ? "pending" : "approved";
   const baseScore = 12;
   const completedWithoutStart = !mission.startedAt;
@@ -51,6 +57,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const attempt = await db.prepare("SELECT COALESCE(MAX(attempt_no), 0) + 1 AS attemptNo FROM mission_attempts WHERE mission_id = ?")
     .bind(id).first<{ attemptNo: number }>();
   const attemptNo = Number(attempt?.attemptNo ?? 1);
+  const followUpRequestId = requestSupervisorAction ? crypto.randomUUID() : null;
+  const followUpMessageId = requestSupervisorAction ? crypto.randomUUID() : null;
   const statements = [
     db.prepare("UPDATE missions SET status = ?, destination_name = ?, result = ?, report = ?, expense_amount = ?, score_pending = ?, score_confirmed = ?, score_penalty = ?, score_note = ?, completed_at = ?, end_latitude_e6 = ?, end_longitude_e6 = ?, end_accuracy_cm = ?, end_location_recorded_at = ? WHERE id = ?").bind(status, registeredDestination.destinationName, workResult, body.report.trim(), expenseAmount, pendingScore, confirmedScore, scorePenalty, scoreNote, now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, id),
     db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.completed', 'mission', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ status, baseScore, awardedScore, scorePenalty, scoreNote, completedWithoutStart, result: workResult, expenseAmount, endLocationRecordedAt, endAccuracy: Math.round(endLocation.accuracy) }), now),
@@ -73,6 +81,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     ));
   }
   if (needsApproval) statements.push(db.prepare("INSERT INTO approvals (id, mission_id, status, created_at) VALUES (?, ?, 'pending', ?) ON DUPLICATE KEY UPDATE status = 'pending', reason = NULL, decided_at = NULL").bind(crypto.randomUUID(), id, now));
+  if (followUpRequestId && followUpMessageId && mission.supervisorId) {
+    const category = normalizeFollowUpCategory(body.followUpCategory);
+    statements.push(
+      db.prepare("INSERT INTO mission_follow_up_requests (id, mission_id, attempt_no, created_by, supervisor_id, assigned_to, category, request_text, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_supervisor', ?, ?)").bind(followUpRequestId, id, attemptNo, auth.user.id, mission.supervisorId, mission.supervisorId, category, body.report.trim(), now, now),
+      db.prepare("INSERT INTO mission_follow_up_messages (id, request_id, sender_id, message_type, body, created_at) VALUES (?, ?, ?, 'text', ?, ?)").bind(followUpMessageId, followUpRequestId, auth.user.id, body.report.trim(), now),
+      db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'follow_up.created', 'follow_up_request', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, followUpRequestId, JSON.stringify({ missionId:id, attemptNo, category }), now),
+    );
+  }
   await db.batch(statements);
-  return Response.json({ mission: { id, status, attemptNo, needsFollowUp, scorePending: pendingScore, scoreConfirmed: confirmedScore, scorePenalty, scoreNote, completedWithoutStart, endLocation } });
+  if (followUpRequestId && mission.supervisorId) await createUserNotification(mission.supervisorId, { type:"follow_up_created", title:"درخواست اقدام جدید", message:`برای مأموریت «${mission.title}» درخواست پیگیری ثبت شد.`, entityType:"follow_up_request", entityId:followUpRequestId, url:"/?panel=admin&screen=actions" });
+  return Response.json({ mission: { id, status, attemptNo, needsFollowUp, followUpRequestId, scorePending: pendingScore, scoreConfirmed: confirmedScore, scorePenalty, scoreNote, completedWithoutStart, endLocation } });
 }

@@ -634,3 +634,41 @@ test("ends shifts without GPS blocking and deducts only beyond the 30 minute gra
   assert.match(performance, /برای هر قطعی پیوسته GPS، ۳۰ دقیقه مهلت وجود دارد/);
   assert.match(exportRoute, /زمان اضافه بر مهلت ۳۰ دقیقه بدون GPS/);
 });
+
+test("supports minimal employee escalation and audited mission follow-up conversations", async () => {
+  const [schema, page, component, complete, start, list, messages, decision, attachments, notifications] = await Promise.all([
+    readFile(new URL("../db/mysql-schema.sql", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/FollowUpCenter.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/missions/[id]/complete/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/missions/[id]/start/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/follow-up-requests/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/follow-up-requests/[id]/messages/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/follow-up-requests/[id]/decision/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/attachments/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/notifications/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS mission_follow_up_requests/);
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS mission_follow_up_messages/);
+  assert.match(schema, /follow_up_message_id CHAR\(36\) NULL/);
+  assert.match(page, /علت پیگیری/);
+  assert.match(page, /همین توضیح بالا خودکار برای سرپرست ارسال می‌شود/);
+  assert.doesNotMatch(page, /انتخاب گیرنده پیگیری|انتخاب مدیر برای پیگیری/);
+  assert.match(page, /requestSupervisorAction:workResult !== "انجام شد"/);
+  assert.match(complete, /u\.supervisor_id AS supervisorId/);
+  assert.match(complete, /INSERT INTO mission_follow_up_requests/);
+  assert.match(complete, /createUserNotification\(mission\.supervisorId/);
+  assert.match(start, /awaiting_supervisor.*awaiting_employee.*escalated/);
+  assert.match(component, /عکس، فایل یا ویس/);
+  assert.match(component, /درخواست اطلاعات/);
+  assert.match(component, /بازگشت به پیگیری/);
+  assert.match(component, /ارجاع به مدیر/);
+  assert.match(list, /auth\.user\.role === "employee"/);
+  assert.match(messages, /follow_up\.message_sent/);
+  assert.match(decision, /follow_up\.decision/);
+  assert.match(decision, /return_to_employee/);
+  assert.match(decision, /resolution_note/);
+  assert.match(attachments, /audio\/mpeg/);
+  assert.match(attachments, /messageId/);
+  assert.match(notifications, /mission_follow_up_requests/);
+});

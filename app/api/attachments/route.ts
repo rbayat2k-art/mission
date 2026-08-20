@@ -2,35 +2,47 @@ import { ensureDatabase } from "../../../db/runtime";
 import { requireRole } from "../../../lib/auth";
 import { fileStorage } from "../../../lib/file-storage";
 
-const allowedTypes = new Set(["image/jpeg", "image/png", "application/pdf"]);
+const allowedTypes = new Set([
+  "image/jpeg", "image/png", "application/pdf", "text/plain",
+  "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "audio/mpeg", "audio/mp4", "audio/webm", "audio/ogg", "audio/wav", "audio/aac", "audio/x-m4a",
+]);
 
 export async function POST(request: Request) {
   const auth = await requireRole(request, ["employee", "supervisor", "admin", "owner"]);
   if ("error" in auth) return auth.error;
   const form = await request.formData().catch(() => null);
   const missionId = form?.get("missionId");
+  const messageIdValue = form?.get("messageId");
+  const messageId = typeof messageIdValue === "string" && messageIdValue.trim() ? messageIdValue.trim() : null;
   const file = form?.get("file");
   if (typeof missionId !== "string" || !(file instanceof File)) return Response.json({ error: "فایل و مأموریت الزامی هستند." }, { status: 400 });
-  if (!allowedTypes.has(file.type) || file.size <= 0 || file.size > 10 * 1024 * 1024) return Response.json({ error: "فقط JPG، PNG یا PDF تا ۱۰ مگابایت مجاز است." }, { status: 400 });
+  if (!allowedTypes.has(file.type) || file.size <= 0 || file.size > 10 * 1024 * 1024) return Response.json({ error: "عکس، PDF، Word، Excel، متن یا فایل صوتی تا ۱۰ مگابایت مجاز است." }, { status: 400 });
 
   const db = await ensureDatabase();
   const mission = await db.prepare("SELECT m.assigned_to AS assignedTo, m.status, u.supervisor_id AS assigneeSupervisorId FROM missions m JOIN users u ON u.id = m.assigned_to WHERE m.id = ?").bind(missionId).first<{ assignedTo: string; status: string; assigneeSupervisorId: string | null }>();
   if (!mission) return Response.json({ error: "مأموریت پیدا نشد." }, { status: 404 });
   if (auth.user.role === "employee" && mission.assignedTo !== auth.user.id) return Response.json({ error: "forbidden" }, { status: 403 });
   if (auth.user.role === "supervisor" && mission.assignedTo !== auth.user.id && mission.assigneeSupervisorId !== auth.user.id) return Response.json({ error: "forbidden" }, { status: 403 });
-  if (!["open", "in_progress", "revision"].includes(mission.status)) return Response.json({ error: "برای این مأموریت امکان افزودن مدرک وجود ندارد." }, { status: 409 });
+  if (messageId) {
+    const message = await db.prepare(`SELECT fm.sender_id AS senderId, r.mission_id AS missionId, r.status
+      FROM mission_follow_up_messages fm JOIN mission_follow_up_requests r ON r.id = fm.request_id WHERE fm.id = ?`).bind(messageId).first<{senderId:string;missionId:string;status:string}>();
+    if (!message || message.missionId !== missionId || message.senderId !== auth.user.id) return Response.json({ error:"پیام پیگیری برای این فایل معتبر نیست." }, { status:403 });
+    if (["resolved","rejected"].includes(message.status)) return Response.json({ error:"گفت‌وگوی این درخواست بسته شده است." }, { status:409 });
+  } else if (!["open", "in_progress", "revision"].includes(mission.status)) return Response.json({ error: "برای این مأموریت امکان افزودن مدرک وجود ندارد." }, { status: 409 });
 
   const id = crypto.randomUUID();
   const objectKey = `missions/${missionId}/${id}`;
   const now = new Date().toISOString();
   await fileStorage.put(objectKey, await file.arrayBuffer());
   try {
-    await db.prepare("INSERT INTO attachments (id, mission_id, uploaded_by, object_key, file_name, content_type, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(id, missionId, auth.user.id, objectKey, file.name.slice(0, 180), file.type, file.size, now).run();
+    await db.prepare("INSERT INTO attachments (id, mission_id, uploaded_by, object_key, file_name, content_type, size_bytes, follow_up_message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, missionId, auth.user.id, objectKey, file.name.slice(0, 180), file.type, file.size, messageId, now).run();
   } catch (error) {
     await fileStorage.delete(objectKey);
     throw error;
   }
-  return Response.json({ attachment: { id, missionId, fileName: file.name, contentType: file.type, sizeBytes: file.size, createdAt: now } }, { status: 201 });
+  return Response.json({ attachment: { id, missionId, messageId, fileName: file.name, contentType: file.type, sizeBytes: file.size, createdAt: now } }, { status: 201 });
 }
 
 export async function GET(request: Request) {
@@ -43,6 +55,6 @@ export async function GET(request: Request) {
   if (!mission) return Response.json({ error: "مأموریت پیدا نشد." }, { status: 404 });
   if (auth.user.role === "employee" && mission.assignedTo !== auth.user.id) return Response.json({ error: "forbidden" }, { status: 403 });
   if (auth.user.role === "supervisor" && mission.assignedTo !== auth.user.id && mission.assigneeSupervisorId !== auth.user.id) return Response.json({ error: "forbidden" }, { status: 403 });
-  const result = await db.prepare("SELECT id, mission_id AS missionId, file_name AS fileName, content_type AS contentType, size_bytes AS sizeBytes, created_at AS createdAt FROM attachments WHERE mission_id = ? ORDER BY created_at DESC").bind(missionId).all();
+  const result = await db.prepare("SELECT id, mission_id AS missionId, follow_up_message_id AS messageId, file_name AS fileName, content_type AS contentType, size_bytes AS sizeBytes, created_at AS createdAt FROM attachments WHERE mission_id = ? ORDER BY created_at DESC").bind(missionId).all();
   return Response.json({ attachments: result.results });
 }

@@ -57,7 +57,16 @@ try {
     const [rows] = await connection.execute("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'work_sessions' AND COLUMN_NAME = ?", [name]);
     if (!rows.length) await connection.execute(`ALTER TABLE work_sessions ADD COLUMN ${name} ${definition}`);
   }
-  console.log(`Applied ${statements.length} MySQL schema statements and verified mission scoring and work-session policy columns plus user settings.`);
+  const attachmentColumns = [
+    ["follow_up_message_id", "CHAR(36) NULL AFTER size_bytes"],
+  ];
+  for (const [name, definition] of attachmentColumns) {
+    const [rows] = await connection.execute("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'attachments' AND COLUMN_NAME = ?", [name]);
+    if (!rows.length) await connection.execute(`ALTER TABLE attachments ADD COLUMN ${name} ${definition}`);
+  }
+  const [attachmentIndexes] = await connection.execute("SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'attachments' AND INDEX_NAME = 'idx_attachments_follow_up_message'");
+  if (!attachmentIndexes.length) await connection.execute("ALTER TABLE attachments ADD INDEX idx_attachments_follow_up_message (follow_up_message_id, created_at)");
+  console.log(`Applied ${statements.length} MySQL schema statements and verified mission scoring and work-session policy columns, plus follow-up and attachment columns.`);
 } finally {
   await connection.end();
 }

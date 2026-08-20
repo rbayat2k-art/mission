@@ -14,12 +14,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!activeSession) return Response.json({ error: "برای شروع کار روی مأموریت، ابتدا فعالیت روزانه را شروع کنید." }, { status: 409 });
   if (mission.status === "in_progress") return Response.json({ mission: { id, status: "in_progress", startedAt: mission.startedAt } });
   if (!["open", "follow_up", "revision"].includes(mission.status)) return Response.json({ error: mission.status === "follow_up_pending" ? "گزارش مراجعه قبلی ابتدا باید توسط سرپرست بررسی شود." : "این مأموریت دیگر قابل شروع نیست." }, { status: 409 });
+  const followUpRequest = mission.status === "follow_up" ? await db.prepare("SELECT id, status FROM mission_follow_up_requests WHERE mission_id = ? ORDER BY created_at DESC LIMIT 1").bind(id).first<{id:string;status:string}>() : null;
+  if (followUpRequest && ["awaiting_supervisor","awaiting_employee","escalated"].includes(followUpRequest.status)) return Response.json({ error: "این مأموریت هنوز در انتظار اقدام یا پاسخ است و برای شروع مجدد آماده نشده است." }, { status:409 });
   const body = await request.json().catch(() => ({})) as { location?: unknown };
   const startLocation = parseMissionLocation(body.location);
   if (!startLocation) return Response.json({ error: "برای شروع مأموریت، موقعیت GPS معتبر لازم است." }, { status: 400 });
   const [latitudeE6, longitudeE6, accuracyCm, locationRecordedAt] = locationSqlValues(startLocation);
   const now = new Date().toISOString();
-  await db.batch([
+  const statements = [
     db.prepare(`UPDATE missions SET status = 'in_progress', destination_name = NULL, expense_amount = 0,
       score_pending = 0, score_confirmed = 0, score_penalty = 0, score_note = NULL, completed_at = NULL,
       end_latitude_e6 = NULL, end_longitude_e6 = NULL, end_accuracy_cm = NULL, end_location_recorded_at = NULL,
@@ -30,6 +32,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       crypto.randomUUID(), auth.user.id, mission.status === "follow_up" ? "mission.follow_up_started" : "mission.started", id,
       JSON.stringify({ previousStatus: mission.status, locationRecordedAt, accuracy: Math.round(startLocation.accuracy) }), now,
     ),
-  ]);
+  ];
+  if (followUpRequest?.status === "ready_for_employee") statements.push(
+    db.prepare("UPDATE mission_follow_up_requests SET status='resolved', resolution_note='پیگیری مجدد توسط کارمند آغاز شد', resolved_at=?, updated_at=? WHERE id=?").bind(now,now,followUpRequest.id),
+  );
+  await db.batch(statements);
   return Response.json({ mission: { id, status: "in_progress", startedAt: now, startLocation } });
 }

@@ -155,6 +155,41 @@ CREATE TABLE IF NOT EXISTS approvals (
   CONSTRAINT fk_approvals_supervisor FOREIGN KEY (supervisor_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- statement-breakpoint
+CREATE TABLE IF NOT EXISTS mission_follow_up_requests (
+  id CHAR(36) PRIMARY KEY,
+  mission_id CHAR(36) NOT NULL,
+  attempt_no INT NULL,
+  created_by CHAR(36) NOT NULL,
+  supervisor_id CHAR(36) NOT NULL,
+  assigned_to CHAR(36) NOT NULL,
+  category VARCHAR(60) NOT NULL,
+  request_text TEXT NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'awaiting_supervisor',
+  resolution_note TEXT NULL,
+  created_at VARCHAR(40) NOT NULL,
+  updated_at VARCHAR(40) NOT NULL,
+  resolved_at VARCHAR(40) NULL,
+  INDEX idx_follow_up_mission_status (mission_id, status, created_at),
+  INDEX idx_follow_up_assigned_status (assigned_to, status, updated_at),
+  INDEX idx_follow_up_supervisor_status (supervisor_id, status, updated_at),
+  CONSTRAINT fk_follow_up_mission FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE,
+  CONSTRAINT fk_follow_up_creator FOREIGN KEY (created_by) REFERENCES users(id),
+  CONSTRAINT fk_follow_up_supervisor FOREIGN KEY (supervisor_id) REFERENCES users(id),
+  CONSTRAINT fk_follow_up_assigned FOREIGN KEY (assigned_to) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- statement-breakpoint
+CREATE TABLE IF NOT EXISTS mission_follow_up_messages (
+  id CHAR(36) PRIMARY KEY,
+  request_id CHAR(36) NOT NULL,
+  sender_id CHAR(36) NOT NULL,
+  message_type VARCHAR(24) NOT NULL DEFAULT 'text',
+  body TEXT NOT NULL,
+  created_at VARCHAR(40) NOT NULL,
+  INDEX idx_follow_up_messages_request_created (request_id, created_at),
+  CONSTRAINT fk_follow_up_message_request FOREIGN KEY (request_id) REFERENCES mission_follow_up_requests(id) ON DELETE CASCADE,
+  CONSTRAINT fk_follow_up_message_sender FOREIGN KEY (sender_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- statement-breakpoint
 CREATE TABLE IF NOT EXISTS audit_logs (
   id CHAR(36) PRIMARY KEY,
   actor_id CHAR(36) NULL,
@@ -232,8 +267,10 @@ CREATE TABLE IF NOT EXISTS attachments (
   file_name VARCHAR(190) NOT NULL,
   content_type VARCHAR(100) NOT NULL,
   size_bytes BIGINT NOT NULL,
+  follow_up_message_id CHAR(36) NULL,
   created_at VARCHAR(40) NOT NULL,
   INDEX idx_attachments_mission_created (mission_id, created_at),
+  INDEX idx_attachments_follow_up_message (follow_up_message_id, created_at),
   CONSTRAINT fk_attachments_mission FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE,
   CONSTRAINT fk_attachments_uploader FOREIGN KEY (uploaded_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

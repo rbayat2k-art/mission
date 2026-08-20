@@ -13,9 +13,10 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   if (auth.user.role === "supervisor" && attachment.assignedTo !== auth.user.id && attachment.assigneeSupervisorId !== auth.user.id) return Response.json({ error: "forbidden" }, { status: 403 });
   const object = await fileStorage.get(attachment.objectKey);
   if (!object) return Response.json({ error: "فایل در فضای ذخیره‌سازی پیدا نشد." }, { status: 404 });
+  const inline = attachment.contentType.startsWith("image/") || attachment.contentType.startsWith("audio/") || attachment.contentType === "application/pdf";
   return new Response(object.body, { headers: {
     "Content-Type": attachment.contentType,
-    "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(attachment.fileName)}`,
+    "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(attachment.fileName)}`,
     "Cache-Control": "private, max-age=300",
     "X-Content-Type-Options": "nosniff",
   } });
@@ -26,11 +27,17 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
   if ("error" in auth) return auth.error;
   const { id } = await context.params;
   const db = await ensureDatabase();
-  const attachment = await db.prepare("SELECT a.object_key AS objectKey, a.uploaded_by AS uploadedBy, m.assigned_to AS assignedTo, m.status, u.supervisor_id AS assigneeSupervisorId FROM attachments a JOIN missions m ON m.id = a.mission_id JOIN users u ON u.id = m.assigned_to WHERE a.id = ?").bind(id).first<{ objectKey: string; uploadedBy: string; assignedTo: string; status: string; assigneeSupervisorId: string | null }>();
+  const attachment = await db.prepare(`SELECT a.object_key AS objectKey, a.uploaded_by AS uploadedBy,
+    a.follow_up_message_id AS messageId, m.assigned_to AS assignedTo, m.status,
+    u.supervisor_id AS assigneeSupervisorId, r.status AS requestStatus
+    FROM attachments a JOIN missions m ON m.id = a.mission_id JOIN users u ON u.id = m.assigned_to
+    LEFT JOIN mission_follow_up_messages fm ON fm.id = a.follow_up_message_id
+    LEFT JOIN mission_follow_up_requests r ON r.id = fm.request_id WHERE a.id = ?`).bind(id).first<{ objectKey: string; uploadedBy: string; messageId:string|null; assignedTo: string; status: string; requestStatus:string|null; assigneeSupervisorId: string | null }>();
   if (!attachment) return Response.json({ error: "فایل پیدا نشد." }, { status: 404 });
   if (auth.user.role === "employee" && (attachment.assignedTo !== auth.user.id || attachment.uploadedBy !== auth.user.id)) return Response.json({ error: "forbidden" }, { status: 403 });
   if (auth.user.role === "supervisor" && attachment.assignedTo !== auth.user.id && attachment.assigneeSupervisorId !== auth.user.id) return Response.json({ error: "forbidden" }, { status: 403 });
-  if (!["open", "in_progress", "revision"].includes(attachment.status)) return Response.json({ error: "پس از پایان مأموریت امکان حذف مدرک وجود ندارد." }, { status: 409 });
+  const removableChatFile = Boolean(attachment.messageId && attachment.uploadedBy === auth.user.id && attachment.requestStatus && !["resolved","rejected"].includes(attachment.requestStatus));
+  if (!removableChatFile && !["open", "in_progress", "revision"].includes(attachment.status)) return Response.json({ error: "پس از پایان مأموریت امکان حذف مدرک وجود ندارد." }, { status: 409 });
   await fileStorage.delete(attachment.objectKey);
   await db.prepare("DELETE FROM attachments WHERE id = ?").bind(id).run();
   return Response.json({ deleted: true });

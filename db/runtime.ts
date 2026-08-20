@@ -42,6 +42,10 @@ async function applySchema() {
     const existing = await database.prepare("SELECT COLUMN_NAME AS columnName FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'work_sessions' AND COLUMN_NAME = ?").bind(column.name).first();
     if (!existing) await database.prepare(`ALTER TABLE work_sessions ADD COLUMN ${column.name} ${column.definition}`).run();
   }
+  const attachmentMessageColumn = await database.prepare("SELECT COLUMN_NAME AS columnName FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'attachments' AND COLUMN_NAME = 'follow_up_message_id'").first();
+  if (!attachmentMessageColumn) await database.prepare("ALTER TABLE attachments ADD COLUMN follow_up_message_id CHAR(36) NULL AFTER size_bytes").run();
+  const attachmentMessageIndex = await database.prepare("SELECT INDEX_NAME AS indexName FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'attachments' AND INDEX_NAME = 'idx_attachments_follow_up_message'").first();
+  if (!attachmentMessageIndex) await database.prepare("ALTER TABLE attachments ADD INDEX idx_attachments_follow_up_message (follow_up_message_id, created_at)").run();
   const notificationColumn = await database.prepare("SELECT COLUMN_NAME AS columnName FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'notification_enabled'").first();
   if (!notificationColumn) await database.prepare("ALTER TABLE users ADD COLUMN notification_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER must_change_password").run();
 }
