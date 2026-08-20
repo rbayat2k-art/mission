@@ -1,6 +1,7 @@
 package ir.taprasystem.employee;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -181,6 +182,7 @@ public class MainActivity extends Activity {
         else startService(serviceIntent);
     }
 
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     private void registerTrackingReceiver() {
         IntentFilter filter = new IntentFilter(LocationTrackingService.ACTION_SESSION_ENDED);
         registerReceiver(trackingReceiver, filter, INTERNAL_BROADCAST_PERMISSION, null);
