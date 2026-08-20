@@ -34,6 +34,7 @@ git merge --ff-only "origin/$BRANCH"
 CURRENT_COMMIT="$(git rev-parse HEAD)"
 
 npm ci
+node scripts/ensure-vapid.mjs .env
 npm run build
 npm run db:backup
 npm run db:migrate

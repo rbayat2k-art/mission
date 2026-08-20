@@ -7,10 +7,47 @@ import AccountSettings from "./components/AccountSettings";
 import NotificationCenter from "./components/NotificationCenter";
 import NotificationSettings from "./components/NotificationSettings";
 import AppVersionGuard from "./components/AppVersionGuard";
+import PushNotificationBootstrap from "./components/PushNotificationBootstrap";
 import { EmployeeFollowUpPanel, FollowUpActionCenter } from "./components/FollowUpCenter";
 
 type EmployeeScreen = "home" | "missions" | "new" | "work" | "report" | "mission-detail" | "end-review" | "profile" | "notifications" | "notification-settings" | "account-settings";
 type AdminScreen = "dashboard" | "live" | "missions" | "actions" | "access" | "approvals" | "integrity" | "reports" | "notifications" | "account";
+type PanelMode = "employee" | "admin";
+
+const employeeScreens: EmployeeScreen[] = ["home", "missions", "new", "report", "profile", "notifications", "notification-settings", "account-settings"];
+const adminScreens: AdminScreen[] = ["dashboard", "live", "missions", "actions", "access", "approvals", "integrity", "reports", "notifications", "account"];
+const PANEL_STORAGE_KEY = "tapra:last-panel";
+const EMPLOYEE_SCREEN_STORAGE_KEY = "tapra:employee-screen";
+const ADMIN_SCREEN_STORAGE_KEY = "tapra:admin-screen";
+
+function isEmployeeScreen(value: string | null): value is EmployeeScreen { return Boolean(value && employeeScreens.includes(value as EmployeeScreen)); }
+function isAdminScreen(value: string | null): value is AdminScreen { return Boolean(value && adminScreens.includes(value as AdminScreen)); }
+function isPanelMode(value: string | null): value is PanelMode { return value === "employee" || value === "admin"; }
+
+function restoreEmployeeScreen(): EmployeeScreen {
+  if (typeof window === "undefined") return "home";
+  const url = new URL(window.location.href);
+  const requested = url.searchParams.get("panel") === "employee" ? url.searchParams.get("screen") : null;
+  const stored = sessionStorage.getItem(EMPLOYEE_SCREEN_STORAGE_KEY);
+  return isEmployeeScreen(requested) ? requested : isEmployeeScreen(stored) ? stored : "home";
+}
+
+function restoreAdminScreen(): AdminScreen {
+  if (typeof window === "undefined") return "dashboard";
+  const url = new URL(window.location.href);
+  const requested = url.searchParams.get("panel") === "admin" ? url.searchParams.get("screen") : null;
+  const stored = sessionStorage.getItem(ADMIN_SCREEN_STORAGE_KEY);
+  return isAdminScreen(requested) ? requested : isAdminScreen(stored) ? stored : "dashboard";
+}
+
+function persistNavigation(panel: PanelMode, screen?: EmployeeScreen | AdminScreen) {
+  sessionStorage.setItem(PANEL_STORAGE_KEY, panel);
+  if (screen) sessionStorage.setItem(panel === "admin" ? ADMIN_SCREEN_STORAGE_KEY : EMPLOYEE_SCREEN_STORAGE_KEY, screen);
+  const url = new URL(window.location.href);
+  url.searchParams.set("panel", panel);
+  if (screen) url.searchParams.set("screen", screen);
+  window.history.replaceState(window.history.state, "", url.toString());
+}
 
 type ApiMission = { id: string; title: string; description: string; source: "manager" | "employee"; status: string; priority: string; assignedTo?: string; destinationName?: string | null; result?: string | null; report?: string | null; expenseAmount?: number; deadline?: string | null; scorePending: number; scoreConfirmed: number; scorePenalty?: number; scoreNote?: string | null; startedAt?: string | null; employeeName?: string; completedAt?: string | null; createdAt?: string; attemptCount?: number; followUpRequestStatus?:string|null };
 type ApiUser = { id: string; fullName: string; mobile: string; username: string; role: string; status: string; supervisorId?: string | null; supervisorName?: string | null; lastLoginAt?: string | null };
@@ -159,7 +196,7 @@ function EmployeeApp() {
   const [employeeDisplayName, setEmployeeDisplayName] = useState("کاربر");
   const [employeeNotificationEnabled,setEmployeeNotificationEnabled]=useState(true);
   const [notificationCounts,setNotificationCounts]=useState({unread:0,open:0});
-  const [screen, setScreen] = useState<EmployeeScreen>("home");
+  const [screen, setScreen] = useState<EmployeeScreen>(restoreEmployeeScreen);
   const [working, setWorking] = useState(false);
   const [workToggleBusy, setWorkToggleBusy] = useState(false);
   const [workSessionStartAt, setWorkSessionStartAt] = useState<string | null>(null);
@@ -210,6 +247,10 @@ function EmployeeApp() {
     setToast(message);
     window.setTimeout(() => setToast(""), 2600);
   }, []);
+
+  useEffect(() => {
+    persistNavigation("employee", screen);
+  }, [screen]);
 
   const syncQueued = useCallback(async () => {
     const result = await flushOutbox();
@@ -838,7 +879,7 @@ function AdminPanel() {
   const [adminPassword, setAdminPassword] = useState("");
   const [adminError, setAdminError] = useState("");
   const [adminNotificationCounts,setAdminNotificationCounts]=useState({unread:0,open:0});
-  const [screen, setScreen] = useState<AdminScreen>("dashboard");
+  const [screen, setScreen] = useState<AdminScreen>(restoreAdminScreen);
   const [selected, setSelected] = useState(0);
   const [approvalFilter, setApprovalFilter] = useState("pending");
   const [toast, setToast] = useState("");
@@ -887,6 +928,10 @@ function AdminPanel() {
   const nav: {id:AdminScreen; label:string; icon:string; count?:number}[] = [
     {id:"dashboard",label:"داشبورد",icon:"▦"},{id:"live",label:"ردیابی زنده",icon:"⌖"},{id:"missions",label:"مأموریت‌ها",icon:"▣",count:adminMissions.length},{id:"actions",label:"نیازمند اقدام",icon:"↻",count:adminNotificationCounts.open},{id:"access",label:adminRole === "supervisor" ? "کاربران زیرمجموعه" : "کاربران و دسترسی‌ها",icon:"♙",count:adminUsers.length},{id:"approvals",label:"تأییدها",icon:"✓",count:approvalItems.length},{id:"integrity",label:"مرکز یکپارچگی",icon:"◇",count:integrityEvents.filter(event=>event.status==="open").length},{id:"reports",label:"گزارش‌ها",icon:"▤"},{id:"notifications",label:"اعلان‌ها",icon:"♧",count:adminNotificationCounts.unread},{id:"account",label:"حساب و امنیت",icon:"♙"}
   ];
+
+  useEffect(() => {
+    persistNavigation("admin", screen);
+  }, [screen]);
 
   const loadAdminData = async (target = screen) => {
     if (target === "access") setAdminUsers((await api<{users:ApiUser[]}>("/api/admin/users")).users);
@@ -1161,6 +1206,7 @@ function AdminPanel() {
       <div className="admin-profile" role="button" tabIndex={0} onClick={()=>setScreen("account")} onKeyDown={event=>{if(event.key==="Enter")setScreen("account")}}><div className="avatar">{adminDisplayName.slice(0,2)}</div><span><b>{adminDisplayName}</b><small>{adminRole === "supervisor" ? "سرپرست تیم" : adminRole === "owner" ? "مالک سیستم" : "مدیر سیستم"}</small></span><button aria-label="حساب و امنیت">⋮</button></div>
     </aside>
     <section className="admin-main">
+      <PushNotificationBootstrap active={adminSignedIn} onMessage={notify} />
       <header className="admin-header"><div><h1>{titles[screen][0]}</h1><p>{titles[screen][1]}</p></div><div className="admin-actions"><label className="search"><Icon>⌕</Icon><input placeholder="جستجو در سامانه..." /></label><button className="round notification-round" onClick={()=>setScreen("notifications")} aria-label="اعلان‌ها">♧{adminNotificationCounts.unread>0&&<i/>}{adminNotificationCounts.open>0&&<b>{adminNotificationCounts.open.toLocaleString("fa-IR")}</b>}</button>{!["notifications","account","actions"].includes(screen)&&<button className="primary" onClick={() => screen === "access" && adminRole !== "supervisor" ? openAccessForm() : openMissionForm()}><Icon>＋</Icon> {screen === "access" && adminRole !== "supervisor" ? "ساخت دسترسی" : "مأموریت جدید"}</button>}</div></header>
       <div className="admin-content">
         {screen === "dashboard" && <>
@@ -1276,6 +1322,35 @@ function AdminPanel() {
 }
 
 export default function Home() {
-  const [mode, setMode] = useState<"employee" | "admin">("employee");
+  const [mode, setMode] = useState<PanelMode>("employee");
+  const [navigationReady, setNavigationReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const restore = async () => {
+      const url = new URL(window.location.href);
+      const requested = url.searchParams.get("panel");
+      const stored = sessionStorage.getItem(PANEL_STORAGE_KEY);
+      if (isPanelMode(requested) || isPanelMode(stored)) {
+        if (!cancelled) { setMode(isPanelMode(requested) ? requested : stored as PanelMode); setNavigationReady(true); }
+        return;
+      }
+      try {
+        const response = await fetch("/api/auth/me", { cache: "no-store", credentials: "same-origin" });
+        const body = await response.json() as { user?: { role?: string } };
+        const restoredMode: PanelMode = response.ok && ["owner", "admin", "supervisor"].includes(body.user?.role ?? "") ? "admin" : "employee";
+        if (!cancelled) setMode(restoredMode);
+      } catch { /* The login screen remains available while offline. */ }
+      if (!cancelled) setNavigationReady(true);
+    };
+    void restore();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (navigationReady) persistNavigation(mode);
+  }, [mode, navigationReady]);
+
+  if (!navigationReady) return <div className="prototype app-navigation-loading" dir="rtl"><AppVersionGuard /><div className="navigation-loading-card"><span className="brand-mark">ر</span><b>در حال بازگردانی صفحه شما…</b></div></div>;
   return <div className="prototype"><AppVersionGuard /><TopSwitcher mode={mode} setMode={setMode} />{mode === "employee" ? <EmployeeApp /> : <AdminPanel />}</div>;
 }

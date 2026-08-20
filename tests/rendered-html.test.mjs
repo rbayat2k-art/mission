@@ -552,6 +552,35 @@ test("delivers role-scoped in-app and phone notifications with secure account se
   assert.match(environment, /VAPID_PRIVATE_KEY=/);
 });
 
+test("restores the exact panel after refresh and delivers follow-up messages as native manager notifications", async () => {
+  const [page, bootstrap, pushClient, messages, worker, deploy, vapidSetup] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/PushNotificationBootstrap.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/push-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/follow-up-requests/[id]/messages/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
+    readFile(new URL("../deploy.sh", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/ensure-vapid.mjs", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /PANEL_STORAGE_KEY = "tapra:last-panel"/);
+  assert.match(page, /ADMIN_SCREEN_STORAGE_KEY = "tapra:admin-screen"/);
+  assert.match(page, /url\.searchParams\.get\("panel"\) === "admin"/);
+  assert.match(page, /window\.history\.replaceState/);
+  assert.match(page, /\["owner", "admin", "supervisor"\]\.includes/);
+  assert.match(page, /<PushNotificationBootstrap active=\{adminSignedIn\}/);
+  assert.match(bootstrap, /Notification\.requestPermission/);
+  assert.match(bootstrap, /Notification\.permission === "granted"/);
+  assert.match(pushClient, /navigator\.serviceWorker\.register\("\/sw\.js"\)/);
+  assert.match(pushClient, /\/api\/notifications\/subscriptions/);
+  assert.match(messages, /panel=admin&screen=actions/);
+  assert.match(worker, /requireInteraction: true/);
+  assert.match(worker, /existing\.navigate\(target\)/);
+  assert.match(deploy, /node scripts\/ensure-vapid\.mjs \.env/);
+  assert.match(vapidSetup, /webpush\.generateVAPIDKeys\(\)/);
+  assert.match(vapidSetup, /refusing to replace an existing key/);
+  assert.doesNotMatch(vapidSetup, /console\.log\([^\n]*(publicKey|privateKey)/);
+});
+
 test("rotates login sessions atomically and supports cached legacy password forms", async () => {
   const [auth, changePassword, account, page] = await Promise.all([
     readFile(new URL("../lib/auth.ts", import.meta.url), "utf8"),

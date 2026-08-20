@@ -28,6 +28,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'follow_up.message_sent', 'follow_up_request', ?, ?, ?)").bind(crypto.randomUUID(),auth.user.id,id,JSON.stringify({messageId}),now),
   ]);
   const recipientId = auth.user.role === "employee" ? item.supervisorId : item.employeeId;
-  if (recipientId !== auth.user.id) await createUserNotification(recipientId,{type:"follow_up_message",title:"پیام جدید درباره مأموریت",message:`در گفت‌وگوی «${item.missionTitle}» پیام جدیدی ثبت شد.`,entityType:"follow_up_request",entityId:id,url:"/?screen=notifications"});
+  if (recipientId !== auth.user.id) await createUserNotification(recipientId,{type:"follow_up_message",title:"پیام جدید درباره مأموریت",message:`در گفت‌وگوی «${item.missionTitle}» پیام جدیدی ثبت شد.`,entityType:"follow_up_request",entityId:id,url:recipientId===item.employeeId?"/?panel=employee&screen=missions":"/?panel=admin&screen=actions"});
   return Response.json({ message:{id,requestId:id,senderId:auth.user.id,senderName:auth.user.fullName,senderRole:auth.user.role,messageType:"text",body:text,createdAt:now}, status:employeeReply?"awaiting_supervisor":item.status },{status:201});
 }
