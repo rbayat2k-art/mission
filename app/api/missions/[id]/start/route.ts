@@ -2,6 +2,7 @@ import { ensureDatabase } from "../../../../../db/runtime";
 import { requireRole } from "../../../../../lib/auth";
 import { MAX_CONCURRENT_MISSIONS, missionStartCancellationState } from "../../../../../lib/mission-start-policy";
 import { locationSqlValues, parseMissionLocation } from "../../../../../lib/mission-location";
+import { enrichMissionStatusEventLocation, prepareMissionStatusEvent } from "../../../../../lib/mission-status-events";
 
 type MissionRow = {
   id: string;
@@ -13,7 +14,7 @@ type MissionRow = {
 };
 
 type StartOutcome =
-  | { kind: "started"; startedAt: string; activeCount: number }
+  | { kind: "started"; startedAt: string; activeCount: number; eventId: string }
   | { kind: "existing"; startedAt: string | null }
   | { kind: "error"; status: number; error: string };
 
@@ -80,15 +81,19 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     await transaction.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, ?, 'mission', ?, ?, ?)")
       .bind(crypto.randomUUID(), auth.user.id, mission.status === "follow_up" ? "mission.follow_up_started" : "mission.started", id,
         JSON.stringify({ previousStatus: mission.status, previousDestinationName: mission.destinationName, locationRecordedAt, accuracy: Math.round(startLocation.accuracy) }), now).run();
+    const statusEvent = prepareMissionStatusEvent(transaction, { missionId:id, actorId:auth.user.id, actorRole:auth.user.role,
+      eventType:"started", fromStatus:mission.status, toStatus:"in_progress", serverRecordedAt:now, location:startLocation });
+    await statusEvent.statement.run();
     if (followUpRequest?.status === "ready_for_employee") {
       await transaction.prepare("UPDATE mission_follow_up_requests SET status='resolved', resolution_note='پیگیری مجدد توسط کارمند آغاز شد', resolved_at=?, updated_at=? WHERE id=?")
         .bind(now, now, followUpRequest.id).run();
     }
-    return { kind: "started", startedAt: now, activeCount: activeCount + 1 };
+    return { kind: "started", startedAt: now, activeCount: activeCount + 1, eventId:statusEvent.id };
   });
 
   if (outcome.kind === "error") return Response.json({ error: outcome.error }, { status: outcome.status });
   if (outcome.kind === "existing") return Response.json({ mission: { id, status: "in_progress", startedAt: outcome.startedAt } });
+  void enrichMissionStatusEventLocation(outcome.eventId, startLocation);
   return Response.json({
     mission: { id, status: "in_progress", startedAt: outcome.startedAt, startLocation },
     activeMissionCount: outcome.activeCount,
@@ -97,15 +102,16 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 }
 
 type CancelOutcome =
-  | { kind: "cancelled"; restoredStatus: "open" | "follow_up" | "revision"; cancelledAt: string }
+  | { kind: "cancelled"; restoredStatus: "open" | "follow_up" | "revision"; cancelledAt: string; eventId: string | null }
   | { kind: "error"; status: number; error: string };
 
 export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {
   const auth = await requireRole(request, ["owner", "admin", "supervisor", "employee"]);
   if ("error" in auth) return auth.error;
   const { id } = await context.params;
-  const body = await request.json().catch(() => ({})) as { reason?: string };
+  const body = await request.json().catch(() => ({})) as { reason?: string; location?: unknown };
   const reason = body.reason?.trim() ?? "";
+  const cancellationLocation = parseMissionLocation(body.location);
   if (reason.length < 3 || reason.length > 500) {
     return Response.json({ error: "علت انصراف را بین ۳ تا ۵۰۰ نویسه ثبت کنید." }, { status: 400 });
   }
@@ -145,9 +151,14 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
       .bind(restoredStatus, previousDestinationName, id).run();
     await transaction.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.start_cancelled', 'mission', ?, ?, ?)")
       .bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ reason, startedAt: mission.startedAt, elapsedSeconds: Math.round(cancellation.elapsedMs / 1000), restoredStatus }), cancelledAt).run();
-    return { kind: "cancelled", restoredStatus, cancelledAt };
+    const statusEvent = prepareMissionStatusEvent(transaction, { missionId:id, actorId:auth.user.id, actorRole:auth.user.role,
+      eventType:"start_cancelled", fromStatus:"in_progress", toStatus:restoredStatus, serverRecordedAt:cancelledAt,
+      location:cancellationLocation, metadata:{ reason } });
+    await statusEvent.statement.run();
+    return { kind: "cancelled", restoredStatus, cancelledAt, eventId:statusEvent.id };
   });
 
   if (outcome.kind === "error") return Response.json({ error: outcome.error }, { status: outcome.status });
+  if (outcome.eventId && cancellationLocation) void enrichMissionStatusEventLocation(outcome.eventId, cancellationLocation);
   return Response.json({ mission: { id, status: outcome.restoredStatus, startedAt: null }, cancelledAt: outcome.cancelledAt });
 }

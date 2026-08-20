@@ -3,6 +3,7 @@ import { requireRole } from "../../../../../lib/auth";
 import { locationSqlValues, parseMissionLocation } from "../../../../../lib/mission-location";
 import { normalizeFollowUpCategory } from "../../../../../lib/follow-up";
 import { createUserNotification } from "../../../../../lib/push-notifications";
+import { enrichMissionStatusEventLocation, prepareMissionStatusEvent } from "../../../../../lib/mission-status-events";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const auth = await requireRole(request, ["owner", "admin", "supervisor", "employee"]);
@@ -59,6 +60,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const attemptNo = Number(attempt?.attemptNo ?? 1);
   const followUpRequestId = requestSupervisorAction ? crypto.randomUUID() : null;
   const followUpMessageId = requestSupervisorAction ? crypto.randomUUID() : null;
+  const statusEvent = prepareMissionStatusEvent(db, { missionId:id, attemptNo, actorId:auth.user.id, actorRole:auth.user.role,
+    eventType:"status_set", fromStatus:mission.status, toStatus:status, result:workResult, serverRecordedAt:now,
+    location:endLocation, metadata:{ report:body.report.trim(), requestSupervisorAction, destinationName:registeredDestination.destinationName } });
   const statements = [
     db.prepare("UPDATE missions SET status = ?, destination_name = ?, result = ?, report = ?, expense_amount = ?, score_pending = ?, score_confirmed = ?, score_penalty = ?, score_note = ?, completed_at = ?, end_latitude_e6 = ?, end_longitude_e6 = ?, end_accuracy_cm = ?, end_location_recorded_at = ? WHERE id = ?").bind(status, registeredDestination.destinationName, workResult, body.report.trim(), expenseAmount, pendingScore, confirmedScore, scorePenalty, scoreNote, now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, id),
     db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.completed', 'mission', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ status, baseScore, awardedScore, scorePenalty, scoreNote, completedWithoutStart, result: workResult, expenseAmount, requestSupervisorAction, endLocationRecordedAt, endAccuracy: Math.round(endLocation.accuracy) }), now),
@@ -74,6 +78,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       registeredDestination.longitudeE6, registeredDestination.accuracyCm, registeredDestination.recordedAt,
       endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, needsFinalApproval ? "pending" : "not_required", now,
     ),
+    statusEvent.statement,
   ];
   if (completedWithoutStart && Number(mission.scorePenalty ?? 0) === 0) {
     statements.push(db.prepare("INSERT INTO integrity_events (id, user_id, work_session_id, type, severity, status, details, occurred_at, created_at) VALUES (?, ?, ?, 'mission_completed_without_start', 'medium', 'open', ?, ?, ?)").bind(
@@ -90,6 +95,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     );
   }
   await db.batch(statements);
+  void enrichMissionStatusEventLocation(statusEvent.id, endLocation);
   if (followUpRequestId && mission.supervisorId) await createUserNotification(mission.supervisorId, { type:"follow_up_created", title:"درخواست اقدام جدید", message:`برای مأموریت «${mission.title}» درخواست پیگیری ثبت شد.`, entityType:"follow_up_request", entityId:followUpRequestId, url:"/?panel=admin&screen=actions" });
   return Response.json({ mission: { id, status, attemptNo, needsFollowUp, requestSupervisorAction, followUpRequestId, scorePending: pendingScore, scoreConfirmed: confirmedScore, scorePenalty, scoreNote, completedWithoutStart, endLocation } });
 }

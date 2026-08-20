@@ -2,6 +2,7 @@ import { ensureDatabase } from "../../../db/runtime";
 import { requireRole } from "../../../lib/auth";
 import { normalizeJalaliDeadline } from "../../../lib/mission-deadline";
 import { createUserNotification } from "../../../lib/push-notifications";
+import { prepareMissionStatusEvent } from "../../../lib/mission-status-events";
 
 export async function GET(request: Request) {
   const auth = await requireRole(request, ["owner", "admin", "supervisor", "employee"]);
@@ -12,7 +13,12 @@ export async function GET(request: Request) {
     (SELECT fr.status FROM mission_follow_up_requests fr WHERE fr.mission_id=m.id ORDER BY fr.created_at DESC LIMIT 1) AS followUpRequestStatus,
     (SELECT COUNT(*) FROM audit_logs al WHERE al.entity_type='mission' AND al.entity_id=m.id AND al.action='mission.start_cancelled') AS startCancellationCount,
     (SELECT JSON_UNQUOTE(JSON_EXTRACT(al.details, '$.reason')) FROM audit_logs al WHERE al.entity_type='mission' AND al.entity_id=m.id AND al.action='mission.start_cancelled' ORDER BY al.created_at DESC LIMIT 1) AS lastStartCancellationReason,
-    (SELECT al.created_at FROM audit_logs al WHERE al.entity_type='mission' AND al.entity_id=m.id AND al.action='mission.start_cancelled' ORDER BY al.created_at DESC LIMIT 1) AS lastStartCancelledAt
+    (SELECT al.created_at FROM audit_logs al WHERE al.entity_type='mission' AND al.entity_id=m.id AND al.action='mission.start_cancelled' ORDER BY al.created_at DESC LIMIT 1) AS lastStartCancelledAt,
+    (SELECT mse.event_type FROM mission_status_events mse WHERE mse.mission_id=m.id ORDER BY mse.server_recorded_at DESC, mse.id DESC LIMIT 1) AS latestStatusEventType,
+    (SELECT mse.result FROM mission_status_events mse WHERE mse.mission_id=m.id ORDER BY mse.server_recorded_at DESC, mse.id DESC LIMIT 1) AS latestStatusResult,
+    (SELECT mse.server_recorded_at FROM mission_status_events mse WHERE mse.mission_id=m.id ORDER BY mse.server_recorded_at DESC, mse.id DESC LIMIT 1) AS latestStatusChangedAt,
+    (SELECT mse.location_label FROM mission_status_events mse WHERE mse.mission_id=m.id ORDER BY mse.server_recorded_at DESC, mse.id DESC LIMIT 1) AS latestStatusLocationLabel,
+    (SELECT mse.accuracy_cm FROM mission_status_events mse WHERE mse.mission_id=m.id ORDER BY mse.server_recorded_at DESC, mse.id DESC LIMIT 1) AS latestStatusAccuracyCm
     FROM missions m JOIN users u ON u.id = m.assigned_to`;
   const result = auth.user.role === "employee"
     ? await db.prepare(`${select} WHERE m.assigned_to = ? ORDER BY m.created_at DESC`).bind(auth.user.id).all()
@@ -47,8 +53,10 @@ export async function POST(request: Request) {
   const deadline = normalizedDeadline.deadline ?? (body.deadline?.trim() || null);
   const deadlineAt = "deadlineAt" in normalizedDeadline ? normalizedDeadline.deadlineAt : null;
   const priority = ["low", "normal", "urgent"].includes(body.priority ?? "") ? body.priority! : "normal";
+  const createdEvent = prepareMissionStatusEvent(db, { missionId:id, actorId:auth.user.id, actorRole:auth.user.role, eventType:"created", toStatus:"open", serverRecordedAt:now, metadata:{ source, assignedTo } });
   await db.batch([
     db.prepare("INSERT INTO missions (id, title, description, source, status, priority, created_by, assigned_to, referrer_name, destination_name, deadline, deadline_at, created_at) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, title, body.description?.trim() ?? "", source, priority, auth.user.id, assignedTo, referrerName, body.destinationName?.trim() || null, deadline, deadlineAt, now),
+    createdEvent.statement,
     db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.created', 'mission', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ source, assignedTo, referrerName }), now),
   ]);
   if (auth.user.id !== assignedTo) {

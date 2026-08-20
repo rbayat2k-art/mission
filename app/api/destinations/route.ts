@@ -1,5 +1,6 @@
 import { ensureDatabase } from "../../../db/runtime";
 import { requireRole } from "../../../lib/auth";
+import { enrichMissionStatusEventLocation, prepareMissionStatusEvent } from "../../../lib/mission-status-events";
 
 type DestinationBody = {
   missionId?: string;
@@ -76,15 +77,21 @@ export async function POST(request: Request) {
   const now = new Date().toISOString();
   const destinationName = body.destinationName!.trim();
   const destinationId = crypto.randomUUID();
+  const capturedLocation = { latitude:body.latitude!, longitude:body.longitude!, accuracy:body.accuracy!, recordedAt };
+  const statusEvent = prepareMissionStatusEvent(db, { missionId:mission.id, actorId:auth.user.id, actorRole:auth.user.role,
+    eventType:"destination_registered", fromStatus:mission.status, toStatus:mission.status, serverRecordedAt:now,
+    location:capturedLocation, metadata:{ destinationName } });
   await db.batch([
     db.prepare(`INSERT INTO mission_destinations (id, mission_id, user_id, work_session_id, destination_name, latitude_e6, longitude_e6, accuracy_cm, recorded_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), work_session_id = VALUES(work_session_id), destination_name = VALUES(destination_name), latitude_e6 = VALUES(latitude_e6), longitude_e6 = VALUES(longitude_e6), accuracy_cm = VALUES(accuracy_cm), recorded_at = VALUES(recorded_at)`)
       .bind(destinationId, mission.id, auth.user.id, session.id, destinationName, Math.round(body.latitude! * 1_000_000), Math.round(body.longitude! * 1_000_000), Math.round(body.accuracy! * 100), recordedAt, now),
     db.prepare("UPDATE missions SET destination_name = ? WHERE id = ?").bind(destinationName, mission.id),
+    statusEvent.statement,
     db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.destination_registered', 'mission', ?, ?, ?)")
       .bind(crypto.randomUUID(), auth.user.id, mission.id, JSON.stringify({ destinationName, accuracy: Math.round(body.accuracy!), recordedAt }), now),
   ]);
+  void enrichMissionStatusEventLocation(statusEvent.id, capturedLocation);
   return Response.json({ destination: { missionId: mission.id, destinationName, latitude: body.latitude, longitude: body.longitude, accuracy: body.accuracy, recordedAt } }, { status: 201 });
 }
 

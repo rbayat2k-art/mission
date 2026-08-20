@@ -758,3 +758,37 @@ test("stores and displays an optional work referrer for employee-created mission
   assert.match(page, /selectedMission\.referrerName/);
   assert.match(approvals, /m\.referrer_name AS referrerName/);
 });
+
+test("records every mission status with trusted time and a cached reverse-geocoded location timeline", async () => {
+  const [schema, helper, eventsRoute, missions, start, destination, complete, migration, page, styles] = await Promise.all([
+    readFile(new URL("../db/mysql-schema.sql", import.meta.url), "utf8"),
+    readFile(new URL("../lib/mission-status-events.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/missions/[id]/events/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/missions/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/missions/[id]/start/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/destinations/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/missions/[id]/complete/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/migrate.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/access.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS mission_status_events/);
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS reverse_geocode_cache/);
+  assert.match(schema, /server_recorded_at VARCHAR\(40\) NOT NULL/);
+  assert.match(helper, /nominatim\.openstreetmap\.org\/reverse/);
+  assert.match(helper, /1_100/);
+  assert.match(helper, /TapraSystem\/\$\{APP_VERSION\} \(https:\/\/taprasystem\.ir\)/);
+  assert.match(helper, /coordinateKey/);
+  assert.match(helper, /geocode_status='failed'/);
+  assert.match(eventsRoute, /canReadMission/);
+  assert.match(eventsRoute, /geocode_status='pending'/);
+  assert.match(missions, /eventType:"created"/);
+  assert.match(start, /eventType:"started"/);
+  assert.match(destination, /eventType:"destination_registered"/);
+  assert.match(complete, /eventType:"status_set"/);
+  assert.match(migration, /backfilled.*TRUE/);
+  assert.match(page, /تاریخچه وضعیت مأموریت/);
+  assert.match(page, /MissionStatusTimeline events=\{missionEvents\}/);
+  assert.match(page, /MissionStatusTimeline events=\{missionTraceEvents\}/);
+  assert.match(styles, /\.mission-status-timeline/);
+});

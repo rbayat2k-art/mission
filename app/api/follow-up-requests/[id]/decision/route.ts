@@ -2,6 +2,7 @@ import { ensureDatabase } from "../../../../../db/runtime";
 import { requireRole } from "../../../../../lib/auth";
 import { canAccessFollowUp, isFollowUpOpen, type FollowUpAccessRow } from "../../../../../lib/follow-up";
 import { createUserNotification } from "../../../../../lib/push-notifications";
+import { prepareMissionStatusEvent } from "../../../../../lib/mission-status-events";
 
 const decisions = ["request_info", "return_to_employee", "resolve", "reject", "escalate"] as const;
 
@@ -33,10 +34,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     status="escalated";assignedTo=admin.id;
   }
   const now=new Date().toISOString();
+  const missionEventStatus=body.action==="return_to_employee"?"follow_up":body.action==="resolve"?"approved":item.missionStatus;
+  const statusEvent=prepareMissionStatusEvent(db,{missionId:item.missionId,actorId:auth.user.id,actorRole:auth.user.role,
+    eventType:"follow_up_decision",fromStatus:item.missionStatus,toStatus:missionEventStatus,serverRecordedAt:now,
+    metadata:{action:body.action,note,requestId:id}});
   const statements=[
     db.prepare("UPDATE mission_follow_up_requests SET status=?, assigned_to=?, resolution_note=?, updated_at=?, resolved_at=? WHERE id=?").bind(status,assignedTo,["resolved","rejected"].includes(status)?note:null,now,resolvedAt,id),
     db.prepare("INSERT INTO mission_follow_up_messages (id, request_id, sender_id, message_type, body, created_at) VALUES (?, ?, ?, 'decision', ?, ?)").bind(crypto.randomUUID(),id,auth.user.id,note,now),
     db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'follow_up.decision', 'follow_up_request', ?, ?, ?)").bind(crypto.randomUUID(),auth.user.id,id,JSON.stringify({action:body.action,status,assignedTo,note}),now),
+    statusEvent.statement,
   ];
   if(body.action==="return_to_employee"&&item.missionStatus==="follow_up_pending"){
     statements.push(

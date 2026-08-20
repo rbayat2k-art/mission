@@ -143,6 +143,54 @@ CREATE TABLE IF NOT EXISTS mission_attempts (
   CONSTRAINT fk_mission_attempts_mission FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- statement-breakpoint
+CREATE TABLE IF NOT EXISTS reverse_geocode_cache (
+  coordinate_key VARCHAR(64) PRIMARY KEY,
+  latitude_e6 INT NOT NULL,
+  longitude_e6 INT NOT NULL,
+  location_label VARCHAR(700) NULL,
+  street VARCHAR(255) NULL,
+  neighborhood VARCHAR(255) NULL,
+  district VARCHAR(255) NULL,
+  city VARCHAR(255) NULL,
+  province VARCHAR(255) NULL,
+  provider VARCHAR(40) NOT NULL,
+  cached_at VARCHAR(40) NOT NULL,
+  INDEX idx_reverse_geocode_cached (cached_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- statement-breakpoint
+CREATE TABLE IF NOT EXISTS mission_status_events (
+  id CHAR(36) PRIMARY KEY,
+  mission_id CHAR(36) NOT NULL,
+  attempt_no INT NULL,
+  actor_id CHAR(36) NOT NULL,
+  actor_role VARCHAR(24) NOT NULL,
+  event_type VARCHAR(40) NOT NULL,
+  from_status VARCHAR(24) NULL,
+  to_status VARCHAR(24) NULL,
+  result VARCHAR(100) NULL,
+  server_recorded_at VARCHAR(40) NOT NULL,
+  device_recorded_at VARCHAR(40) NULL,
+  latitude_e6 INT NULL,
+  longitude_e6 INT NULL,
+  accuracy_cm INT NULL,
+  location_label VARCHAR(700) NULL,
+  street VARCHAR(255) NULL,
+  neighborhood VARCHAR(255) NULL,
+  district VARCHAR(255) NULL,
+  city VARCHAR(255) NULL,
+  province VARCHAR(255) NULL,
+  geocode_provider VARCHAR(40) NULL,
+  geocode_status VARCHAR(24) NOT NULL DEFAULT 'not_requested',
+  geocoded_at VARCHAR(40) NULL,
+  metadata JSON NULL,
+  created_at VARCHAR(40) NOT NULL,
+  INDEX idx_mission_status_events_mission_time (mission_id, server_recorded_at),
+  INDEX idx_mission_status_events_actor_time (actor_id, server_recorded_at),
+  INDEX idx_mission_status_events_geocode (geocode_status, server_recorded_at),
+  CONSTRAINT fk_mission_status_events_mission FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE,
+  CONSTRAINT fk_mission_status_events_actor FOREIGN KEY (actor_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- statement-breakpoint
 CREATE TABLE IF NOT EXISTS approvals (
   id CHAR(36) PRIMARY KEY,
   mission_id CHAR(36) NOT NULL UNIQUE,

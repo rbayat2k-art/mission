@@ -50,7 +50,8 @@ function persistNavigation(panel: PanelMode, screen?: EmployeeScreen | AdminScre
   window.history.replaceState(window.history.state, "", url.toString());
 }
 
-type ApiMission = { id: string; title: string; description: string; source: "manager" | "employee"; status: string; priority: string; assignedTo?: string; referrerName?: string | null; destinationName?: string | null; result?: string | null; report?: string | null; expenseAmount?: number; deadline?: string | null; scorePending: number; scoreConfirmed: number; scorePenalty?: number; scoreNote?: string | null; startedAt?: string | null; employeeName?: string; completedAt?: string | null; createdAt?: string; attemptCount?: number; followUpRequestStatus?:string|null; startCancellationCount?:number; lastStartCancellationReason?:string|null; lastStartCancelledAt?:string|null };
+type ApiMission = { id: string; title: string; description: string; source: "manager" | "employee"; status: string; priority: string; assignedTo?: string; referrerName?: string | null; destinationName?: string | null; result?: string | null; report?: string | null; expenseAmount?: number; deadline?: string | null; scorePending: number; scoreConfirmed: number; scorePenalty?: number; scoreNote?: string | null; startedAt?: string | null; employeeName?: string; completedAt?: string | null; createdAt?: string; attemptCount?: number; followUpRequestStatus?:string|null; startCancellationCount?:number; lastStartCancellationReason?:string|null; lastStartCancelledAt?:string|null; latestStatusEventType?:string|null; latestStatusResult?:string|null; latestStatusChangedAt?:string|null; latestStatusLocationLabel?:string|null; latestStatusAccuracyCm?:number|null };
+type ApiMissionEvent = { id:string;attemptNo:number|null;actorId:string;actorName:string;actorRole:string;eventType:string;fromStatus:string|null;toStatus:string|null;result:string|null;serverRecordedAt:string;deviceRecordedAt:string|null;latitude:number|null;longitude:number|null;accuracy:number|null;locationLabel:string|null;street:string|null;neighborhood:string|null;district:string|null;city:string|null;province:string|null;geocodeProvider:string|null;geocodeStatus:string;metadata:Record<string,unknown>|null };
 type ApiUser = { id: string; fullName: string; mobile: string; username: string; role: string; status: string; supervisorId?: string | null; supervisorName?: string | null; lastLoginAt?: string | null };
 type ApiApproval = { id: string; missionId: string; title: string; employeeName: string; referrerName?: string | null; result: string; report: string; destinationName: string; expenseAmount: number; scorePending: number };
 type UiMission = Omit<Partial<ApiMission>, "id"> & { id: string | number; title: string; meta: string; type: string; priority: string; status: string; backendStatus?: string };
@@ -101,6 +102,30 @@ function formatPersianTime(value?: string | null) {
 
 function currentPersianDate() {
   return new Intl.DateTimeFormat("fa-IR-u-ca-persian", { weekday:"long", year:"numeric", month:"long", day:"numeric" }).format(new Date());
+}
+
+function missionEventTitle(event: Pick<ApiMissionEvent,"eventType"|"result"|"metadata">) {
+  if (event.eventType === "created") return "مأموریت ثبت شد";
+  if (event.eventType === "started") return "شروع کار ثبت شد";
+  if (event.eventType === "destination_registered") return "مقصد ثبت شد";
+  if (event.eventType === "start_cancelled") return "شروع مأموریت لغو شد";
+  if (event.eventType === "approval_decision") return "تصمیم سرپرست ثبت شد";
+  if (event.eventType === "follow_up_decision") return "اقدام پیگیری ثبت شد";
+  return event.result ? `تعیین وضعیت: ${event.result}` : "وضعیت مأموریت تغییر کرد";
+}
+
+function MissionStatusTimeline({ events, loading, compact = false }: { events:ApiMissionEvent[];loading?:boolean;compact?:boolean }) {
+  return <section className={`mission-status-timeline ${compact ? "compact" : ""}`}>
+    <div className="timeline-heading"><div><h3>تاریخچه وضعیت مأموریت</h3><p>زمان دقیق سرور و موقعیت ثبت‌شده هنگام هر اقدام</p></div><span>{events.length.toLocaleString("fa-IR")} رویداد</span></div>
+    {loading ? <div className="timeline-loading">در حال دریافت سابقه وضعیت و محدوده مکانی...</div> : events.length ? <div className="timeline-items">{events.map((event)=><article key={event.id}>
+      <i className={event.eventType === "status_set" ? "result" : event.eventType === "destination_registered" ? "destination" : ""}>{event.eventType === "created" ? "＋" : event.eventType === "started" ? "▶" : event.eventType === "destination_registered" ? "⌖" : event.eventType === "start_cancelled" ? "×" : "✓"}</i>
+      <div><header><b>{missionEventTitle(event)}</b><time>{formatPersianDateTime(event.serverRecordedAt)}</time></header>
+        <p>{event.locationLabel ?? (event.latitude != null ? event.geocodeStatus === "pending" ? "نام محدوده در حال تکمیل است؛ مختصات GPS ذخیره شده" : "موقعیت GPS ذخیره شده؛ نام محدوده در دسترس نیست" : "این رویداد نیاز به موقعیت مکانی نداشته است")}</p>
+        <small>{event.actorName}{event.accuracy != null ? ` · دقت GPS ${Math.round(event.accuracy).toLocaleString("fa-IR")} متر` : ""}{event.metadata?.backfilled ? " · بازسازی‌شده از سابقه قبلی" : ""}</small>
+      </div>
+    </article>)}</div> : <div className="timeline-loading">هنوز رویدادی برای این مأموریت ثبت نشده است.</div>}
+    {events.some(event=>event.geocodeProvider === "nominatim")&&<footer>توضیح محدوده بر پایه داده‌های © OpenStreetMap contributors</footer>}
+  </section>;
 }
 
 function currentTehranDayKey(value = new Date()) {
@@ -246,6 +271,8 @@ function EmployeeApp() {
   const gpsProblemReported = useRef(false);
   const [missions, setMissions] = useState<UiMission[]>([]);
   const [selectedMission, setSelectedMission] = useState<UiMission>(emptyMission);
+  const [missionEvents, setMissionEvents] = useState<ApiMissionEvent[]>([]);
+  const [missionEventsLoading, setMissionEventsLoading] = useState(false);
   const [newReferrerName, setNewReferrerName] = useState("");
   const [newTitle, setNewTitle] = useState("");
 
@@ -464,7 +491,7 @@ function EmployeeApp() {
     try {
       const result = await api<{ mission: { status: string; startedAt: null } }>(`/api/missions/${selectedMission.id}/start`, {
         method: "DELETE",
-        body: JSON.stringify({ reason: cancelStartReason.trim() }),
+        body: JSON.stringify({ reason: cancelStartReason.trim(), location: latestGps }),
       });
       const restoredTab = result.mission.status === "follow_up" ? "follow_up" : "open";
       setCancelStartOpen(false);
@@ -557,10 +584,13 @@ function EmployeeApp() {
 
   const openMissionDetail = (mission: UiMission | ApiMission, returnScreen: "missions" | "report" = "missions") => {
     setSelectedMission(mission as UiMission);
+    setMissionEvents([]);
+    setMissionEventsLoading(true);
     setCancelStartOpen(false);
     setCancelStartReason("");
     setDetailReturnScreen(returnScreen);
     setScreen("mission-detail");
+    api<{events:ApiMissionEvent[]}>(`/api/missions/${mission.id}/events`).then(result=>setMissionEvents(result.events)).catch(error=>notify(error instanceof Error ? error.message : "دریافت سابقه مأموریت ناموفق بود")).finally(()=>setMissionEventsLoading(false));
   };
 
   const openMyReport = async () => {
@@ -767,7 +797,7 @@ function EmployeeApp() {
                 {missions.filter(m => m.status === missionTab).map(m => (
                   <div className="mission-list-card" role="button" key={m.id} onClick={() => openMissionDetail(m)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openMissionDetail(m); } }} tabIndex={0}>
                     <div className="list-card-top"><span className={m.priority === "فوری" ? "priority" : "normal"}>{m.priority}</span><span className="source">{m.type === "خودم" ? "ایجادشده توسط من" : "توسط مدیر"}</span></div>
-                    <h3>{m.title}</h3>{m.referrerName && <p className="mission-referrer">ارجاع‌دهنده کار: <b>{m.referrerName}</b></p>}<p><Icon>◷</Icon>{m.meta}{Number(m.attemptCount ?? 0) > 0 ? ` · مراجعه ${Number(m.attemptCount).toLocaleString("fa-IR")}` : ""}</p>{["open","in_progress","follow_up"].includes(m.status) && <small className="mission-description-preview">{m.description?.trim() || "برای دیدن شرح کامل این مأموریت روی کارت بزنید."}</small>}
+                    <h3>{m.title}</h3>{m.referrerName && <p className="mission-referrer">ارجاع‌دهنده کار: <b>{m.referrerName}</b></p>}<p><Icon>◷</Icon>{m.meta}{Number(m.attemptCount ?? 0) > 0 ? ` · مراجعه ${Number(m.attemptCount).toLocaleString("fa-IR")}` : ""}</p>{m.latestStatusChangedAt&&<div className="mission-latest-status"><Icon>⌖</Icon><span><b>{m.latestStatusResult ? `آخرین وضعیت: ${m.latestStatusResult}` : m.latestStatusEventType === "started" ? "شروع کار ثبت شد" : m.latestStatusEventType === "destination_registered" ? "مقصد ثبت شد" : "آخرین تغییر وضعیت"}</b><small>{formatPersianDateTime(m.latestStatusChangedAt)}{m.latestStatusLocationLabel ? ` · ${m.latestStatusLocationLabel}` : ""}</small></span></div>}{["open","in_progress","follow_up"].includes(m.status) && <small className="mission-description-preview">{m.description?.trim() || "برای دیدن شرح کامل این مأموریت روی کارت بزنید."}</small>}
                     {m.status === "pending" ? <div className="approval-strip"><Icon>◌</Icon><span><b>{m.result ?? "در انتظار بررسی سرپرست"}</b><small>مشاهده گزارش ثبت‌شده ←</small></span></div> : m.status === "follow_up" ? <div className="follow-up-strip"><Icon>↻</Icon><span><b>{m.result ?? "نیازمند مراجعه و پیگیری دوباره"}</b><small>{m.backendStatus === "follow_up_pending" ? "گزارش قبلی در انتظار بررسی سرپرست است" : "مشاهده سابقه و شروع پیگیری بعدی ←"}</small></span></div> : m.status === "done" ? <div className={`done-strip ${m.result && m.result !== "انجام شد" ? "not-completed" : ""}`}>{m.result === "انجام شد" ? "✓" : "◷"} {m.result ?? "گزارش ثبت‌شده"} <b>مشاهده جزئیات ←</b></div> : <button className="card-arrow" aria-label="مشاهده شرح وظیفه">{m.backendStatus === "in_progress" ? "مشاهده و ادامه" : "مشاهده شرح وظیفه"} ←</button>}
                   </div>
                 ))}
@@ -841,6 +871,7 @@ function EmployeeApp() {
             <div className="mission-detail-hero"><span className={selectedMission.result === "انجام شد" ? "success" : "warning"}>{selectedMission.result === "انجام شد" ? "✓" : selectedMission.result ? "◷" : "▣"}</span><div><small>{selectedMission.type === "خودم" || selectedMission.source === "employee" ? "مأموریت خودساخته" : "مأموریت مدیر"}</small><h2>{selectedMission.title}</h2><p>{selectedMission.status === "follow_up" ? `نتیجه مراجعه قبلی: ${selectedMission.result ?? "نیازمند پیگیری"}` : selectedMission.completedAt ? `ثبت نتیجه در ${formatPersianDateTime(selectedMission.completedAt)}` : selectedMission.backendStatus === "in_progress" ? "شروع کار ثبت شده و مأموریت در حال انجام است" : "شرح وظیفه را بخوانید و سپس روش ادامه را انتخاب کنید"}</p></div></div>
             {(!selectedMission.completedAt || selectedMission.status === "follow_up") && <section className="mission-task-description"><span>شرح وظیفه</span><p>{selectedMission.description?.trim() || "برای این مأموریت توضیح جداگانه‌ای ثبت نشده است؛ در صورت ابهام با مدیر یا سرپرست هماهنگ کنید."}</p><div><small>تاریخ ثبت</small><b>{formatPersianDateTime(selectedMission.createdAt)}</b><small>مهلت</small><b>{selectedMission.deadline ?? "بدون مهلت"}</b><small>اولویت</small><b>{selectedMission.priority ?? "عادی"}</b>{Number(selectedMission.attemptCount ?? 0) > 0 && <><small>تعداد مراجعات ثبت‌شده</small><b>{Number(selectedMission.attemptCount).toLocaleString("fa-IR")}</b></>}</div></section>}
             <div className="mission-detail-card">{selectedMission.referrerName && <><span>ارجاع‌دهنده کار</span><b>{selectedMission.referrerName}</b></>}<span>نتیجه آخرین مراجعه</span><b className={selectedMission.result === "انجام شد" ? "green" : "amber"}>{selectedMission.result ?? "هنوز نتیجه‌ای ثبت نشده"}</b><span>گزارش من</span><b>{selectedMission.report ?? "هنوز گزارشی ثبت نشده است."}</b><span>مقصد</span><b>{selectedMission.destinationName ?? "مقصد ثبت نشده"}</b>{Number(selectedMission.expenseAmount ?? 0) > 0 && <><span>هزینه انجام‌شده</span><b>{Number(selectedMission.expenseAmount).toLocaleString("fa-IR")} تومان</b></>}{Number(selectedMission.scorePenalty ?? 0) > 0 && <><span>کسر امتیاز</span><b className="score-penalty">−{Number(selectedMission.scorePenalty).toLocaleString("fa-IR")} · {selectedMission.scoreNote}</b></>}<span>وضعیت</span><b>{selectedMission.backendStatus === "follow_up_pending" ? "پیگیری مجدد · منتظر بررسی گزارش قبلی" : selectedMission.backendStatus === "follow_up" ? "آماده پیگیری مجدد" : selectedMission.backendStatus === "pending" || selectedMission.status === "pending" ? "در انتظار تأیید سرپرست" : selectedMission.backendStatus === "rejected" ? "ردشده" : selectedMission.backendStatus === "revision" ? "نیازمند اصلاح" : selectedMission.backendStatus === "in_progress" ? "در حال انجام" : selectedMission.completedAt ? "ثبت و تکمیل‌شده" : "باز"}</b></div>
+            <MissionStatusTimeline events={missionEvents} loading={missionEventsLoading}/>
             {selectedMission.id && selectedMission.followUpRequestStatus && selectedMission.result && selectedMission.result !== "انجام شد" && <EmployeeFollowUpPanel missionId={String(selectedMission.id)} onMessage={notify}/>}
             {!["awaiting_supervisor","awaiting_employee","escalated"].includes(selectedMission.followUpRequestStatus??"") && <>
             {["open","in_progress","follow_up"].includes(selectedMission.status) && selectedMission.backendStatus !== "follow_up_pending" && <section className="mission-detail-actions">
@@ -954,6 +985,7 @@ function AdminPanel() {
   const [missionAssignee, setMissionAssignee] = useState("");
   const [missionSubmitting, setMissionSubmitting] = useState(false);
   const [missionTrace, setMissionTrace] = useState<ApiMissionTrace | null>(null);
+  const [missionTraceEvents, setMissionTraceEvents] = useState<ApiMissionEvent[]>([]);
   const [missionTraceOpen, setMissionTraceOpen] = useState(false);
   const [missionTraceLoading, setMissionTraceLoading] = useState(false);
   const [missionTraceScore, setMissionTraceScore] = useState("12");
@@ -1166,10 +1198,15 @@ function AdminPanel() {
   const openMissionTrace = async (mission: ApiMission) => {
     setMissionTraceOpen(true);
     setMissionTrace(null);
+    setMissionTraceEvents([]);
     setMissionTraceLoading(true);
     try {
-      const result = await api<{trace:ApiMissionTrace}>(`/api/missions/${mission.id}/trace`);
+      const [result, eventResult] = await Promise.all([
+        api<{trace:ApiMissionTrace}>(`/api/missions/${mission.id}/trace`),
+        api<{events:ApiMissionEvent[]}>(`/api/missions/${mission.id}/events`),
+      ]);
       setMissionTrace(result.trace);
+      setMissionTraceEvents(eventResult.events);
       setMissionTraceScore(String(["pending","pending_approval"].includes(result.trace.mission.status) ? result.trace.mission.scorePending : result.trace.mission.scoreConfirmed));
       setMissionTraceScoreNote(result.trace.mission.scoreNote ?? "");
     } catch (error) {
@@ -1356,6 +1393,7 @@ function AdminPanel() {
               <div className={`end ${missionTrace.points.end ? "available" : "missing"}`}><i>پایان</i><span><b>نقطه پایان کار</b><small>{missionTrace.points.end ? `${formatPersianDateTime(missionTrace.points.end.recordedAt)} · دقت ${Math.round(missionTrace.points.end.accuracy).toLocaleString("fa-IR")} متر` : "موقعیت پایان مأموریت ثبت نشده است"}</small>{missionTrace.points.end?.source === "nearest_gps" && <em>برآورد از نزدیک‌ترین GPS</em>}</span></div>
             </div>
             <div className="trace-evaluation-grid"><section><h3>فاصله و زمان</h3><div><span><small>شروع تا مقصد</small><b>{missionTrace.metrics.startToDestinationMeters == null ? "—" : `${missionTrace.metrics.startToDestinationMeters.toLocaleString("fa-IR")} متر`}</b></span><span><small>مقصد تا پایان</small><b>{missionTrace.metrics.destinationToEndMeters == null ? "—" : `${missionTrace.metrics.destinationToEndMeters.toLocaleString("fa-IR")} متر`}</b></span><span><small>زمان کل مأموریت</small><b>{missionTrace.metrics.totalElapsedMinutes == null ? "بدون شروع" : formatMinutes(missionTrace.metrics.totalElapsedMinutes)}</b></span></div></section><section><h3>وضعیت امتیاز</h3><div><span><small>امتیاز قطعی</small><b>{missionTrace.mission.scoreConfirmed.toLocaleString("fa-IR")}</b></span><span><small>در انتظار تأیید</small><b>{missionTrace.mission.scorePending.toLocaleString("fa-IR")}</b></span><span><small>کسر ثبت‌شده</small><b>{missionTrace.mission.scorePenalty.toLocaleString("fa-IR")}</b></span></div></section></div>
+            <MissionStatusTimeline events={missionTraceEvents} compact/>
             <section className="trace-score-hints"><h3>موارد مؤثر در ارزیابی و نمره</h3>{missionTrace.evaluation.scoreHints.map((hint,index)=><p key={index}><Icon>{missionTrace.evaluation.confidence === "high" ? "✓" : "!"}</Icon>{hint}</p>)}</section>
             {["pending","pending_approval","approved","completed"].includes(missionTrace.mission.status) ? <section className="trace-score-form"><div><h3>ثبت نمره مدیر یا سرپرست</h3><p>بر اساس سه نقطه، دقت GPS و گزارش کارمند، نمره نهایی را در مقیاس فعلی سامانه ثبت کنید.</p></div><label>نمره از ۱۲<input type="number" min="0" max="12" step="1" inputMode="numeric" value={missionTraceScore} onChange={event=>setMissionTraceScore(event.target.value)} /></label><label>دلیل ارزیابی <b>*</b><textarea value={missionTraceScoreNote} onChange={event=>setMissionTraceScoreNote(event.target.value)} placeholder="مثلاً: هر سه نقطه صحیح است و پایان کار در محدوده مقصد ثبت شده..." /></label><button type="button" onClick={saveMissionTraceScore} disabled={missionTraceScoreSaving}>{missionTraceScoreSaving ? "در حال ثبت..." : "ثبت ارزیابی و نمره"}</button></section> : <div className="trace-score-locked">این مأموریت رد شده یا برای اصلاح برگشته است؛ تا ثبت مجدد نتیجه، امتیاز جدیدی برای آن قطعی نمی‌شود.</div>}
             {missionTrace.mission.report && <section className="trace-report"><h3>گزارش ثبت‌شده کارمند</h3><p>{missionTrace.mission.report}</p></section>}

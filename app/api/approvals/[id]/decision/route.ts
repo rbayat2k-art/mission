@@ -1,6 +1,7 @@
 import { ensureDatabase } from "../../../../../db/runtime";
 import { requireRole } from "../../../../../lib/auth";
 import { createUserNotification } from "../../../../../lib/push-notifications";
+import { prepareMissionStatusEvent } from "../../../../../lib/mission-status-events";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const auth = await requireRole(request, ["owner", "admin", "supervisor"]);
@@ -17,11 +18,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const now = new Date().toISOString();
   const missionStatus = body.decision === "approved" && approval.missionStatus === "follow_up_pending" ? "follow_up" : body.decision;
   const scoreSql = body.decision === "approved" ? "score_confirmed = score_pending, score_pending = 0" : "score_pending = 0";
+  const statusEvent = prepareMissionStatusEvent(db, { missionId:approval.missionId, actorId:auth.user.id, actorRole:auth.user.role,
+    eventType:"approval_decision", fromStatus:approval.missionStatus, toStatus:missionStatus, serverRecordedAt:now,
+    metadata:{ decision:body.decision, reason:body.reason?.trim() ?? null, approvalId:id } });
   await db.batch([
     db.prepare("UPDATE approvals SET status = ?, supervisor_id = ?, reason = ?, decided_at = ? WHERE id = ? AND status = 'pending'").bind(body.decision, auth.user.id, body.reason?.trim() ?? null, now, id),
     db.prepare(`UPDATE missions SET status = ?, ${scoreSql} WHERE id = ?`).bind(missionStatus, approval.missionId),
     db.prepare("UPDATE mission_attempts SET approval_status = ? WHERE mission_id = ? ORDER BY attempt_no DESC LIMIT 1").bind(body.decision, approval.missionId),
     db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'approval.decided', 'approval', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ decision: body.decision, reason: body.reason ?? null }), now),
+    statusEvent.statement,
   ]);
   await createUserNotification(approval.assignedTo, {
     type: `approval_${body.decision}`,

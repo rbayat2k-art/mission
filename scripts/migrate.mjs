@@ -67,7 +67,42 @@ try {
   }
   const [attachmentIndexes] = await connection.execute("SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'attachments' AND INDEX_NAME = 'idx_attachments_follow_up_message'");
   if (!attachmentIndexes.length) await connection.execute("ALTER TABLE attachments ADD INDEX idx_attachments_follow_up_message (follow_up_message_id, created_at)");
-  console.log(`Applied ${statements.length} MySQL schema statements and verified mission scoring and work-session policy columns, plus follow-up and attachment columns.`);
+
+  await connection.execute(`INSERT INTO mission_status_events (id, mission_id, actor_id, actor_role, event_type, to_status,
+    server_recorded_at, geocode_status, metadata, created_at)
+    SELECT UUID(), m.id, m.created_by, creator.role, 'created', 'open', m.created_at, 'not_requested', JSON_OBJECT('backfilled', TRUE), m.created_at
+    FROM missions m JOIN users creator ON creator.id=m.created_by
+    WHERE NOT EXISTS (SELECT 1 FROM mission_status_events e WHERE e.mission_id=m.id AND e.event_type='created')`);
+  await connection.execute(`INSERT INTO mission_status_events (id, mission_id, attempt_no, actor_id, actor_role, event_type, to_status,
+    server_recorded_at, device_recorded_at, latitude_e6, longitude_e6, accuracy_cm, geocode_status, metadata, created_at)
+    SELECT UUID(), ma.mission_id, ma.attempt_no, m.assigned_to, employee.role, 'started', 'in_progress', ma.started_at,
+      ma.start_location_recorded_at, ma.start_latitude_e6, ma.start_longitude_e6, ma.start_accuracy_cm,
+      IF(ma.start_latitude_e6 IS NULL, 'not_requested', 'pending'), JSON_OBJECT('backfilled', TRUE), ma.started_at
+    FROM mission_attempts ma JOIN missions m ON m.id=ma.mission_id JOIN users employee ON employee.id=m.assigned_to
+    WHERE ma.started_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM mission_status_events e WHERE e.mission_id=ma.mission_id AND e.attempt_no=ma.attempt_no AND e.event_type='started')`);
+  await connection.execute(`INSERT INTO mission_status_events (id, mission_id, attempt_no, actor_id, actor_role, event_type, to_status,
+    server_recorded_at, device_recorded_at, latitude_e6, longitude_e6, accuracy_cm, geocode_status, metadata, created_at)
+    SELECT UUID(), ma.mission_id, ma.attempt_no, m.assigned_to, employee.role, 'destination_registered', 'in_progress', ma.destination_recorded_at,
+      ma.destination_recorded_at, ma.destination_latitude_e6, ma.destination_longitude_e6, ma.destination_accuracy_cm,
+      IF(ma.destination_latitude_e6 IS NULL, 'not_requested', 'pending'), JSON_OBJECT('backfilled', TRUE, 'destinationName', ma.destination_name), ma.destination_recorded_at
+    FROM mission_attempts ma JOIN missions m ON m.id=ma.mission_id JOIN users employee ON employee.id=m.assigned_to
+    WHERE ma.destination_recorded_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM mission_status_events e WHERE e.mission_id=ma.mission_id AND e.attempt_no=ma.attempt_no AND e.event_type='destination_registered')`);
+  await connection.execute(`INSERT INTO mission_status_events (id, mission_id, attempt_no, actor_id, actor_role, event_type, from_status, to_status, result,
+    server_recorded_at, device_recorded_at, latitude_e6, longitude_e6, accuracy_cm, geocode_status, metadata, created_at)
+    SELECT UUID(), ma.mission_id, ma.attempt_no, m.assigned_to, employee.role, 'status_set', 'in_progress',
+      IF(ma.result='انجام شد', IF(ma.approval_status='pending', 'pending', 'approved'), 'follow_up'), ma.result, ma.completed_at,
+      ma.end_location_recorded_at, ma.end_latitude_e6, ma.end_longitude_e6, ma.end_accuracy_cm,
+      IF(ma.end_latitude_e6 IS NULL, 'not_requested', 'pending'), JSON_OBJECT('backfilled', TRUE, 'report', ma.report), ma.completed_at
+    FROM mission_attempts ma JOIN missions m ON m.id=ma.mission_id JOIN users employee ON employee.id=m.assigned_to
+    WHERE NOT EXISTS (SELECT 1 FROM mission_status_events e WHERE e.mission_id=ma.mission_id AND e.attempt_no=ma.attempt_no AND e.event_type='status_set')`);
+  await connection.execute(`INSERT INTO mission_status_events (id, mission_id, actor_id, actor_role, event_type, to_status,
+    server_recorded_at, device_recorded_at, latitude_e6, longitude_e6, accuracy_cm, geocode_status, metadata, created_at)
+    SELECT UUID(), m.id, m.assigned_to, employee.role, 'started', 'in_progress', m.started_at, m.start_location_recorded_at,
+      m.start_latitude_e6, m.start_longitude_e6, m.start_accuracy_cm, IF(m.start_latitude_e6 IS NULL, 'not_requested', 'pending'),
+      JSON_OBJECT('backfilled', TRUE, 'currentMission', TRUE), m.started_at
+    FROM missions m JOIN users employee ON employee.id=m.assigned_to
+    WHERE m.started_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM mission_status_events e WHERE e.mission_id=m.id AND e.event_type='started')`);
+  console.log(`Applied ${statements.length} MySQL schema statements, verified mission scoring and work-session policy columns, and backfilled the mission status timeline.`);
 } finally {
   await connection.end();
 }
