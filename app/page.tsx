@@ -68,6 +68,19 @@ function currentTehranDayKey(value = new Date()) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tehran", year: "numeric", month: "2-digit", day: "2-digit" }).format(value);
 }
 
+function createClientId() {
+  const browserCrypto = globalThis.crypto;
+  if (typeof browserCrypto?.randomUUID === "function") return browserCrypto.randomUUID();
+  if (typeof browserCrypto?.getRandomValues === "function") {
+    const bytes = browserCrypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, value => value.toString(16).padStart(2, "0"));
+    return `${hex.slice(0,4).join("")}-${hex.slice(4,6).join("")}-${hex.slice(6,8).join("")}-${hex.slice(8,10).join("")}-${hex.slice(10).join("")}`;
+  }
+  return `legacy-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function formatDurationSeconds(totalSeconds: number) {
   const safe = Math.max(0, Math.floor(totalSeconds));
   const hours = Math.floor(safe / 3600);
@@ -147,6 +160,7 @@ function EmployeeApp() {
   const [notificationCounts,setNotificationCounts]=useState({unread:0,open:0});
   const [screen, setScreen] = useState<EmployeeScreen>("home");
   const [working, setWorking] = useState(false);
+  const [workToggleBusy, setWorkToggleBusy] = useState(false);
   const [workSessionStartAt, setWorkSessionStartAt] = useState<string | null>(null);
   const [todayWorkMinutes, setTodayWorkMinutes] = useState(0);
   const [workMinutesSyncedAt, setWorkMinutesSyncedAt] = useState(() => Date.now());
@@ -306,7 +320,7 @@ function EmployeeApp() {
       if (Date.now() - lastGpsSentAt.current < 15_000) return;
       lastGpsSentAt.current = Date.now();
       const point = {
-        clientEventId: crypto.randomUUID(), latitude: position.coords.latitude, longitude: position.coords.longitude,
+        clientEventId: createClientId(), latitude: position.coords.latitude, longitude: position.coords.longitude,
         accuracy: position.coords.accuracy, altitude: position.coords.altitude, speed: position.coords.speed,
         heading: position.coords.heading, recordedAt,
       };
@@ -426,7 +440,7 @@ function EmployeeApp() {
     if (!selectedFiles.length) return;
     const validFiles = selectedFiles.filter(file => ["image/jpeg", "image/png", "application/pdf"].includes(file.type) && file.size > 0 && file.size <= 10 * 1024 * 1024);
     if (validFiles.length !== selectedFiles.length) notify("فایل‌های نامعتبر حذف شدند؛ فقط JPG، PNG یا PDF تا ۱۰ مگابایت مجاز است");
-    const pendingFiles = validFiles.map(file => ({ file, item: { localId: crypto.randomUUID(), name: file.name, state: "uploading" as const } }));
+    const pendingFiles = validFiles.map(file => ({ file, item: { localId: createClientId(), name: file.name, state: "uploading" as const } }));
     setAttachments(current => [...current, ...pendingFiles.map(entry => entry.item)]);
     for (const entry of pendingFiles) {
       try {
@@ -488,29 +502,52 @@ function EmployeeApp() {
   const captureFreshGps = async () => {
     if (latestGps && Date.now() - Date.parse(latestGps.recordedAt) <= 60_000 && latestGps.accuracy <= 100) return latestGps;
     if (!navigator.geolocation) throw new Error("GPS در این دستگاه در دسترس نیست");
+    if (!window.isSecureContext) throw new Error("برای دریافت GPS باید سامانه با اتصال امن HTTPS باز شود");
     setGpsStatus("requesting");
     return await new Promise<{latitude:number;longitude:number;accuracy:number;recordedAt:string}>((resolve, reject) => {
-      navigator.geolocation.getCurrentPosition(position => {
+      let settled = false;
+      let bestAccuracy: number | null = null;
+      const finish = (action: () => void) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(waitTimer);
+        navigator.geolocation.clearWatch(watchId);
+        action();
+      };
+      const watchId = navigator.geolocation.watchPosition(position => {
         const location = { latitude:position.coords.latitude, longitude:position.coords.longitude, accuracy:position.coords.accuracy, recordedAt:new Date(position.timestamp).toISOString() };
-        if (location.accuracy > 100) { setGpsStatus("error"); reject(new Error("دقت GPS بیشتر از ۱۰۰ متر است؛ در فضای باز دوباره تلاش کنید")); return; }
-        setLatestGps(location); setGpsAccuracy(Math.round(location.accuracy)); setGpsStatus("active"); resolve(location);
+        bestAccuracy = bestAccuracy === null ? location.accuracy : Math.min(bestAccuracy, location.accuracy);
+        setGpsAccuracy(Math.round(bestAccuracy));
+        if (location.accuracy > 100) return;
+        setLatestGps(location); setGpsStatus("active");
+        finish(() => resolve(location));
       }, error => {
-        setGpsStatus(error.code === error.PERMISSION_DENIED ? "denied" : "error");
-        reject(new Error(error.code === error.PERMISSION_DENIED ? "مجوز GPS مسدود است؛ ابتدا دسترسی موقعیت را فعال کنید" : "موقعیت GPS دریافت نشد؛ دوباره تلاش کنید"));
-      }, { enableHighAccuracy:true, maximumAge:10_000, timeout:20_000 });
+        if (error.code !== error.PERMISSION_DENIED) return;
+        setGpsStatus("denied");
+        finish(() => reject(new Error("مجوز GPS مسدود است؛ دسترسی Location را روی Allow و Precise قرار دهید")));
+      }, { enableHighAccuracy:true, maximumAge:30_000, timeout:45_000 });
+      const waitTimer = window.setTimeout(() => {
+        setGpsStatus("error");
+        finish(() => reject(new Error(bestAccuracy !== null
+          ? `بهترین دقت GPS ${Math.round(bestAccuracy).toLocaleString("fa-IR")} متر بود؛ برای شروع باید دقت به ۱۰۰ متر یا کمتر برسد`
+          : "تا ۴۵ ثانیه موقعیت GPS دریافت نشد؛ Location و حالت دقت بالا را بررسی کنید")));
+      }, 46_000);
     });
   };
 
   const toggleWork = async () => {
     if (working) return openEndReview();
+    if (workToggleBusy) return;
+    setWorkToggleBusy(true);
     try {
       const location = await captureFreshGps();
       const result = await sendJsonOrQueue<{session:{startedAt:string;workType?:string}}>("/api/work-sessions", "POST", { action: "start", location });
       const startedAt = result.data?.session.startedAt ?? new Date().toISOString();
       setWorking(true); setWorkSessionStartAt(startedAt); setTodayFirstStartAt(current=>current ?? startedAt); setTodayLastEndAt(null); setClockTick(Date.now()); setWorkMinutesSyncedAt(Date.now());
-      setPendingSync(await getOutboxCount());
+      setPendingSync(await getOutboxCount().catch(() => 0));
       notify(result.queued ? "شروع فعالیت همراه GPS روی گوشی ذخیره شد" : result.data?.session.workType === "overtime" ? "اضافه‌کاری و ثبت GPS آغاز شد" : "فعالیت و ثبت GPS آغاز شد");
     } catch (error) { notify(error instanceof Error ? error.message : "عملیات ناموفق بود"); }
+    finally { setWorkToggleBusy(false); }
   };
 
   const submitMissedStart = async (event: FormEvent) => {
@@ -615,7 +652,7 @@ function EmployeeApp() {
                 <div className="work-card-top"><span className="live-dot"><i />{working ? gpsStatus === "active" ? "فعالیت و GPS در حال ثبت" : "فعالیت در حال ثبت" : "آماده شروع"}</span><button onClick={() => syncQueued().catch(() => undefined)}>↻</button></div>
                 <div className="timer">{formatDurationSeconds(todayWorkMinutes*60+(working?Math.max(0,(clockTick-workMinutesSyncedAt)/1000):0))}</div>
                 <p>{working ? `شروع این نوبت، ${formatPersianTime(workSessionStartAt)} · کارکرد واقعی امروز` : todayLastEndAt ? `ورود ${formatPersianTime(todayFirstStartAt)} · خروج ${formatPersianTime(todayLastEndAt)} · کارکرد واقعی امروز` : "حداقل روزانه ۸:۳۰ · اضافه‌کاری فقط پس از ۹:۰۰"}</p>
-                <button className={`work-toggle ${working ? "stop" : "start"}`} onClick={toggleWork}><span>{working ? "■" : "▶"}</span>{working ? "پایان فعالیت" : "شروع فعالیت"}</button>
+                <button className={`work-toggle ${working ? "stop" : "start"}`} onClick={toggleWork} disabled={workToggleBusy}><span>{working ? "■" : workToggleBusy ? "⌖" : "▶"}</span>{working ? "پایان فعالیت" : workToggleBusy ? "در حال دریافت موقعیت دقیق..." : "شروع فعالیت"}</button>
               </section>
               {!working&&<button className="missed-start-trigger" onClick={()=>setMissedStartOpen(current=>!current)}>◷ شروع فعالیت را فراموش کرده‌ام</button>}
               {!working&&missedStartOpen&&<form className="missed-start-form" onSubmit={submitMissedStart}><div><b>خوداظهاری شروع ثبت‌نشده</b><small>ساعت فقط برای امروز ثبت می‌شود، ۳ امتیاز کسر می‌گردد و تأیید سرپرست لازم است.</small></div><label>ساعت شروع واقعی<input type="time" value={missedStartTime} onChange={event=>setMissedStartTime(event.target.value)} required /></label><label>علت فراموشی<textarea value={missedStartReason} onChange={event=>setMissedStartReason(event.target.value)} maxLength={500} rows={3} placeholder="علت ثبت‌نشدن شروع فعالیت را کامل بنویسید..." required /></label><button className="primary-wide" type="submit" disabled={missedStartSaving}>{missedStartSaving?"در حال ثبت...":"ثبت خوداظهاری و شروع فعالیت فعلی"}</button></form>}

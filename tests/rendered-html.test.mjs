@@ -59,6 +59,21 @@ test("includes phase-two GPS, offline, upload and report capabilities", async ()
   assert.match(hosting, /UPLOAD_DIR=/);
 });
 
+test("keeps employee work start compatible with older Android Chrome", async () => {
+  const [page, packageJson] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(packageJson, /"Chrome >= 80"/);
+  assert.match(packageJson, /"ChromeAndroid >= 80"/);
+  assert.match(page, /function createClientId\(\)/);
+  assert.doesNotMatch(page, /clientEventId: crypto\.randomUUID\(\)/);
+  assert.match(page, /navigator\.geolocation\.watchPosition/);
+  assert.match(page, /timeout:45_000/);
+  assert.match(page, /در حال دریافت موقعیت دقیق/);
+});
+
 test("supports role-scoped mission assignment from the management panel", async () => {
   const [page, missions, users] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
