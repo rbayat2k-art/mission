@@ -60,6 +60,10 @@ jobs:
           gradle --no-daemon :app:lintDebug :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee android-build.log
           build_status=${PIPESTATUS[0]}
           if [ "$build_status" -ne 0 ]; then
+            if [ -f app/build/reports/lint-results-debug.txt ]; then
+              lint_summary=$(grep -E "Error:|Warning:" app/build/reports/lint-results-debug.txt | head -n 15 | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
+              echo "::error title=Android lint report::$lint_summary"
+            fi
             summary=$(grep -E "error:|FAILURE:|What went wrong|Execution failed|A failure occurred|Could not|failed" android-build.log | tail -n 12 | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
             echo "::error title=Android build failed::$summary"
             exit "$build_status"
