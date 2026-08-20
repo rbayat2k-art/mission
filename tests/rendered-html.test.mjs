@@ -734,3 +734,27 @@ test("limits concurrent mission starts and allows an audited five minute cancell
   assert.match(missions, /startCancellationCount/);
   assert.match(missions, /lastStartCancellationReason/);
 });
+
+test("stores and displays an optional work referrer for employee-created missions", async () => {
+  const [page, missions, schema, runtime, migration, approvals] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/missions/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/mysql-schema.sql", import.meta.url), "utf8"),
+    readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/migrate.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/approvals/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(schema, /referrer_name VARCHAR\(255\) NULL/);
+  assert.match(runtime, /name: "referrer_name"/);
+  assert.match(migration, /\["referrer_name", "VARCHAR\(255\) NULL AFTER assigned_to"\]/);
+  assert.match(missions, /referrerName\?: string \| null/);
+  assert.match(missions, /source === "employee" \? requestedReferrerName \|\| null : null/);
+  assert.match(missions, /assigned_to, referrer_name, destination_name/);
+  assert.match(missions, /m\.referrer_name AS referrerName/);
+  assert.match(missions, /JSON\.stringify\(\{ source, assignedTo, referrerName \}\)/);
+  assert.match(page, /const \[newReferrerName, setNewReferrerName\] = useState\(""\)/);
+  assert.match(page, /ارجاع‌دهنده کار <small>اختیاری<\/small>/);
+  assert.match(page, /referrerName: newReferrerName\.trim\(\) \|\| null/);
+  assert.match(page, /selectedMission\.referrerName/);
+  assert.match(approvals, /m\.referrer_name AS referrerName/);
+});

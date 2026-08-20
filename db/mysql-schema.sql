@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS missions (
   priority VARCHAR(24) NOT NULL DEFAULT 'normal',
   created_by CHAR(36) NOT NULL,
   assigned_to CHAR(36) NOT NULL,
+  referrer_name VARCHAR(255) NULL,
   destination_name VARCHAR(255) NULL,
   result VARCHAR(100) NULL,
   report TEXT NULL,

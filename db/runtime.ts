@@ -15,6 +15,7 @@ async function applySchema() {
   for (const statement of statements) await database.prepare(statement).run();
 
   const scoringColumns = [
+    { name: "referrer_name", definition: "VARCHAR(255) NULL AFTER assigned_to" },
     { name: "score_penalty", definition: "INT NOT NULL DEFAULT 0 AFTER score_confirmed" },
     { name: "score_note", definition: "VARCHAR(255) NULL AFTER score_penalty" },
     { name: "start_latitude_e6", definition: "INT NULL AFTER started_at" },

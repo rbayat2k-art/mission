@@ -30,6 +30,7 @@ try {
     if (!rows.length) await connection.execute(`ALTER TABLE users ADD COLUMN ${name} ${definition}`);
   }
   const scoringColumns = [
+    ["referrer_name", "VARCHAR(255) NULL AFTER assigned_to"],
     ["score_penalty", "INT NOT NULL DEFAULT 0 AFTER score_confirmed"],
     ["score_note", "VARCHAR(255) NULL AFTER score_penalty"],
     ["start_latitude_e6", "INT NULL AFTER started_at"],
