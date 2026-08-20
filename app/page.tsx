@@ -20,6 +20,28 @@ const PANEL_STORAGE_KEY = "tapra:last-panel";
 const EMPLOYEE_SCREEN_STORAGE_KEY = "tapra:employee-screen";
 const ADMIN_SCREEN_STORAGE_KEY = "tapra:admin-screen";
 
+type TapraAndroidBridge = {
+  setTrackingActive: (active: boolean) => void;
+  isNativeApp: () => boolean;
+  isLocationPermissionGranted: () => boolean;
+  openLocationSettings: () => void;
+};
+
+function androidBridge() {
+  if (typeof window === "undefined") return undefined;
+  return (window as Window & { TapraAndroid?: TapraAndroidBridge }).TapraAndroid;
+}
+
+function isNativeAndroidApp() {
+  try { return androidBridge()?.isNativeApp() === true; }
+  catch { return false; }
+}
+
+function syncNativeTracking(active: boolean) {
+  try { androidBridge()?.setTrackingActive(active); }
+  catch { /* The browser version intentionally has no native bridge. */ }
+}
+
 function isEmployeeScreen(value: string | null): value is EmployeeScreen { return Boolean(value && employeeScreens.includes(value as EmployeeScreen)); }
 function isAdminScreen(value: string | null): value is AdminScreen { return Boolean(value && adminScreens.includes(value as AdminScreen)); }
 function isPanelMode(value: string | null): value is PanelMode { return value === "employee" || value === "admin"; }
@@ -269,6 +291,7 @@ function EmployeeApp() {
     ]);
     setNotificationCounts({unread:notificationData.unreadCount,open:notificationData.openRequestCount});
     setWorking(Boolean(workData.current));
+    syncNativeTracking(Boolean(workData.current));
     setWorkSessionStartAt(workData.current?.startedAt ?? null);
     setTodayWorkMinutes(workData.today.activeMinutes);
     setWorkMinutesSyncedAt(Date.now());
@@ -360,6 +383,7 @@ function EmployeeApp() {
       const recordedAt = new Date(position.timestamp).toISOString();
       setLatestGps({ latitude:position.coords.latitude, longitude:position.coords.longitude, accuracy:position.coords.accuracy, recordedAt });
       gpsProblemReported.current = false;
+      if (isNativeAndroidApp()) return;
       if (Date.now() - lastGpsSentAt.current < 15_000) return;
       lastGpsSentAt.current = Date.now();
       const point = {
@@ -371,6 +395,7 @@ function EmployeeApp() {
       if (result.queued) setPendingSync(await getOutboxCount().catch(() => 1));
       if (result.data?.autoEnded) {
         setWorking(false); setWorkSessionStartAt(null); setTodayLastEndAt(result.data.endedAt ?? new Date().toISOString());
+        syncNativeTracking(false);
         notify("۹ ساعت کار دارای GPS تکمیل شد؛ پایان فعالیت به‌صورت خودکار ثبت شد. برای اضافه‌کاری دوباره شروع کنید");
         await loadEmployeeData().catch(() => undefined);
       }
@@ -588,6 +613,7 @@ function EmployeeApp() {
       const result = await sendJsonOrQueue<{session:{startedAt:string;workType?:string}}>("/api/work-sessions", "POST", { action: "start", location });
       const startedAt = result.data?.session.startedAt ?? new Date().toISOString();
       setWorking(true); setWorkSessionStartAt(startedAt); setTodayFirstStartAt(current=>current ?? startedAt); setTodayLastEndAt(null); setClockTick(Date.now()); setWorkMinutesSyncedAt(Date.now());
+      syncNativeTracking(true);
       setPendingSync(await getOutboxCount().catch(() => 0));
       notify(result.queued ? "شروع فعالیت همراه GPS روی گوشی ذخیره شد" : result.data?.session.workType === "overtime" ? "اضافه‌کاری و ثبت GPS آغاز شد" : "فعالیت و ثبت GPS آغاز شد");
     } catch (error) { notify(error instanceof Error ? error.message : "عملیات ناموفق بود"); }
@@ -603,6 +629,7 @@ function EmployeeApp() {
       const location = await captureFreshGps();
       const result = await api<{correction:{claimedMinutes:number;scorePenalty:number};session:{startedAt:string;workType:string}}>("/api/work-sessions", { method:"POST", body:JSON.stringify({ action:"self_report_start", startTime:missedStartTime, reason:missedStartReason.trim(), location }) });
       setWorking(true); setWorkSessionStartAt(result.session.startedAt); setWorkMinutesSyncedAt(Date.now()); setTodayFirstStartAt(current=>current ?? result.session.startedAt); setTodayLastEndAt(null);
+      syncNativeTracking(true);
       setMissedStartOpen(false); setMissedStartTime(""); setMissedStartReason("");
       await loadEmployeeData();
       notify(`${result.correction.claimedMinutes.toLocaleString("fa-IR")} دقیقه خوداظهاری با کسر ${result.correction.scorePenalty.toLocaleString("fa-IR")} امتیاز، در انتظار تأیید سرپرست ثبت شد`);
@@ -618,6 +645,7 @@ function EmployeeApp() {
       const location = latestGps && Date.now() - Date.parse(latestGps.recordedAt) <= 2 * 60_000 && latestGps.accuracy <= 100 ? latestGps : null;
       const result = await sendJsonOrQueue<{session:{endedAt:string};today?:{activeMinutes:number;unverifiedGpsMinutes:number};gpsWarning?:boolean;deductedMinutes?:number}>("/api/work-sessions", "POST", { action:"end", endTime, confirmDailySummary:true, confirmedMissionIds:dailySummary.confirmationMissionIds, endNote:endWorkNote.trim(), location });
       setWorking(false); setWorkSessionStartAt(null); setTodayLastEndAt(result.data?.session.endedAt ?? endTime); setTodayWorkMinutes(result.data?.today?.activeMinutes ?? dailySummary.activeMinutes); setTodayUnverifiedGpsMinutes(result.data?.today?.unverifiedGpsMinutes ?? dailySummary.unverifiedGpsMinutes); setWorkMinutesSyncedAt(Date.now()); setSummaryConfirmed(false); setEndWorkNote(""); setScreen("home");
+      syncNativeTracking(false);
       setPendingSync(await getOutboxCount());
       if (!result.queued) await loadEmployeeData();
       notify(result.queued ? "زمان پایان فعالیت روی گوشی ذخیره شد و پس از اتصال همگام می‌شود" : result.data?.gpsWarning ? "فعالیت پایان یافت؛ موقعیت پایان در دسترس نبود و برای بررسی ثبت شد" : "گزارش امروز تأیید و فعالیت پایان یافت");
