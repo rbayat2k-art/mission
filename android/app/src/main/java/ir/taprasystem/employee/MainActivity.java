@@ -36,6 +36,8 @@ public class MainActivity extends Activity {
 
     private WebView webView;
     private ValueCallback<Uri[]> filePathCallback;
+    private GeolocationPermissions.Callback pendingGeolocationCallback;
+    private String pendingGeolocationOrigin;
     private boolean receiverRegistered;
 
     private final BroadcastReceiver trackingReceiver = new BroadcastReceiver() {
@@ -103,16 +105,30 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 CookieManager.getInstance().flush();
+                if (isTrustedWebOrigin(url) && hasLocationPermission()) {
+                    Uri pageUri = Uri.parse(url);
+                    String origin = pageUri.getScheme() + "://" + pageUri.getAuthority();
+                    GeolocationPermissions.getInstance().allow(origin);
+                }
                 view.evaluateJavascript("window.dispatchEvent(new CustomEvent('tapra-native-ready'))", null);
             }
         });
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
-                boolean trusted = origin != null && (origin.equals("https://taprasystem.ir") || origin.equals("https://www.taprasystem.ir"));
-                boolean granted = trusted && hasLocationPermission();
-                callback.invoke(origin, granted, false);
-                if (trusted && !granted) requestRuntimePermissions();
+                if (!isTrustedWebOrigin(origin)) {
+                    callback.invoke(origin, false, false);
+                    return;
+                }
+                if (hasLocationPermission()) {
+                    GeolocationPermissions.getInstance().allow(origin);
+                    callback.invoke(origin, true, true);
+                    return;
+                }
+                resolvePendingGeolocation(false);
+                pendingGeolocationOrigin = origin;
+                pendingGeolocationCallback = callback;
+                requestRuntimePermissions();
             }
 
             @Override
@@ -155,6 +171,24 @@ public class MainActivity extends Activity {
         return true;
     }
 
+    private boolean isTrustedWebOrigin(String origin) {
+        if (origin == null) return false;
+        Uri uri = Uri.parse(origin);
+        String host = uri.getHost();
+        return "https".equalsIgnoreCase(uri.getScheme()) &&
+            ("taprasystem.ir".equalsIgnoreCase(host) || "www.taprasystem.ir".equalsIgnoreCase(host));
+    }
+
+    private void resolvePendingGeolocation(boolean granted) {
+        if (pendingGeolocationCallback == null || pendingGeolocationOrigin == null) return;
+        GeolocationPermissions.Callback callback = pendingGeolocationCallback;
+        String origin = pendingGeolocationOrigin;
+        pendingGeolocationCallback = null;
+        pendingGeolocationOrigin = null;
+        if (granted) GeolocationPermissions.getInstance().allow(origin);
+        callback.invoke(origin, granted, granted);
+    }
+
     private void requestRuntimePermissions() {
         List<String> permissions = new ArrayList<>();
         if (!hasLocationPermission()) permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
@@ -168,6 +202,18 @@ public class MainActivity extends Activity {
     private boolean hasLocationPermission() {
         return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != PERMISSION_REQUEST) return;
+        boolean locationGranted = hasLocationPermission();
+        resolvePendingGeolocation(locationGranted);
+        if (locationGranted && webView != null) {
+            webView.post(() -> webView.evaluateJavascript(
+                "window.dispatchEvent(new CustomEvent('tapra-location-permission-granted'))", null));
+        }
     }
 
     private void setTrackingActive(boolean active) {
@@ -226,6 +272,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        resolvePendingGeolocation(false);
         if (receiverRegistered) unregisterReceiver(trackingReceiver);
         super.onDestroy();
     }
