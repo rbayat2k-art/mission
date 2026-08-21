@@ -107,6 +107,9 @@ jobs:
           name: tapra-employee-android-v1.1.0
           path: apk
 
+      - name: Enable Android emulator acceleration
+        run: sudo chmod 666 /dev/kvm
+
       - name: Boot Android and test install/launch
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -119,10 +122,7 @@ jobs:
             adb shell am start -W -n ir.taprasystem.employee/.MainActivity
             sleep 8
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
-            if adb logcat -d -t 500 | grep -A 20 "FATAL EXCEPTION" | grep -q "ir.taprasystem.employee"; then
-              adb logcat -d -t 500
-              exit 1
-            fi
+            if adb logcat -d -t 500 | grep -A 20 "FATAL EXCEPTION" | grep -q "ir.taprasystem.employee"; then adb logcat -d -t 500; exit 1; fi
 
   publish:
     needs: install-smoke-test
