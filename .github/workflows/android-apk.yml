@@ -121,8 +121,8 @@ jobs:
             adb install -r apk/tapra-employee-v1.1.0.apk
             adb shell am start -W -n ir.taprasystem.employee/.MainActivity
             sleep 8
-            adb shell ps | grep -q "ir.taprasystem.employee"
             if adb logcat -d -t 500 | grep -A 20 "FATAL EXCEPTION" | grep -q "ir.taprasystem.employee"; then adb logcat -d -t 500; exit 1; fi
+            adb shell ps | grep -q "ir.taprasystem.employee"
 
   publish:
     needs: install-smoke-test

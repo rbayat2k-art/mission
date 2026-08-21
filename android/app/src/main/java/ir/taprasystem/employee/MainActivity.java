@@ -185,7 +185,12 @@ public class MainActivity extends Activity {
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     private void registerTrackingReceiver() {
         IntentFilter filter = new IntentFilter(LocationTrackingService.ACTION_SESSION_ENDED);
-        registerReceiver(trackingReceiver, filter, INTERNAL_BROADCAST_PERMISSION, null);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(trackingReceiver, filter, INTERNAL_BROADCAST_PERMISSION, null,
+                Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(trackingReceiver, filter, INTERNAL_BROADCAST_PERMISSION, null);
+        }
         receiverRegistered = true;
     }
 
