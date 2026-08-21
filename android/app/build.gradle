@@ -6,6 +6,10 @@ android {
     namespace 'ir.taprasystem.employee'
     compileSdk 35
 
+    buildFeatures {
+        buildConfig true
+    }
+
     defaultConfig {
         applicationId 'ir.taprasystem.employee'
         minSdk 23
