@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - "codex/android-app-v1"
+      - "codex/android-app-v2"
     paths:
       - "android/**"
       - "app/page.tsx"
@@ -31,7 +31,7 @@ jobs:
         run: npm ci
 
       - name: Validate web application
-        run: npm run lint && npm test && npm audit --audit-level=moderate
+        run: npm run verify
 
   build:
     needs: web-validation
@@ -52,7 +52,7 @@ jobs:
         with:
           gradle-version: "8.11.1"
 
-      - name: Validate and build debug APK
+      - name: Validate and build signed APK
         working-directory: android
         shell: bash
         run: |
@@ -69,24 +69,82 @@ jobs:
             exit "$build_status"
           fi
 
+      - name: Verify APK signature and manifest
+        working-directory: android
+        shell: bash
+        run: |
+          apk="app/build/outputs/apk/debug/app-debug.apk"
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          "$build_tools/apksigner" verify --verbose --print-certs "$apk"
+          "$build_tools/aapt" dump badging "$apk" | tee apk-badging.txt
+          grep -q "package: name='ir.taprasystem.employee' versionCode='2' versionName='1.1.0'" apk-badging.txt
+          grep -q "sdkVersion:'23'" apk-badging.txt
+          cp "$apk" tapra-employee-v1.1.0.apk
+          sha256sum tapra-employee-v1.1.0.apk | tee tapra-employee-v1.1.0.apk.sha256
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: tapra-employee-android-v1.0.0
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: tapra-employee-android-v1.1.0
+          path: |
+            android/tapra-employee-v1.1.0.apk
+            android/tapra-employee-v1.1.0.apk.sha256
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish installable test APK
+  install-smoke-test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [23, 29, 35]
+    steps:
+      - name: Download APK
+        uses: actions/download-artifact@v4
+        with:
+          name: tapra-employee-android-v1.1.0
+          path: apk
+
+      - name: Boot Android and test install/launch
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          script: |
+            adb install -r apk/tapra-employee-v1.1.0.apk
+            adb shell am start -W -n ir.taprasystem.employee/.MainActivity
+            sleep 8
+            adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
+            if adb logcat -d -t 500 | grep -A 20 "FATAL EXCEPTION" | grep -q "ir.taprasystem.employee"; then
+              adb logcat -d -t 500
+              exit 1
+            fi
+
+  publish:
+    needs: install-smoke-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download verified APK
+        uses: actions/download-artifact@v4
+        with:
+          name: tapra-employee-android-v1.1.0
+          path: apk
+
+      - name: Publish installable APK
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          tag="android-test-v1.0.0-${GITHUB_RUN_NUMBER}"
-          asset="tapra-employee-v1.0.0-test.apk"
-          cp android/app/build/outputs/apk/debug/app-debug.apk "$asset"
-          gh release create "$tag" "$asset" \
+          tag="android-test-v1.1.0-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" \
+            apk/tapra-employee-v1.1.0.apk \
+            apk/tapra-employee-v1.1.0.apk.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "Tapra Android test v1.0.0 (${GITHUB_RUN_NUMBER})" \
-            --notes "Installable test build for Android 8 and newer. Built from ${GITHUB_SHA}."
+            --title "Tapra Android v1.1.0 (${GITHUB_RUN_NUMBER})" \
+            --notes "Installable APK verified on Android 6, Android 10, and Android 15 emulators. Built from ${GITHUB_SHA}."

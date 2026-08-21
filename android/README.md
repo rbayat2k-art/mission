@@ -6,7 +6,7 @@
 
 ## سازگاری
 
-- حداقل Android 8.0 (API 26)
+- حداقل Android 6.0 (API 23)
 - هدف Android 15 (API 35)
 - معماری مستقل از پردازنده؛ APK روی ARM و x86 نصب می‌شود.
 
@@ -15,7 +15,7 @@
 از داخل پوشه `android`:
 
 ```text
-gradlew.bat assembleDebug
+gradlew.bat clean lintDebug testDebugUnitTest assembleDebug
 ```
 
 خروجی در `app/build/outputs/apk/debug/app-debug.apk` قرار می‌گیرد.

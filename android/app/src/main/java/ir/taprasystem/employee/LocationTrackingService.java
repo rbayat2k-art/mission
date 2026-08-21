@@ -225,7 +225,7 @@ public class LocationTrackingService extends Service implements LocationListener
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cookie", cookies);
-            connection.setRequestProperty("User-Agent", "TapraAndroid/1.0.0");
+            connection.setRequestProperty("User-Agent", "TapraAndroid/" + BuildConfig.VERSION_NAME);
             byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             connection.setFixedLengthStreamingMode(bytes.length);
             try (OutputStream output = connection.getOutputStream()) {
@@ -253,6 +253,7 @@ public class LocationTrackingService extends Service implements LocationListener
     }
 
     private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "ثبت موقعیت فعالیت",
             NotificationManager.IMPORTANCE_LOW);
         channel.setDescription("هنگام فعالیت کاری، وضعیت ثبت موقعیت را نمایش می‌دهد");
@@ -265,7 +266,14 @@ public class LocationTrackingService extends Service implements LocationListener
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        return new Notification.Builder(this, CHANNEL_ID)
+        Notification.Builder builder;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder = new Notification.Builder(this, CHANNEL_ID);
+        } else {
+            builder = new Notification.Builder(this)
+                .setPriority(Notification.PRIORITY_LOW);
+        }
+        return builder
             .setSmallIcon(ir.taprasystem.employee.R.drawable.ic_location)
             .setContentTitle("ثبت موقعیت فعالیت در حال اجراست")
             .setContentText(text)
@@ -307,7 +315,8 @@ public class LocationTrackingService extends Service implements LocationListener
             locationManager.removeUpdates(this);
         } catch (Exception ignored) { }
         releaseWakeLock();
-        stopForeground(STOP_FOREGROUND_REMOVE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE);
+        else stopForeground(true);
         stopSelf();
     }
 
