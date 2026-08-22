@@ -5,7 +5,7 @@ import type { Map as LeafletMap } from "leaflet";
 
 export type MapCurrentLocation = {
   id: string; userId: string; fullName: string; latitude: number; longitude: number; accuracy: number; recordedAt: string;
-  receivedAt?: string; isLive?: boolean; workSessionStatus?: string;
+  receivedAt?: string; isLive?: boolean; workSessionStatus?: string; source?: "gps" | "work_point";
 };
 
 export type MapDestination = {
@@ -87,7 +87,7 @@ export default function OperationsMap({ currentLocations, destinations, tracePoi
         bounds.push(point);
         L.circle(point, { radius: Math.max(3, location.accuracy), color: presentation.color, weight: 1, fillColor: presentation.fill, fillOpacity: 0.12 }).addTo(map);
         L.circleMarker(point, { radius: 9, color: "#ffffff", weight: 3, fillColor: presentation.color, fillOpacity: 1, className: `operations-location-marker ${presentation.className}` })
-          .bindPopup(popupContent(location.isLive ? "مکان فعلی" : "آخرین موقعیت ثبت‌شده", [["کارمند", location.fullName], ["وضعیت", presentation.status], ["زمان", new Date(location.recordedAt).toLocaleString("fa-IR")], ["فاصله زمانی", relativeLocationTime(location.recordedAt)], ["دقت", `${Math.round(location.accuracy).toLocaleString("fa-IR")} متر`], ["مختصات", `${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}`]]))
+          .bindPopup(popupContent(location.isLive ? "مکان فعلی" : location.source === "work_point" ? "آخرین نقطه کاری؛ GPS زنده نیست" : "آخرین موقعیت ثبت‌شده", [["کارمند", location.fullName], ["وضعیت", location.source === "work_point" ? "ثبت مأموریت؛ موقعیت زنده در دسترس نیست" : presentation.status], ["زمان", new Date(location.recordedAt).toLocaleString("fa-IR")], ["فاصله زمانی", relativeLocationTime(location.recordedAt)], ["دقت", `${Math.round(location.accuracy).toLocaleString("fa-IR")} متر`], ["مختصات", `${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}`]]))
           .addTo(map);
       }
 

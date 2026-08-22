@@ -104,6 +104,7 @@ export async function GET(request: Request) {
   const { start, end, endDateKey } = periodBounds(period, url.searchParams.get("date"));
   const requestedUserId = url.searchParams.get("userId");
   const liveOnly = url.searchParams.get("live") === "1";
+  const activeOnly = url.searchParams.get("active") === "1";
   const db = await ensureDatabase();
 
   const clauses = ["md.recorded_at >= ?", "md.recorded_at < ?"];
@@ -119,6 +120,7 @@ export async function GET(request: Request) {
     clauses.push("md.user_id = ?");
     values.push(requestedUserId);
   }
+  if (activeOnly) clauses.push("u.status = 'active'");
   if (liveOnly) {
     const liveSince = new Date(Date.now() - 2 * 60_000).toISOString();
     clauses.push("u.status = 'active'");

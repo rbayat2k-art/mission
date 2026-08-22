@@ -59,7 +59,7 @@ export default function PushNotificationBootstrap({ active, onMessage }: { activ
   if (!active || dismissed || !settings?.enabled || state === "subscribed" || state === "unsupported") return null;
   return <aside className={`push-permission-banner ${state === "denied" ? "blocked" : ""}`} role="status">
     <span aria-hidden="true">♧</span>
-    <div><b>{state === "denied" ? "اعلان ویندوز در مرورگر مسدود است" : "اعلان فوری درخواست‌های کارمند را فعال کنید"}</b><small>{state === "denied" ? "در تنظیمات سایت taprasystem.ir، گزینه Notifications را روی Allow بگذارید." : "پس از فعال‌سازی، ارجاع و پیام جدید حتی بیرون از این صفحه در سمت راست ویندوز نمایش داده می‌شود."}</small></div>
+    <div><b>{state === "denied" ? "اعلان ویندوز در مرورگر مسدود است" : "اعلان فوری عملیات و GPS را فعال کنید"}</b><small>{state === "denied" ? "در تنظیمات سایت taprasystem.ir، گزینه Notifications را روی Allow بگذارید." : "پس از فعال‌سازی، قطع GPS، ارجاع و پیام جدید حتی بیرون از این صفحه در سمت راست ویندوز نمایش داده می‌شود."}</small></div>
     {state !== "denied" && <button type="button" onClick={activate} disabled={busy}>{busy ? "در حال فعال‌سازی…" : "فعال‌سازی اعلان ویندوز"}</button>}
     <button type="button" className="dismiss" aria-label="بستن پیام" onClick={() => setDismissed(true)}>×</button>
   </aside>;

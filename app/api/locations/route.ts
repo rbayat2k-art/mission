@@ -1,6 +1,7 @@
 import { ensureDatabase } from "../../../db/runtime";
 import { requireRole } from "../../../lib/auth";
 import { GPS_GAP_GRACE_MINUTES, reconcileNineHourLimit } from "../../../lib/work-session-policy";
+import { createManagerIntegrityNotifications } from "../../../lib/push-notifications";
 
 type IncomingPoint = {
   clientEventId?: string;
@@ -41,11 +42,14 @@ export async function POST(request: Request) {
   ));
 
   const firstRecorded = new Date(points[0].recordedAt!).toISOString();
+  let gapNotification: { id:string; gapMinutes:number } | null = null;
   if (previous && Date.parse(firstRecorded) - Date.parse(previous.recordedAt) > GPS_GAP_GRACE_MINUTES * 60_000) {
     const gapMinutes = Math.round((Date.parse(firstRecorded) - Date.parse(previous.recordedAt)) / 60_000);
+    const eventId = crypto.randomUUID();
     statements.push(db.prepare("INSERT INTO integrity_events (id, user_id, work_session_id, type, severity, details, occurred_at, created_at) VALUES (?, ?, ?, 'gps_gap', 'high', ?, ?, ?)").bind(
-      crypto.randomUUID(), auth.user.id, session.id, JSON.stringify({ previousAt: previous.recordedAt, resumedAt: firstRecorded, gapMinutes, graceMinutes: GPS_GAP_GRACE_MINUTES, deductedMinutes: Math.max(0, gapMinutes - GPS_GAP_GRACE_MINUTES) }), firstRecorded, receivedAt,
+      eventId, auth.user.id, session.id, JSON.stringify({ previousAt: previous.recordedAt, resumedAt: firstRecorded, gapMinutes, graceMinutes: GPS_GAP_GRACE_MINUTES, deductedMinutes: Math.max(0, gapMinutes - GPS_GAP_GRACE_MINUTES) }), firstRecorded, receivedAt,
     ));
+    gapNotification = { id:eventId, gapMinutes };
   }
   const inaccurate = points.find((point) => point.accuracy! > 100);
   if (inaccurate) {
@@ -54,6 +58,11 @@ export async function POST(request: Request) {
     ));
   }
   await db.batch(statements);
+  if (gapNotification) await createManagerIntegrityNotifications(auth.user.id, {
+    type:"gps_gap", title:"وقفه GPS کارمند ثبت شد",
+    message:`${auth.user.fullName}: ثبت GPS پس از ${gapNotification.gapMinutes.toLocaleString("fa-IR")} دقیقه از سر گرفته شد.`,
+    entityId:gapNotification.id, url:"/?panel=admin&screen=integrity",
+  });
   const reconciliation = await reconcileNineHourLimit(auth.user.id, new Date(receivedAt));
   return Response.json({ accepted: points.length, receivedAt, autoEnded: reconciliation.autoEnded, endedAt: reconciliation.autoEnded ? reconciliation.endedAt : null }, { status: 201 });
 }

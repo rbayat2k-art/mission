@@ -13,9 +13,11 @@ export async function GET(request: Request) {
   const requested = url.searchParams.get("period");
   const period: PerformancePeriod = requested === "weekly" || requested === "monthly" ? requested : "daily";
   const format = url.searchParams.get("format");
-  const report = await getPerformanceReport(auth.user, period, new Date(), { includeComparison: format === "xlsx" });
+  const now = new Date();
+  const report = await getPerformanceReport(auth.user, period, now, { includeComparison: format === "xlsx" });
   if (format === "xlsx") {
-    const workbook = buildPerformanceXlsx(report);
+    const historyReport = period === "monthly" ? report : await getPerformanceReport(auth.user, "monthly", now);
+    const workbook = buildPerformanceXlsx(report, historyReport, now);
     return new Response(new Uint8Array(workbook), { headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "Content-Disposition": `attachment; filename=tapra-${period}-performance.xlsx`,

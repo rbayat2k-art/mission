@@ -2,6 +2,7 @@ import { buildXlsx, type XlsxSheet } from "./simple-xlsx";
 import type { getPerformanceReport, PerformanceComparisonMetric } from "./performance-report";
 
 type PerformanceReport = Awaited<ReturnType<typeof getPerformanceReport>>;
+type PerformanceRow = PerformanceReport["rows"][number];
 
 function dateTime(value: string | null | undefined) {
   if (!value) return "—";
@@ -15,6 +16,87 @@ function dateOnly(value: string) {
   return new Intl.DateTimeFormat("fa-IR-u-ca-persian", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Asia/Tehran" }).format(new Date(value));
 }
 
+function timeOnly(value: string | null | undefined) {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("fa-IR", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Tehran" }).format(new Date(value));
+}
+
+function tehranDateKey(value: string) {
+  return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Asia/Tehran" }).format(new Date(value));
+}
+
+function pointsForLastDays(row: PerformanceRow, days: number) {
+  return [...row.dailySeries].sort((a, b) => a.date.localeCompare(b.date)).slice(-days);
+}
+
+function missionsForPoints(row: PerformanceRow, points: PerformanceRow["dailySeries"]) {
+  const dateKeys = new Set(points.map(point => tehranDateKey(point.date)));
+  return row.missions.missionDetails.filter(mission => mission.completedAt && dateKeys.has(tehranDateKey(mission.completedAt)));
+}
+
+function personnelPeriodSheet(name: string, report: PerformanceReport, days: number): XlsxSheet {
+  const sheet: XlsxSheet = {
+    name,
+    widths: [24, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 42],
+    rows: [["پرسنل", "روز دارای فعالیت", "کارکرد دقیقه", "کار انجام‌شده", "کار موفق", "درصد موفقیت", "مسافت حرکت km", "مسافت مأموریت km", "میانگین مسافت مأموریت km", "حضور در محل دقیقه", "GPS / اینترنت دقیقه", "شرح کارهای تعیین‌وضعیت‌شده"]],
+  };
+  for (const row of report.rows) {
+    const points = pointsForLastDays(row, days);
+    const missions = missionsForPoints(row, points);
+    const activeMinutes = points.reduce((sum, point) => sum + point.activeMinutes, 0);
+    const completedCount = missions.length;
+    const successfulCount = missions.filter(mission => mission.result === "انجام شد").length;
+    const measuredMissionCount = points.reduce((sum, point) => sum + point.measuredMissionCount, 0);
+    const missionDistanceKm = Math.round(points.reduce((sum, point) => sum + point.missionDistanceKm, 0) * 10) / 10;
+    const averageMissionDistanceKm = measuredMissionCount ? Math.round(missionDistanceKm / measuredMissionCount * 10) / 10 : 0;
+    sheet.rows.push([
+      row.fullName,
+      points.filter(point => point.activeMinutes > 0).length,
+      activeMinutes,
+      completedCount,
+      successfulCount,
+      completedCount ? Math.round(successfulCount / completedCount * 100) : 0,
+      Math.round(points.reduce((sum, point) => sum + point.distanceKm, 0) * 10) / 10,
+      missionDistanceKm,
+      averageMissionDistanceKm,
+      points.reduce((sum, point) => sum + point.onSiteMinutes, 0),
+      `${points.reduce((sum, point) => sum + point.gpsGapMinutes, 0)} / ${points.reduce((sum, point) => sum + point.internetGapMinutes, 0)}`,
+      missions.map(mission => `${mission.title} — ${mission.result ?? "بدون نتیجه"}`).join(" | ") || "بدون کار تعیین‌وضعیت‌شده",
+    ]);
+  }
+  return sheet;
+}
+
+function dailyPersonnelSheet(report: PerformanceReport): XlsxSheet {
+  const sheet: XlsxSheet = {
+    name: "گزارش روزانه پرسنل",
+    widths: [18, 24, 18, 20, 18, 18, 18, 18, 18, 18, 18, 18, 46],
+    rows: [["تاریخ", "پرسنل", "اولین ورود", "آخرین خروج", "کارکرد دقیقه", "مسافت حرکت km", "حضور در محل دقیقه", "GPS دقیقه", "اینترنت دقیقه", "میانگین مسافت مأموریت km", "تعداد کار", "کار موفق", "شرح کارها و نتیجه"]],
+  };
+  for (const row of report.rows) {
+    const points = pointsForLastDays(row, 1);
+    const point = points[0];
+    const missions = missionsForPoints(row, points);
+    const averageMissionDistanceKm = point?.measuredMissionCount ? Math.round(point.missionDistanceKm / point.measuredMissionCount * 10) / 10 : 0;
+    sheet.rows.push([
+      point ? dateOnly(point.date) : dateOnly(report.range.end),
+      row.fullName,
+      timeOnly(point?.firstStartAt),
+      point?.hasActiveSession ? "در حال فعالیت" : timeOnly(point?.lastEndAt),
+      point?.activeMinutes ?? 0,
+      point?.distanceKm ?? 0,
+      point?.onSiteMinutes ?? 0,
+      point?.gpsGapMinutes ?? 0,
+      point?.internetGapMinutes ?? 0,
+      averageMissionDistanceKm,
+      missions.length,
+      missions.filter(mission => mission.result === "انجام شد").length,
+      missions.map(mission => `${mission.title} — ${mission.result ?? "بدون نتیجه"}`).join(" | ") || "بدون کار تعیین‌وضعیت‌شده",
+    ]);
+  }
+  return sheet;
+}
+
 function periodLabel(period: PerformanceReport["period"]) {
   return period === "daily" ? "روزانه" : period === "weekly" ? "هفتگی" : "ماهانه";
 }
@@ -25,7 +107,7 @@ function change(metric: PerformanceComparisonMetric | undefined) {
   return `${metric.percentChange > 0 ? "+" : ""}${metric.percentChange}%`;
 }
 
-export function buildPerformanceXlsx(report: PerformanceReport, generatedAt = new Date()) {
+export function buildPerformanceXlsx(report: PerformanceReport, historyReport: PerformanceReport = report, generatedAt = new Date()) {
   const comparison = report.comparison?.metrics;
   const total = report.totals;
   const summary: XlsxSheet = {
@@ -51,19 +133,9 @@ export function buildPerformanceXlsx(report: PerformanceReport, generatedAt = ne
     ],
   };
 
-  const employees: XlsxSheet = {
-    name: "عملکرد کارکنان",
-    widths: [24, 20, 20, 16, 16, 16, 16, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18],
-    rows: [["کارمند", "نام کاربری", "سرپرست", "کارکرد دقیقه", "مأموریت تکمیل", "موفق", "موفقیت درصد", "موفقیت اولین مراجعه درصد", "پیگیری مجدد درصد", "میانگین زمان مأموریت", "میانگین مسیر", "میانگین حضور مقصد", "مسافت مأموریت km", "میانگین مسافت km", "پوشش GPS درصد", "وقفه GPS دقیقه", "وقفه اینترنت دقیقه", "امتیاز قطعی", "امتیاز در انتظار", "هزینه"]],
-  };
-  for (const row of report.rows) employees.rows.push([
-    row.fullName, row.username, row.supervisorName ?? "—", row.attendance.activeMinutes,
-    row.missions.completedCount, row.missions.successfulCount, row.missions.successRate,
-    row.missions.firstVisitSuccessRate, row.missions.followUpRate, row.missions.averageMissionMinutes,
-    row.movement.averageTravelMinutes, row.movement.averageOnSiteMinutes, row.movement.missionDistanceKm,
-    row.movement.averageMissionDistanceKm, row.integrity.gpsCoverageRate, row.integrity.gpsGapMinutes,
-    row.integrity.internetGapMinutes, row.quality.confirmedScore, row.quality.pendingScore, row.finance.total,
-  ]);
+  const dailyPersonnel = dailyPersonnelSheet(historyReport);
+  const weeklyPersonnel = personnelPeriodSheet("گزارش هفتگی پرسنل", historyReport, 7);
+  const monthlyPersonnel = personnelPeriodSheet("گزارش ماهانه پرسنل", historyReport, 30);
 
   const daily: XlsxSheet = {
     name: "روند روزانه",
@@ -117,5 +189,5 @@ export function buildPerformanceXlsx(report: PerformanceReport, generatedAt = ne
   };
   for (const row of report.rows) scores.rows.push([row.fullName, row.quality.confirmedScore, row.quality.pendingScore, row.quality.deductedScore, row.quality.firstPassApprovalRate, row.quality.approvalCount, row.quality.rejectedOrRevisionCount]);
 
-  return buildXlsx([summary, employees, daily, missions, routes, integrity, finance, scores], generatedAt);
+  return buildXlsx([summary, dailyPersonnel, weeklyPersonnel, monthlyPersonnel, daily, missions, routes, integrity, finance, scores], generatedAt);
 }

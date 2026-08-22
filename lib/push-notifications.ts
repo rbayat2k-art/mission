@@ -11,6 +11,7 @@ type NotificationInput = {
 };
 
 type StoredSubscription = { id: string; endpoint: string; p256dh: string; auth: string };
+type ManagerRecipient = { id: string };
 
 let vapidConfigured = false;
 
@@ -54,6 +55,18 @@ export async function createUserNotification(userId: string, input: Notification
     }
   }));
   return { id, delivered };
+}
+
+export async function createManagerIntegrityNotifications(employeeId: string, input: Omit<NotificationInput, "entityType">) {
+  const db = await ensureDatabase();
+  const recipients = (await db.prepare(`SELECT DISTINCT manager.id
+    FROM users employee JOIN users manager
+      ON manager.status = 'active' AND (manager.role IN ('owner', 'admin') OR (manager.role = 'supervisor' AND manager.id = employee.supervisor_id))
+    WHERE employee.id = ? AND manager.id <> employee.id`).bind(employeeId).all<ManagerRecipient>()).results;
+  const results = await Promise.allSettled(recipients.map(recipient => createUserNotification(recipient.id, {
+    ...input, entityType:"integrity_event",
+  })));
+  return { recipients: recipients.length, delivered: results.reduce((sum, result) => sum + (result.status === "fulfilled" ? result.value.delivered : 0), 0) };
 }
 
 export function getVapidPublicKey() {

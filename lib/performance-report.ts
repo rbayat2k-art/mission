@@ -42,6 +42,7 @@ type IntegrityRow = { type: string; status: string; details: string; occurredAt:
 export type PerformanceDailyPoint = {
   date: string; activeMinutes: number; completedCount: number; successfulCount: number;
   travelMinutes: number; onSiteMinutes: number; missionDistanceKm: number;
+  distanceKm: number; measuredMissionCount: number; firstStartAt: string | null; lastEndAt: string | null; hasActiveSession: boolean;
   gpsGapMinutes: number; internetGapMinutes: number;
 };
 
@@ -81,6 +82,21 @@ function distanceKm(a: LocationRow, b: LocationRow) {
   const dLng = (b.longitudeE6 - a.longitudeE6) / 1_000_000 * rad;
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
   return 6371 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+function totalLocationDistanceKm(points: LocationRow[]) {
+  let total = 0;
+  for (let index = 1; index < points.length; index++) {
+    const previous = points[index - 1];
+    const current = points[index];
+    if (previous.workSessionId !== current.workSessionId) continue;
+    const elapsedMinutes = (Date.parse(current.recordedAt) - Date.parse(previous.recordedAt)) / 60_000;
+    if (elapsedMinutes <= 0 || elapsedMinutes > 20) continue;
+    const segmentKm = distanceKm(previous, current);
+    const speed = segmentKm / (elapsedMinutes / 60);
+    if (speed <= 160) total += segmentKm;
+  }
+  return Math.round(total * 10) / 10;
 }
 
 function validDate(value: string | null) {
@@ -239,14 +255,7 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
   const overtimeMinutes = Math.floor([...minutesByDay.values()].reduce((sum, minutes) => sum + Math.max(0, minutes - OVERTIME_START_MINUTES), 0));
   const shortfallMinutes = Math.max(0, targetMinutes - activeMinutes);
 
-  let distance = 0;
-  for (let i = 1; i < points.length; i++) {
-    const elapsedMinutes = (Date.parse(points[i].recordedAt) - Date.parse(points[i - 1].recordedAt)) / 60_000;
-    if (elapsedMinutes <= 0 || elapsedMinutes > 20) continue;
-    const km = distanceKm(points[i - 1], points[i]);
-    const speed = km / (elapsedMinutes / 60);
-    if (speed <= 160) distance += km;
-  }
+  const distance = totalLocationDistanceKm(points);
   const missionTrips = missions.map(mission => missionTripMetrics(mission, points, start, end)).filter((trip): trip is MissionTrip => Boolean(trip));
   const travelMinutes = missionTrips.reduce((sum, trip) => sum + trip.travelMinutes, 0);
   const movingMinutes = missionTrips.reduce((sum, trip) => sum + trip.movingMinutes, 0);
@@ -301,7 +310,10 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
       const at = trip.destinationRecordedAt ?? trip.startedAt;
       return Boolean(at && at >= window.start && at < window.end);
     });
+    const dailyMeasuredTrips = dailyTrips.filter(trip => trip.coverageStatus !== "missing");
     const dailyEvents = integrityEvents.filter(event => event.occurredAt >= window.start && event.occurredAt < window.end);
+    const dailyStarts = dailySessions.map(session => session.startedAt).filter(value => value >= window.start && value < window.end).sort();
+    const dailyEnds = dailySessions.map(session => session.endedAt).filter((value): value is string => Boolean(value && value >= window.start && value < window.end)).sort();
     return {
       date: window.start,
       activeMinutes: Math.floor(work.intervalMilliseconds / 60_000),
@@ -310,6 +322,11 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
       travelMinutes: dailyTrips.reduce((sum, trip) => sum + trip.travelMinutes, 0),
       onSiteMinutes: dailyCompleted.reduce((sum, mission) => mission.destinationRecordedAt ? sum + clampMinutes(mission.destinationRecordedAt, mission.completedAt, window.start, window.end, nowIso) : sum, 0),
       missionDistanceKm: Math.round(dailyTrips.reduce((sum, trip) => sum + trip.distanceKm, 0) * 10) / 10,
+      distanceKm: totalLocationDistanceKm(dailyPoints),
+      measuredMissionCount: dailyMeasuredTrips.length,
+      firstStartAt: dailyStarts[0] ?? null,
+      lastEndAt: dailyEnds.at(-1) ?? null,
+      hasActiveSession: dailySessions.some(session => session.status === "active"),
       gpsGapMinutes: dailyEvents.filter(event => event.type === "gps_gap").reduce((sum, event) => sum + eventGapMinutes(event), 0),
       internetGapMinutes: dailyEvents.filter(event => event.type === "device_offline").reduce((sum, event) => sum + eventGapMinutes(event), 0),
     };
@@ -337,7 +354,7 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
       missionDetails,
     },
     movement: {
-      distanceKm: Math.round(distance * 10) / 10, missionDistanceKm, travelMinutes, movingMinutes, stoppedMinutes, onSiteMinutes,
+      distanceKm: distance, missionDistanceKm, travelMinutes, movingMinutes, stoppedMinutes, onSiteMinutes,
       unclassifiedMinutes: Math.max(0, activeMinutes - classifiedMinutes), destinationCount: destinations.length,
       destinations, locationPointCount: points.length, missionTrips,
       averageTravelMinutes: missionTrips.length ? Math.round(travelMinutes / missionTrips.length) : 0,
@@ -432,13 +449,18 @@ function summarizeRows(rows: PerformanceUserReport[]) {
 function summarizeDailySeries(rows: PerformanceUserReport[]) {
   const points = new Map<string, PerformanceDailyPoint>();
   for (const row of rows) for (const point of row.dailySeries) {
-    const current = points.get(point.date) ?? { date: point.date, activeMinutes: 0, completedCount: 0, successfulCount: 0, travelMinutes: 0, onSiteMinutes: 0, missionDistanceKm: 0, gpsGapMinutes: 0, internetGapMinutes: 0 };
+    const current = points.get(point.date) ?? { date: point.date, activeMinutes: 0, completedCount: 0, successfulCount: 0, travelMinutes: 0, onSiteMinutes: 0, missionDistanceKm: 0, distanceKm: 0, measuredMissionCount: 0, firstStartAt: null, lastEndAt: null, hasActiveSession: false, gpsGapMinutes: 0, internetGapMinutes: 0 };
     current.activeMinutes += point.activeMinutes;
     current.completedCount += point.completedCount;
     current.successfulCount += point.successfulCount;
     current.travelMinutes += point.travelMinutes;
     current.onSiteMinutes += point.onSiteMinutes;
     current.missionDistanceKm = Math.round((current.missionDistanceKm + point.missionDistanceKm) * 10) / 10;
+    current.distanceKm = Math.round((current.distanceKm + point.distanceKm) * 10) / 10;
+    current.measuredMissionCount += point.measuredMissionCount;
+    current.firstStartAt = [current.firstStartAt, point.firstStartAt].filter((value): value is string => Boolean(value)).sort()[0] ?? null;
+    current.lastEndAt = [current.lastEndAt, point.lastEndAt].filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
+    current.hasActiveSession ||= point.hasActiveSession;
     current.gpsGapMinutes += point.gpsGapMinutes;
     current.internetGapMinutes += point.internetGapMinutes;
     points.set(point.date, current);

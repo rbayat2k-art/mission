@@ -302,6 +302,10 @@ test("delivers scoped daily weekly and monthly performance reports with real Exc
   assert.match(reportEngine, /internetGapMinutes/);
   assert.match(reportEngine, /firstVisitSuccessRate/);
   assert.match(reportEngine, /dailySeries/);
+  assert.match(reportEngine, /firstStartAt: dailyStarts\[0\]/);
+  assert.match(reportEngine, /lastEndAt: dailyEnds\.at\(-1\)/);
+  assert.match(reportEngine, /totalLocationDistanceKm\(dailyPoints\)/);
+  assert.match(reportEngine, /measuredMissionCount/);
   assert.match(reportEngine, /previousPeriodNow/);
   assert.match(reportEngine, /includeComparison/);
   assert.match(reportEngine, /onTimeRate/);
@@ -310,6 +314,7 @@ test("delivers scoped daily weekly and monthly performance reports with real Exc
   assert.match(exportRoute, /text\/csv/);
   assert.match(exportRoute, /application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet/);
   assert.match(exportRoute, /buildPerformanceXlsx/);
+  assert.match(exportRoute, /getPerformanceReport\(auth\.user, "monthly", now\)/);
   assert.match(exportRoute, /format === "print"/);
   assert.match(exportRoute, /جزئیات مسیر ماموریت‌ها/);
   assert.match(exportRoute, /زمان در حرکت دقیقه/);
@@ -323,6 +328,12 @@ test("delivers scoped daily weekly and monthly performance reports with real Exc
   assert.match(xlsx, /createZip/);
   assert.match(xlsx, /rightToLeft="1"/);
   assert.match(performanceXlsx, /خلاصه مدیریتی/);
+  assert.match(performanceXlsx, /گزارش روزانه پرسنل/);
+  assert.match(performanceXlsx, /گزارش هفتگی پرسنل/);
+  assert.match(performanceXlsx, /گزارش ماهانه پرسنل/);
+  assert.match(performanceXlsx, /اولین ورود/);
+  assert.match(performanceXlsx, /آخرین خروج/);
+  assert.match(performanceXlsx, /شرح کارها و نتیجه/);
   assert.match(performanceXlsx, /جزئیات مأموریت‌ها/);
   assert.match(performanceXlsx, /GPS و اینترنت/);
 });
@@ -529,9 +540,10 @@ test("shows live tracking only for active online users with fresh GPS", async ()
   assert.match(page, /setInterval\([\s\S]*30_000/);
 });
 
-test("keeps the latest accepted GPS point available to managers without presenting it as live", async () => {
-  const [locations, page, map] = await Promise.all([
+test("keeps the latest accepted GPS point and uses newer work points as an explicit fallback", async () => {
+  const [locations, destinations, page, map] = await Promise.all([
     readFile(new URL("../app/api/locations/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/destinations/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/OperationsMap.tsx", import.meta.url), "utf8"),
   ]);
@@ -541,11 +553,43 @@ test("keeps the latest accepted GPS point available to managers without presenti
   assert.match(locations, /u\.status = 'active'/);
   assert.match(locations, /workSessionStatus === "active"/);
   assert.match(page, /\/api\/locations\?mode=last/);
+  assert.match(page, /period=daily&active=1/);
+  assert.match(page, /latestLocationsWithWorkFallback/);
+  assert.match(page, /source === "work_point"/);
+  assert.match(page, /آخرین نقطه کاری؛ GPS زنده در دسترس نیست/);
   assert.match(page, /آخرین موقعیت ثبت‌شده/);
   assert.match(page, /setLastLocations\(current => current\.filter/);
   assert.match(map, /location\.isLive/);
   assert.match(map, /آخرین موقعیت؛ زنده نیست/);
+  assert.match(map, /آخرین نقطه کاری؛ GPS زنده نیست/);
   assert.match(map, /آخرین موقعیت ثبت‌شده/);
+  assert.match(destinations, /url\.searchParams\.get\("active"\) === "1"/);
+  assert.match(destinations, /activeOnly/);
+});
+
+test("notifies authorized managers when employee GPS becomes unavailable", async () => {
+  const [page, integrity, locations, push, bootstrap] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/integrity/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/locations/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/push-notifications.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/PushNotificationBootstrap.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /denied \? "gps_permission_denied" : "gps_unavailable"/);
+  assert.match(page, /OFFLINE_START_STORAGE_KEY/);
+  assert.match(page, /type:"device_offline", details:\{ offlineAt, resumedAt, gapMinutes \}/);
+  assert.match(page, /موقعیت GPS دریافت نمی‌شود/);
+  assert.match(integrity, /employeeEventTypes = new Set\(\["gps_permission_denied", "gps_unavailable", "device_offline"\]\)/);
+  assert.match(integrity, /work_session_id <=> \?/);
+  assert.match(integrity, /body\.type === "device_offline" \? null/);
+  assert.match(integrity, /createManagerIntegrityNotifications/);
+  assert.match(integrity, /screen=integrity/);
+  assert.match(locations, /وقفه GPS کارمند ثبت شد/);
+  assert.match(locations, /createManagerIntegrityNotifications/);
+  assert.match(push, /manager\.role IN \('owner', 'admin'\)/);
+  assert.match(push, /manager\.id = employee\.supervisor_id/);
+  assert.match(push, /Promise\.allSettled/);
+  assert.match(bootstrap, /قطع GPS، ارجاع و پیام جدید/);
 });
 
 test("delivers role-scoped in-app and phone notifications with secure account settings", async () => {
