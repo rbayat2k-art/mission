@@ -1,5 +1,6 @@
 import { requireRole } from "../../../../lib/auth";
 import { getPerformanceReport, type PerformancePeriod } from "../../../../lib/performance-report";
+import { buildPerformanceXlsx } from "../../../../lib/performance-xlsx";
 
 function csv(value: unknown) { return `"${String(value ?? "").replaceAll('"', '""')}"`; }
 function html(value: unknown) { return String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]!)); }
@@ -11,8 +12,17 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const requested = url.searchParams.get("period");
   const period: PerformancePeriod = requested === "weekly" || requested === "monthly" ? requested : "daily";
-  const report = await getPerformanceReport(auth.user, period);
-  if (url.searchParams.get("format") === "print") {
+  const format = url.searchParams.get("format");
+  const report = await getPerformanceReport(auth.user, period, new Date(), { includeComparison: format === "xlsx" });
+  if (format === "xlsx") {
+    const workbook = buildPerformanceXlsx(report);
+    return new Response(new Uint8Array(workbook), { headers: {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": `attachment; filename=tapra-${period}-performance.xlsx`,
+      "Cache-Control": "no-store",
+    } });
+  }
+  if (format === "print") {
     const title = period === "daily" ? "گزارش روزانه" : period === "weekly" ? "گزارش هفتگی" : "گزارش ماهانه";
     const rows = report.rows.map(row => `<tr><td>${html(row.fullName)}</td><td>${hours(row.attendance.activeMinutes)}</td><td>${row.missions.completedCount}</td><td>${row.missions.successfulCount}</td><td>${row.missions.openCount}</td><td>${row.missions.overdueCount}</td><td>${row.missions.completionRate}%</td><td>${row.missions.onTimeRate}%</td><td>${hours(row.movement.travelMinutes)}</td><td>${hours(row.movement.movingMinutes)}</td><td>${row.movement.missionDistanceKm}</td><td>${row.integrity.gpsGapMinutes}</td><td>${row.quality.confirmedScore}</td><td>${row.quality.pendingScore}</td><td>${row.finance.total.toLocaleString("fa-IR")}</td></tr>`).join("");
     const document = `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><title>${title} راهکار</title><style>body{font-family:Tahoma,Arial,sans-serif;color:#18263a;padding:28px}h1{margin:0 0 6px}p{color:#64748b}table{width:100%;border-collapse:collapse;margin-top:22px;font-size:11px}th,td{border:1px solid #d9e0e8;padding:8px;text-align:center}th{background:#eef3ff}.note{margin-top:18px;padding:10px;background:#fff8e7;border:1px solid #eed79d;font-size:11px}@media print{button{display:none}body{padding:0}@page{size:landscape;margin:12mm}}</style></head><body><button onclick="window.print()">چاپ / ذخیره PDF</button><h1>${title} عملکرد نیروهای میدانی</h1><p>${new Date(report.range.start).toLocaleDateString("fa-IR-u-ca-persian")} تا ${new Date(report.range.end).toLocaleDateString("fa-IR-u-ca-persian")}</p><table><thead><tr><th>کارمند</th><th>کارکرد</th><th>تکمیل</th><th>موفق</th><th>باز</th><th>معوق</th><th>نرخ تکمیل</th><th>به‌موقع</th><th>زمان مسیر</th><th>زمان حرکت</th><th>مسافت مأموریت km</th><th>وقفه GPS</th><th>امتیاز قطعی</th><th>در انتظار</th><th>هزینه</th></tr></thead><tbody>${rows}</tbody></table><div class="note">${html(report.policy.note)} زمان مسیر از شروع هر مأموریت تا ثبت مقصد است. مسیر و نقشه فقط در پنل مدیریتی قابل مشاهده است.</div><script>setTimeout(()=>window.print(),400)</script></body></html>`;

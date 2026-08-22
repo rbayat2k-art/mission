@@ -266,8 +266,8 @@ test("provides a complete and safe user account lifecycle", async () => {
   assert.match(auth, /AND u\.status = 'active'/);
 });
 
-test("delivers scoped daily weekly and monthly performance reports with exports", async () => {
-  const [page, reportEngine, reportRoute, exportRoute, employeeRoute, schema, migration] = await Promise.all([
+test("delivers scoped daily weekly and monthly performance reports with real Excel exports", async () => {
+  const [page, reportEngine, reportRoute, exportRoute, employeeRoute, schema, migration, xlsx, performanceXlsx] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../lib/performance-report.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/reports/summary/route.ts", import.meta.url), "utf8"),
@@ -275,11 +275,17 @@ test("delivers scoped daily weekly and monthly performance reports with exports"
     readFile(new URL("../app/api/employee/daily-summary/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/mysql-schema.sql", import.meta.url), "utf8"),
     readFile(new URL("../db/mysql-schema.sql", import.meta.url), "utf8"),
+    readFile(new URL("../lib/simple-xlsx.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/performance-xlsx.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /گزارش عملکرد اعضای تیم/);
-  assert.match(page, /خروجی Excel \/ CSV/);
+  assert.match(page, /Excel واقعی/);
+  assert.match(page, /CSV/);
   assert.match(page, /چاپ \/ ذخیره PDF/);
+  assert.match(page, /عملکرد کاری در طول بازه/);
+  assert.match(page, /موفقیت اولین مراجعه/);
+  assert.match(page, /درصد انجام موفق/);
   assert.match(page, /تحلیل عملکرد من/);
   assert.match(page, /زمان دسته‌بندی‌نشده/);
   assert.match(reportEngine, /viewer\.role === "supervisor"/);
@@ -293,11 +299,18 @@ test("delivers scoped daily weekly and monthly performance reports with exports"
   assert.match(reportEngine, /firstByDay\.values\(\)/);
   assert.match(reportEngine, /localMinuteOfDay\(value\) - STANDARD_START_MINUTES/);
   assert.match(reportEngine, /gpsGapMinutes/);
+  assert.match(reportEngine, /internetGapMinutes/);
+  assert.match(reportEngine, /firstVisitSuccessRate/);
+  assert.match(reportEngine, /dailySeries/);
+  assert.match(reportEngine, /previousPeriodNow/);
+  assert.match(reportEngine, /includeComparison/);
   assert.match(reportEngine, /onTimeRate/);
   assert.match(reportEngine, /firstPassApprovalRate/);
   assert.match(reportRoute, /getPerformanceReport/);
   assert.match(exportRoute, /text\/csv/);
-  assert.match(exportRoute, /format"\) === "print"/);
+  assert.match(exportRoute, /application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet/);
+  assert.match(exportRoute, /buildPerformanceXlsx/);
+  assert.match(exportRoute, /format === "print"/);
   assert.match(exportRoute, /جزئیات مسیر ماموریت‌ها/);
   assert.match(exportRoute, /زمان در حرکت دقیقه/);
   assert.match(employeeRoute, /performance: performance\.rows\[0\]/);
@@ -307,6 +320,11 @@ test("delivers scoped daily weekly and monthly performance reports with exports"
   assert.match(schema, /deadline_at VARCHAR/);
   assert.match(schema, /started_at VARCHAR/);
   assert.match(migration, /idx_missions_assigned_completed/);
+  assert.match(xlsx, /createZip/);
+  assert.match(xlsx, /rightToLeft="1"/);
+  assert.match(performanceXlsx, /خلاصه مدیریتی/);
+  assert.match(performanceXlsx, /جزئیات مأموریت‌ها/);
+  assert.match(performanceXlsx, /GPS و اینترنت/);
 });
 
 test("ships a clean production seed with only the requested administrator", async () => {

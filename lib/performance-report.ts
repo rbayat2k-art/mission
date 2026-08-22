@@ -3,6 +3,11 @@ import type { AppRole } from "./auth";
 import { calculateWorkSessionMetrics, OVERTIME_START_MINUTES, REQUIRED_WORK_MINUTES, type WorkSessionPolicyRow } from "./work-session-policy";
 
 export type PerformancePeriod = "daily" | "weekly" | "monthly";
+export type PerformanceMetricKey =
+  | "activeMinutes" | "completedCount" | "successRate" | "firstVisitSuccessRate"
+  | "averageMissionMinutes" | "averageTravelMinutes" | "averageOnSiteMinutes"
+  | "averageMissionDistanceKm" | "missionDistanceKm" | "gpsCoverageRate"
+  | "gpsGapMinutes" | "internetGapMinutes" | "totalExpenses";
 const TEHRAN_OFFSET_MINUTES = 210;
 const STANDARD_START_MINUTES = 8 * 60 + 30;
 const STANDARD_DAY_MINUTES = REQUIRED_WORK_MINUTES;
@@ -12,7 +17,12 @@ export function performancePeriodBounds(now: Date, period: PerformancePeriod) {
   const todayStart = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()) - TEHRAN_OFFSET_MINUTES * 60_000);
   const lookbackDays = period === "weekly" ? 6 : period === "monthly" ? 29 : 0;
   const start = new Date(todayStart.getTime() - lookbackDays * 86_400_000);
-  return { start: start.toISOString(), end: new Date(todayStart.getTime() + 86_400_000).toISOString(), days: lookbackDays + 1 };
+  return { start: start.toISOString(), end: now.toISOString(), days: lookbackDays + 1 };
+}
+
+function previousPeriodNow(now: Date, period: PerformancePeriod) {
+  const days = period === "weekly" ? 7 : period === "monthly" ? 30 : 1;
+  return new Date(now.getTime() - days * 86_400_000);
 }
 
 type ReportUser = { id: string; fullName: string; username: string; supervisorName: string | null };
@@ -22,11 +32,22 @@ type MissionRow = {
   expenseAmount: number; scorePending: number; scoreConfirmed: number; deadlineAt: string | null;
   scorePenalty: number; scoreNote: string | null;
   startedAt: string | null; completedAt: string | null; createdAt: string;
+  attemptCount: number;
   startLatitudeE6: number | null; startLongitudeE6: number | null; startLocationRecordedAt: string | null;
   destinationLatitudeE6: number | null; destinationLongitudeE6: number | null; destinationRecordedAt: string | null;
 };
 type LocationRow = { workSessionId: string; latitudeE6: number; longitudeE6: number; speedCms: number | null; recordedAt: string };
 type IntegrityRow = { type: string; status: string; details: string; occurredAt: string };
+
+export type PerformanceDailyPoint = {
+  date: string; activeMinutes: number; completedCount: number; successfulCount: number;
+  travelMinutes: number; onSiteMinutes: number; missionDistanceKm: number;
+  gpsGapMinutes: number; internetGapMinutes: number;
+};
+
+export type PerformanceComparisonMetric = {
+  current: number; previous: number; delta: number; percentChange: number | null;
+};
 
 type MissionTrip = {
   missionId: string; title: string; status: string; destinationName: string | null;
@@ -138,6 +159,29 @@ function missionTripMetrics(mission: MissionRow, locations: LocationRow[], range
 
 function percent(part: number, total: number) { return total > 0 ? Math.round(part / total * 100) : 0; }
 
+function eventGapMinutes(event: IntegrityRow) {
+  try { return Math.max(0, Number((JSON.parse(event.details) as { gapMinutes?: number }).gapMinutes ?? 0)); }
+  catch { return 0; }
+}
+
+function dayWindows(start: string, days: number, reportEnd: string) {
+  const startTimestamp = Date.parse(start);
+  const reportEndTimestamp = Date.parse(reportEnd);
+  return Array.from({ length: days }, (_, index) => {
+    const dayStart = startTimestamp + index * 86_400_000;
+    const dayEnd = Math.min(dayStart + 86_400_000, reportEndTimestamp);
+    return { start: new Date(dayStart).toISOString(), end: new Date(dayEnd).toISOString() };
+  }).filter(window => Date.parse(window.end) > Date.parse(window.start));
+}
+
+function comparisonMetric(current: number, previous: number): PerformanceComparisonMetric {
+  const delta = Math.round((current - previous) * 10) / 10;
+  return {
+    current, previous, delta,
+    percentChange: previous === 0 ? current === 0 ? 0 : null : Math.round(delta / Math.abs(previous) * 1000) / 10,
+  };
+}
+
 async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: Date) {
   const db = await ensureDatabase();
   const { start, end } = performancePeriodBounds(now, period);
@@ -149,6 +193,7 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
       FROM work_sessions WHERE user_id = ? AND started_at < ? AND COALESCE(ended_at, ?) >= ? ORDER BY started_at`).bind(user.id, end, nowIso, start).all<SessionRow>(),
     db.prepare(`SELECT m.id, m.title, m.status, m.source, m.result, COALESCE(md.destination_name, m.destination_name) AS destinationName, m.expense_amount AS expenseAmount,
       m.score_pending AS scorePending, m.score_confirmed AS scoreConfirmed, m.score_penalty AS scorePenalty, m.score_note AS scoreNote, m.deadline_at AS deadlineAt,
+      (SELECT COUNT(*) FROM mission_attempts ma WHERE ma.mission_id = m.id) AS attemptCount,
       m.started_at AS startedAt, m.start_latitude_e6 AS startLatitudeE6, m.start_longitude_e6 AS startLongitudeE6, m.start_location_recorded_at AS startLocationRecordedAt,
       md.latitude_e6 AS destinationLatitudeE6, md.longitude_e6 AS destinationLongitudeE6, md.recorded_at AS destinationRecordedAt,
       m.completed_at AS completedAt, m.created_at AS createdAt FROM missions m LEFT JOIN mission_destinations md ON md.mission_id = m.id
@@ -168,6 +213,7 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
   const relevantIds = new Set([...created, ...completed].map(m => m.id));
   const successful = completed.filter(m => m.result === "انجام شد");
   const followUp = completed.filter(m => m.result && m.result !== "انجام شد");
+  const firstVisitSuccessful = successful.filter(m => Number(m.attemptCount || 0) <= 1);
   const open = missions.filter(m => ["open", "in_progress", "revision"].includes(m.status));
   const overdue = open.filter(m => m.deadlineAt && Date.parse(m.deadlineAt) < now.getTime());
   const deadlineCompleted = completed.filter(m => m.deadlineAt);
@@ -211,10 +257,11 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
   const classifiedMinutes = Math.min(activeMinutes, Math.round(onSiteMinutes + travelMinutes));
 
   let gpsGapMinutes = 0;
+  let internetGapMinutes = 0;
   const integrityEvents = integrityResult.results;
   for (const event of integrityEvents) {
-    if (event.type !== "gps_gap" && event.type !== "device_offline") continue;
-    try { gpsGapMinutes += Math.max(0, Number((JSON.parse(event.details) as { gapMinutes?: number }).gapMinutes ?? 0)); } catch { /* malformed legacy detail */ }
+    if (event.type === "gps_gap") gpsGapMinutes += eventGapMinutes(event);
+    if (event.type === "device_offline") internetGapMinutes += eventGapMinutes(event);
   }
 
   const approvedMissions = completed.filter(m => m.status === "approved");
@@ -227,6 +274,46 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
   const rejectedExpenses = rejectedMissions.reduce((sum, m) => sum + Number(m.expenseAmount || 0), 0);
   const totalExpenses = completed.reduce((sum, m) => sum + Number(m.expenseAmount || 0), 0);
   const destinations = [...new Set(completed.map(m => m.destinationName).filter((value): value is string => Boolean(value)))];
+  const timedMissions = completed.filter(m => m.startedAt);
+  const measuredMissionTrips = missionTrips.filter(trip => trip.coverageStatus !== "missing");
+  const tripByMission = new Map(missionTrips.map(trip => [trip.missionId, trip]));
+  const missionDetails = completed.map(mission => {
+    const trip = tripByMission.get(mission.id);
+    const totalMinutes = mission.startedAt ? clampMinutes(mission.startedAt, mission.completedAt, start, end, nowIso) : 0;
+    const serviceMinutes = mission.destinationRecordedAt ? clampMinutes(mission.destinationRecordedAt, mission.completedAt, start, end, nowIso) : 0;
+    return {
+      id: mission.id, title: mission.title, source: mission.source, status: mission.status, result: mission.result,
+      destinationName: mission.destinationName, createdAt: mission.createdAt, startedAt: mission.startedAt,
+      destinationRecordedAt: mission.destinationRecordedAt, completedAt: mission.completedAt, deadlineAt: mission.deadlineAt,
+      attemptCount: Number(mission.attemptCount || 0), totalMinutes, serviceMinutes,
+      travelMinutes: trip?.travelMinutes ?? 0, distanceKm: trip?.distanceKm ?? 0,
+      coverageStatus: trip?.coverageStatus ?? "missing", expenseAmount: Number(mission.expenseAmount || 0),
+      confirmedScore: Number(mission.scoreConfirmed || 0), pendingScore: Number(mission.scorePending || 0),
+    };
+  });
+
+  const dailySeries: PerformanceDailyPoint[] = dayWindows(start, performancePeriodBounds(now, period).days, end).map(window => {
+    const dailySessions = sessions.filter(session => Date.parse(session.startedAt) < Date.parse(window.end) && Date.parse(session.endedAt ?? nowIso) >= Date.parse(window.start));
+    const dailyPoints = points.filter(point => point.recordedAt >= window.start && point.recordedAt < window.end);
+    const work = calculateWorkSessionMetrics(dailySessions, dailyPoints, window.start, window.end, now);
+    const dailyCompleted = completed.filter(mission => mission.completedAt! >= window.start && mission.completedAt! < window.end);
+    const dailyTrips = missionTrips.filter(trip => {
+      const at = trip.destinationRecordedAt ?? trip.startedAt;
+      return Boolean(at && at >= window.start && at < window.end);
+    });
+    const dailyEvents = integrityEvents.filter(event => event.occurredAt >= window.start && event.occurredAt < window.end);
+    return {
+      date: window.start,
+      activeMinutes: Math.floor(work.intervalMilliseconds / 60_000),
+      completedCount: dailyCompleted.length,
+      successfulCount: dailyCompleted.filter(mission => mission.result === "انجام شد").length,
+      travelMinutes: dailyTrips.reduce((sum, trip) => sum + trip.travelMinutes, 0),
+      onSiteMinutes: dailyCompleted.reduce((sum, mission) => mission.destinationRecordedAt ? sum + clampMinutes(mission.destinationRecordedAt, mission.completedAt, window.start, window.end, nowIso) : sum, 0),
+      missionDistanceKm: Math.round(dailyTrips.reduce((sum, trip) => sum + trip.distanceKm, 0) * 10) / 10,
+      gpsGapMinutes: dailyEvents.filter(event => event.type === "gps_gap").reduce((sum, event) => sum + eventGapMinutes(event), 0),
+      internetGapMinutes: dailyEvents.filter(event => event.type === "device_offline").reduce((sum, event) => sum + eventGapMinutes(event), 0),
+    };
+  });
 
   return {
     id: user.id, fullName: user.fullName, username: user.username, supervisorName: user.supervisorName,
@@ -240,17 +327,28 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
     },
     missions: {
       assignedCount: relevantIds.size, completedCount: completed.length, successfulCount: successful.length,
+      firstVisitSuccessfulCount: firstVisitSuccessful.length,
       followUpCount: followUp.length, openCount: open.length, pendingCount: pendingMissions.length, approvedCount: approvedMissions.length,
       rejectedCount: rejectedMissions.length, overdueCount: overdue.length, selfCreatedCount: completed.filter(m => m.source === "employee").length,
-      completionRate: percent(completed.length, relevantIds.size), onTimeRate: percent(onTime.length, deadlineCompleted.length),
-      averageMissionMinutes: completed.filter(m => m.startedAt).length ? Math.round(totalMissionMinutes / completed.filter(m => m.startedAt).length) : 0,
+      completionRate: percent(completed.length, relevantIds.size), successRate: percent(successful.length, completed.length),
+      firstVisitSuccessRate: percent(firstVisitSuccessful.length, completed.length), followUpRate: percent(followUp.length, completed.length),
+      onTimeRate: percent(onTime.length, deadlineCompleted.length), timedMissionCount: timedMissions.length,
+      averageMissionMinutes: timedMissions.length ? Math.round(totalMissionMinutes / timedMissions.length) : 0,
+      missionDetails,
     },
     movement: {
       distanceKm: Math.round(distance * 10) / 10, missionDistanceKm, travelMinutes, movingMinutes, stoppedMinutes, onSiteMinutes,
       unclassifiedMinutes: Math.max(0, activeMinutes - classifiedMinutes), destinationCount: destinations.length,
       destinations, locationPointCount: points.length, missionTrips,
+      averageTravelMinutes: missionTrips.length ? Math.round(travelMinutes / missionTrips.length) : 0,
+      averageOnSiteMinutes: completed.length ? Math.round(onSiteMinutes / completed.length) : 0,
+      averageMissionDistanceKm: measuredMissionTrips.length ? Math.round(missionDistanceKm / measuredMissionTrips.length * 10) / 10 : 0,
     },
-    integrity: { eventCount: integrityEvents.length, openCount: integrityEvents.filter(e => e.status === "open").length, gpsGapMinutes },
+    integrity: {
+      eventCount: integrityEvents.length, openCount: integrityEvents.filter(e => e.status === "open").length,
+      gpsGapMinutes, internetGapMinutes,
+      gpsCoverageRate: percent(activeMinutes, activeMinutes + Math.max(0, Math.floor((verifiedWork.rawMilliseconds - verifiedWork.intervalMilliseconds) / 60_000))),
+    },
     quality: {
       attachmentCount: Number(attachmentResult?.count ?? 0), approvalCount: approvalRows.filter(a => a.status === "approved").length,
       rejectedOrRevisionCount: approvalRows.filter(a => ["rejected", "revision"].includes(a.status)).length,
@@ -261,12 +359,97 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
       missedMissionStarts: completed.filter(m => Number(m.scorePenalty || 0) > 0).length,
     },
     finance: { total: totalExpenses, approved: approvedExpenses, pending: pendingExpenses, rejected: rejectedExpenses, averagePerMission: completed.length ? Math.round(totalExpenses / completed.length) : 0 },
+    dailySeries,
   };
 }
 
 export type PerformanceUserReport = Awaited<ReturnType<typeof loadUserReport>>;
 
-export async function getPerformanceReport(viewer: { id: string; role: AppRole }, period: PerformancePeriod = "daily", now = new Date()) {
+function summarizeRows(rows: PerformanceUserReport[]) {
+  const sums = rows.reduce((sum, row) => ({
+    activeMinutes: sum.activeMinutes + row.attendance.activeMinutes,
+    rawMinutes: sum.rawMinutes + row.attendance.activeMinutes + row.attendance.unverifiedGpsMinutes,
+    assignedCount: sum.assignedCount + row.missions.assignedCount,
+    completedCount: sum.completedCount + row.missions.completedCount,
+    successfulCount: sum.successfulCount + row.missions.successfulCount,
+    firstVisitSuccessfulCount: sum.firstVisitSuccessfulCount + row.missions.firstVisitSuccessfulCount,
+    followUpCount: sum.followUpCount + row.missions.followUpCount,
+    timedMissionCount: sum.timedMissionCount + row.missions.timedMissionCount,
+    totalMissionMinutes: sum.totalMissionMinutes + row.missions.averageMissionMinutes * row.missions.timedMissionCount,
+    approvedCount: sum.approvedCount + row.missions.approvedCount,
+    overdueCount: sum.overdueCount + row.missions.overdueCount,
+    confirmedScore: sum.confirmedScore + row.quality.confirmedScore,
+    pendingScore: sum.pendingScore + row.quality.pendingScore,
+    distanceKm: sum.distanceKm + row.movement.distanceKm,
+    missionDistanceKm: sum.missionDistanceKm + row.movement.missionDistanceKm,
+    measuredMissionCount: sum.measuredMissionCount + row.movement.missionTrips.filter(trip => trip.coverageStatus !== "missing").length,
+    travelMinutes: sum.travelMinutes + row.movement.travelMinutes,
+    tripCount: sum.tripCount + row.movement.missionTrips.length,
+    movingMinutes: sum.movingMinutes + row.movement.movingMinutes,
+    onSiteMinutes: sum.onSiteMinutes + row.movement.onSiteMinutes,
+    totalExpenses: sum.totalExpenses + row.finance.total,
+    gpsGapMinutes: sum.gpsGapMinutes + row.integrity.gpsGapMinutes,
+    internetGapMinutes: sum.internetGapMinutes + row.integrity.internetGapMinutes,
+  }), {
+    activeMinutes: 0, rawMinutes: 0, assignedCount: 0, completedCount: 0, successfulCount: 0,
+    firstVisitSuccessfulCount: 0, followUpCount: 0, timedMissionCount: 0, totalMissionMinutes: 0,
+    approvedCount: 0, overdueCount: 0, confirmedScore: 0, pendingScore: 0, distanceKm: 0,
+    missionDistanceKm: 0, measuredMissionCount: 0, travelMinutes: 0, tripCount: 0, movingMinutes: 0,
+    onSiteMinutes: 0, totalExpenses: 0, gpsGapMinutes: 0, internetGapMinutes: 0,
+  });
+  return {
+    userCount: rows.length,
+    activeMinutes: sums.activeMinutes,
+    assignedCount: sums.assignedCount,
+    completedCount: sums.completedCount,
+    successfulCount: sums.successfulCount,
+    firstVisitSuccessfulCount: sums.firstVisitSuccessfulCount,
+    followUpCount: sums.followUpCount,
+    approvedCount: sums.approvedCount,
+    overdueCount: sums.overdueCount,
+    confirmedScore: sums.confirmedScore,
+    pendingScore: sums.pendingScore,
+    distanceKm: Math.round(sums.distanceKm * 10) / 10,
+    missionDistanceKm: Math.round(sums.missionDistanceKm * 10) / 10,
+    travelMinutes: sums.travelMinutes,
+    movingMinutes: sums.movingMinutes,
+    onSiteMinutes: sums.onSiteMinutes,
+    totalExpenses: sums.totalExpenses,
+    gpsGapMinutes: sums.gpsGapMinutes,
+    internetGapMinutes: sums.internetGapMinutes,
+    completionRate: percent(sums.completedCount, sums.assignedCount),
+    successRate: percent(sums.successfulCount, sums.completedCount),
+    firstVisitSuccessRate: percent(sums.firstVisitSuccessfulCount, sums.completedCount),
+    followUpRate: percent(sums.followUpCount, sums.completedCount),
+    averageMissionMinutes: sums.timedMissionCount ? Math.round(sums.totalMissionMinutes / sums.timedMissionCount) : 0,
+    averageTravelMinutes: sums.tripCount ? Math.round(sums.travelMinutes / sums.tripCount) : 0,
+    averageOnSiteMinutes: sums.completedCount ? Math.round(sums.onSiteMinutes / sums.completedCount) : 0,
+    averageMissionDistanceKm: sums.measuredMissionCount ? Math.round(sums.missionDistanceKm / sums.measuredMissionCount * 10) / 10 : 0,
+    gpsCoverageRate: percent(sums.activeMinutes, sums.rawMinutes),
+  };
+}
+
+function summarizeDailySeries(rows: PerformanceUserReport[]) {
+  const points = new Map<string, PerformanceDailyPoint>();
+  for (const row of rows) for (const point of row.dailySeries) {
+    const current = points.get(point.date) ?? { date: point.date, activeMinutes: 0, completedCount: 0, successfulCount: 0, travelMinutes: 0, onSiteMinutes: 0, missionDistanceKm: 0, gpsGapMinutes: 0, internetGapMinutes: 0 };
+    current.activeMinutes += point.activeMinutes;
+    current.completedCount += point.completedCount;
+    current.successfulCount += point.successfulCount;
+    current.travelMinutes += point.travelMinutes;
+    current.onSiteMinutes += point.onSiteMinutes;
+    current.missionDistanceKm = Math.round((current.missionDistanceKm + point.missionDistanceKm) * 10) / 10;
+    current.gpsGapMinutes += point.gpsGapMinutes;
+    current.internetGapMinutes += point.internetGapMinutes;
+    points.set(point.date, current);
+  }
+  return [...points.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+export async function getPerformanceReport(
+  viewer: { id: string; role: AppRole }, period: PerformancePeriod = "daily", now = new Date(),
+  options: { includeComparison?: boolean } = {},
+) {
   const db = await ensureDatabase();
   let users;
   if (viewer.role === "employee") {
@@ -277,22 +460,32 @@ export async function getPerformanceReport(viewer: { id: string; role: AppRole }
     users = await db.prepare(`SELECT u.id, u.full_name AS fullName, u.username, s.full_name AS supervisorName FROM users u LEFT JOIN users s ON s.id = u.supervisor_id WHERE u.role = 'employee' AND u.status = 'active' ORDER BY u.full_name`).all<ReportUser>();
   }
   const rows = await Promise.all(users.results.map(user => loadUserReport(user, period, now)));
-  const totals = rows.reduce((sum, row) => ({
-    activeMinutes: sum.activeMinutes + row.attendance.activeMinutes,
-    completedCount: sum.completedCount + row.missions.completedCount,
-    approvedCount: sum.approvedCount + row.missions.approvedCount,
-    overdueCount: sum.overdueCount + row.missions.overdueCount,
-    confirmedScore: sum.confirmedScore + row.quality.confirmedScore,
-    pendingScore: sum.pendingScore + row.quality.pendingScore,
-    distanceKm: Math.round((sum.distanceKm + row.movement.distanceKm) * 10) / 10,
-    missionDistanceKm: Math.round((sum.missionDistanceKm + row.movement.missionDistanceKm) * 10) / 10,
-    travelMinutes: sum.travelMinutes + row.movement.travelMinutes,
-    movingMinutes: sum.movingMinutes + row.movement.movingMinutes,
-    totalExpenses: sum.totalExpenses + row.finance.total,
-    gpsGapMinutes: sum.gpsGapMinutes + row.integrity.gpsGapMinutes,
-  }), { activeMinutes: 0, completedCount: 0, approvedCount: 0, overdueCount: 0, confirmedScore: 0, pendingScore: 0, distanceKm: 0, missionDistanceKm: 0, travelMinutes: 0, movingMinutes: 0, totalExpenses: 0, gpsGapMinutes: 0 });
+  const totals = summarizeRows(rows);
+  const dailySeries = summarizeDailySeries(rows);
+  let comparison = null;
+  if (options.includeComparison) {
+    const comparisonNow = previousPeriodNow(now, period);
+    const previousRows = await Promise.all(users.results.map(user => loadUserReport(user, period, comparisonNow)));
+    const previousTotals = summarizeRows(previousRows);
+    const metrics = {
+      activeMinutes: comparisonMetric(totals.activeMinutes, previousTotals.activeMinutes),
+      completedCount: comparisonMetric(totals.completedCount, previousTotals.completedCount),
+      successRate: comparisonMetric(totals.successRate, previousTotals.successRate),
+      firstVisitSuccessRate: comparisonMetric(totals.firstVisitSuccessRate, previousTotals.firstVisitSuccessRate),
+      averageMissionMinutes: comparisonMetric(totals.averageMissionMinutes, previousTotals.averageMissionMinutes),
+      averageTravelMinutes: comparisonMetric(totals.averageTravelMinutes, previousTotals.averageTravelMinutes),
+      averageOnSiteMinutes: comparisonMetric(totals.averageOnSiteMinutes, previousTotals.averageOnSiteMinutes),
+      averageMissionDistanceKm: comparisonMetric(totals.averageMissionDistanceKm, previousTotals.averageMissionDistanceKm),
+      missionDistanceKm: comparisonMetric(totals.missionDistanceKm, previousTotals.missionDistanceKm),
+      gpsCoverageRate: comparisonMetric(totals.gpsCoverageRate, previousTotals.gpsCoverageRate),
+      gpsGapMinutes: comparisonMetric(totals.gpsGapMinutes, previousTotals.gpsGapMinutes),
+      internetGapMinutes: comparisonMetric(totals.internetGapMinutes, previousTotals.internetGapMinutes),
+      totalExpenses: comparisonMetric(totals.totalExpenses, previousTotals.totalExpenses),
+    } satisfies Record<PerformanceMetricKey, PerformanceComparisonMetric>;
+    comparison = { previousRange: performancePeriodBounds(comparisonNow, period), previousTotals, metrics };
+  }
   return {
-    period, range: performancePeriodBounds(now, period), rows, totals,
+    period, range: performancePeriodBounds(now, period), rows, totals, dailySeries, comparison,
     policy: { standardStart: "۰۸:۳۰", standardDailyMinutes: STANDARD_DAY_MINUTES, overtimeStartMinutes: OVERTIME_START_MINUTES, note: "حداقل کار روزانه ۸ ساعت و ۳۰ دقیقه است؛ اضافه‌کاری فقط پس از تکمیل ۹ ساعت کارکرد واقعی محاسبه می‌شود. برای هر قطعی پیوسته GPS، ۳۰ دقیقه مهلت وجود دارد و فقط زمان اضافه بر آن از کارکرد واقعی خارج می‌شود. فاصله بین پایان و شروع مجدد جزو کارکرد نیست." },
   };
 }
