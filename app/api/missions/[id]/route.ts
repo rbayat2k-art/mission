@@ -1,11 +1,13 @@
 import { ensureDatabase } from "../../../../db/runtime";
 import { requireRole } from "../../../../lib/auth";
 import { normalizeJalaliDeadline } from "../../../../lib/mission-deadline";
+import { normalizeMissionSteps, type MissionStepInput } from "../../../../lib/mission-steps";
 
 type MissionRow = {
   id: string; title: string; description: string; source: string; status: string; priority: string;
   createdBy: string; assignedTo: string; assigneeSupervisorId: string | null; destinationName: string | null;
   deadline: string | null; createdAt: string;
+  workflowType:string;
 };
 
 function canChangeMission(role: string, userId: string, mission: MissionRow) {
@@ -16,7 +18,7 @@ function canChangeMission(role: string, userId: string, mission: MissionRow) {
 
 async function getMission(id: string) {
   const db = await ensureDatabase();
-  const mission = await db.prepare(`SELECT m.id, m.title, m.description, m.source, m.status, m.priority, m.created_by AS createdBy, m.assigned_to AS assignedTo, u.supervisor_id AS assigneeSupervisorId, m.destination_name AS destinationName, m.deadline, m.created_at AS createdAt FROM missions m JOIN users u ON u.id = m.assigned_to WHERE m.id = ?`).bind(id).first<MissionRow>();
+  const mission = await db.prepare(`SELECT m.id, m.title, m.description, m.source, m.status, m.priority, m.created_by AS createdBy, m.assigned_to AS assignedTo, u.supervisor_id AS assigneeSupervisorId, m.workflow_type AS workflowType, m.destination_name AS destinationName, m.deadline, m.created_at AS createdAt FROM missions m JOIN users u ON u.id = m.assigned_to WHERE m.id = ?`).bind(id).first<MissionRow>();
   return { db, mission };
 }
 
@@ -29,7 +31,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   if (!canChangeMission(auth.user.role, auth.user.id, mission)) return Response.json({ error: "اجازه ویرایش این مأموریت را ندارید." }, { status: 403 });
   if (mission.status !== "open") return Response.json({ error: "پس از شروع مأموریت، ویرایش آن امکان‌پذیر نیست." }, { status: 409 });
 
-  const body = await request.json().catch(() => ({})) as { title?: string; description?: string; priority?: string; deadlineDate?: string | null; deadlineTime?: string | null; destinationName?: string | null; assignedTo?: string };
+  const body = await request.json().catch(() => ({})) as { title?: string; description?: string; priority?: string; deadlineDate?: string | null; deadlineTime?: string | null; destinationName?: string | null; assignedTo?: string;workflowType?:string;steps?:MissionStepInput[] };
   const title = body.title?.trim() ?? "";
   if (!title) return Response.json({ error: "عنوان مأموریت الزامی است." }, { status: 400 });
   const assignedTo = body.assignedTo?.trim() ?? mission.assignedTo;
@@ -43,12 +45,18 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const deadline = normalizedDeadline.deadline;
   const deadlineAt = "deadlineAt" in normalizedDeadline ? normalizedDeadline.deadlineAt : null;
   const priority = ["low", "normal", "urgent"].includes(body.priority ?? "") ? body.priority! : "normal";
+  const workflowType = body.workflowType === "multi_stage" ? "multi_stage" : "single";
+  const normalizedSteps = workflowType === "multi_stage" ? normalizeMissionSteps(body.steps) : { steps:[] };
+  if ("error" in normalizedSteps) return Response.json({ error:normalizedSteps.error }, { status:400 });
   const now = new Date().toISOString();
   await db.batch([
-    db.prepare("UPDATE missions SET title = ?, description = ?, priority = ?, assigned_to = ?, destination_name = ?, deadline = ?, deadline_at = ? WHERE id = ? AND status = 'open'").bind(title, body.description?.trim() ?? "", priority, assignedTo, body.destinationName?.trim() || null, deadline, deadlineAt, id),
+    db.prepare("UPDATE missions SET title = ?, description = ?, priority = ?, assigned_to = ?, workflow_type=?, current_step_no=1, destination_name = ?, deadline = ?, deadline_at = ? WHERE id = ? AND status = 'open'").bind(title, body.description?.trim() ?? "", priority, assignedTo, workflowType, workflowType === "single" ? body.destinationName?.trim() || null : null, deadline, deadlineAt, id),
+    db.prepare("DELETE FROM mission_steps WHERE mission_id=?").bind(id),
+    ...normalizedSteps.steps.map(step=>db.prepare(`INSERT INTO mission_steps (id, mission_id, step_no, title, action_type, description, requires_location, destination_name, evidence_requirement, deadline, deadline_at, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`).bind(step.id,id,step.stepNo,step.title,step.actionType,step.description,step.requiresLocation?1:0,step.destinationName,step.evidenceRequirement,step.deadline,step.deadlineAt,now,now)),
     db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.updated', 'mission', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ assignedTo, priority }), now),
   ]);
-  return Response.json({ mission: { ...mission, title, description: body.description?.trim() ?? "", priority, assignedTo, employeeName: assignee.fullName, destinationName: body.destinationName?.trim() || null, deadline } });
+  return Response.json({ mission: { ...mission, title, description: body.description?.trim() ?? "", priority, assignedTo, employeeName: assignee.fullName, workflowType,currentStepNo:1,steps:normalizedSteps.steps,destinationName: workflowType === "single" ? body.destinationName?.trim() || null : null, deadline } });
 }
 
 export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {

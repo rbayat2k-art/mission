@@ -34,11 +34,13 @@ type MissionRow = {
   scorePenalty: number; scoreNote: string | null;
   startedAt: string | null; completedAt: string | null; createdAt: string;
   attemptCount: number;
+  workflowType:string;
   startLatitudeE6: number | null; startLongitudeE6: number | null; startLocationRecordedAt: string | null;
   destinationLatitudeE6: number | null; destinationLongitudeE6: number | null; destinationRecordedAt: string | null;
 };
 type LocationRow = { workSessionId: string; latitudeE6: number; longitudeE6: number; speedCms: number | null; recordedAt: string };
 type IntegrityRow = { type: string; status: string; details: string; occurredAt: string };
+type MissionStepSegmentRow = { missionId:string;title:string;status:string;stepNo:number;stepTitle:string;destinationName:string|null;workSessionId:string;startedAt:string;endedAt:string|null;destinationRecordedAt:string|null };
 
 export type PerformanceDailyPoint = {
   date: string; activeMinutes: number; completedCount: number; successfulCount: number;
@@ -174,6 +176,32 @@ function missionTripMetrics(mission: MissionRow, locations: LocationRow[], range
   };
 }
 
+function multiStageMissionTrips(rows:MissionStepSegmentRow[],locations:LocationRow[],rangeStart:string,rangeEnd:string):MissionTrip[]{
+  const grouped=new Map<string,MissionTrip>();
+  for(const row of rows){
+    const from=Math.max(Date.parse(row.startedAt),Date.parse(rangeStart));
+    const to=Math.min(Date.parse(row.endedAt??rangeEnd),Date.parse(rangeEnd));
+    if(!Number.isFinite(from)||!Number.isFinite(to)||to<=from)continue;
+    const segmentPoints=locations.filter(point=>point.workSessionId===row.workSessionId&&Date.parse(point.recordedAt)>=from&&Date.parse(point.recordedAt)<=to);
+    const distance=totalLocationDistanceKm(segmentPoints);
+    let movingMinutes=0;
+    let maxSpeed=0;
+    for(let index=1;index<segmentPoints.length;index+=1){const previous=segmentPoints[index-1];const current=segmentPoints[index];const elapsed=(Date.parse(current.recordedAt)-Date.parse(previous.recordedAt))/60_000;if(elapsed<=0||elapsed>20)continue;const speed=distanceKm(previous,current)/(elapsed/60);if(speed>=5&&speed<=160)movingMinutes+=elapsed;maxSpeed=Math.max(maxSpeed,speed)}
+    const current=grouped.get(row.missionId)??{missionId:row.missionId,title:row.title,status:row.status,destinationName:row.destinationName,startedAt:row.startedAt,destinationRecordedAt:row.destinationRecordedAt,travelMinutes:0,movingMinutes:0,stoppedMinutes:0,distanceKm:0,averageMovingSpeedKmh:0,maxSpeedKmh:0,pointCount:0,coverageStatus:"missing"};
+    current.startedAt=!current.startedAt||row.startedAt<current.startedAt?row.startedAt:current.startedAt;
+    current.destinationRecordedAt=!current.destinationRecordedAt||row.destinationRecordedAt&&row.destinationRecordedAt>current.destinationRecordedAt?row.destinationRecordedAt:current.destinationRecordedAt;
+    current.destinationName=row.destinationName??current.destinationName;
+    current.travelMinutes+=Math.max(0,Math.round((to-from)/60_000));
+    current.movingMinutes+=Math.round(movingMinutes);
+    current.distanceKm=Math.round((current.distanceKm+distance)*10)/10;
+    current.maxSpeedKmh=Math.max(current.maxSpeedKmh,Math.round(maxSpeed*10)/10);
+    current.pointCount+=segmentPoints.length;
+    current.coverageStatus=current.pointCount>=3?"complete":current.pointCount>=2?"partial":"missing";
+    grouped.set(row.missionId,current);
+  }
+  return [...grouped.values()].map(trip=>({...trip,stoppedMinutes:Math.max(0,trip.travelMinutes-trip.movingMinutes),averageMovingSpeedKmh:trip.movingMinutes>0?Math.round(trip.distanceKm/(trip.movingMinutes/60)*10)/10:0}));
+}
+
 function percent(part: number, total: number) { return total > 0 ? Math.round(part / total * 100) : 0; }
 
 function eventGapMinutes(event: IntegrityRow) {
@@ -203,12 +231,12 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
   const db = await ensureDatabase();
   const { start, end } = performancePeriodBounds(now, period);
   const nowIso = now.toISOString();
-  const [sessionsResult, missionsResult, locationsResult, integrityResult, attachmentResult, approvalResult] = await Promise.all([
+  const [sessionsResult, missionsResult, locationsResult, integrityResult, attachmentResult, approvalResult, stepSegmentsResult] = await Promise.all([
     db.prepare(`SELECT id, status, started_at AS startedAt, ended_at AS endedAt, end_note AS endNote,
       COALESCE(start_source, 'live') AS startSource, end_source AS endSource, COALESCE(work_type, 'regular') AS workType,
       COALESCE(approval_status, 'approved') AS approvalStatus, COALESCE(score_penalty, 0) AS scorePenalty
       FROM work_sessions WHERE user_id = ? AND started_at < ? AND COALESCE(ended_at, ?) >= ? ORDER BY started_at`).bind(user.id, end, nowIso, start).all<SessionRow>(),
-    db.prepare(`SELECT m.id, m.title, m.status, m.source, m.result, COALESCE(md.destination_name, m.destination_name) AS destinationName, m.expense_amount AS expenseAmount,
+    db.prepare(`SELECT m.id, m.title, m.status, m.source, m.workflow_type AS workflowType, m.result, COALESCE(md.destination_name, m.destination_name) AS destinationName, m.expense_amount AS expenseAmount,
       m.score_pending AS scorePending, m.score_confirmed AS scoreConfirmed, m.score_penalty AS scorePenalty, m.score_note AS scoreNote, m.deadline_at AS deadlineAt,
       (SELECT COUNT(*) FROM mission_attempts ma WHERE ma.mission_id = m.id) AS attemptCount,
       m.started_at AS startedAt, m.start_latitude_e6 AS startLatitudeE6, m.start_longitude_e6 AS startLongitudeE6, m.start_location_recorded_at AS startLocationRecordedAt,
@@ -221,6 +249,10 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
     db.prepare("SELECT type, status, details, occurred_at AS occurredAt FROM integrity_events WHERE user_id = ? AND occurred_at >= ? AND occurred_at < ? ORDER BY occurred_at").bind(user.id, start, end).all<IntegrityRow>(),
     db.prepare("SELECT COUNT(*) AS count FROM attachments a JOIN missions m ON m.id = a.mission_id WHERE m.assigned_to = ? AND a.created_at >= ? AND a.created_at < ?").bind(user.id, start, end).first<{ count: number }>(),
     db.prepare("SELECT a.status FROM approvals a JOIN missions m ON m.id = a.mission_id WHERE m.assigned_to = ? AND a.created_at >= ? AND a.created_at < ?").bind(user.id, start, end).all<{ status: string }>(),
+    db.prepare(`SELECT m.id AS missionId,m.title,m.status,ms.step_no AS stepNo,ms.title AS stepTitle,ms.destination_name AS destinationName,
+      seg.work_session_id AS workSessionId,seg.started_at AS startedAt,seg.ended_at AS endedAt,ms.destination_recorded_at AS destinationRecordedAt
+      FROM mission_step_segments seg JOIN mission_steps ms ON ms.id=seg.mission_step_id JOIN missions m ON m.id=seg.mission_id
+      WHERE seg.user_id=? AND seg.started_at<? AND COALESCE(seg.ended_at,?)>=? ORDER BY seg.started_at`).bind(user.id,end,nowIso,start).all<MissionStepSegmentRow>(),
   ]);
 
   const sessions = sessionsResult.results;
@@ -231,7 +263,7 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
   const successful = completed.filter(m => m.result === "انجام شد");
   const followUp = completed.filter(m => m.result && m.result !== "انجام شد");
   const firstVisitSuccessful = successful.filter(m => Number(m.attemptCount || 0) <= 1);
-  const open = missions.filter(m => ["open", "in_progress", "revision"].includes(m.status));
+  const open = missions.filter(m => ["open", "in_progress", "stage_waiting", "revision"].includes(m.status));
   const overdue = open.filter(m => m.deadlineAt && Date.parse(m.deadlineAt) < now.getTime());
   const deadlineCompleted = completed.filter(m => m.deadlineAt);
   const onTime = deadlineCompleted.filter(m => Date.parse(m.completedAt!) <= Date.parse(m.deadlineAt!));
@@ -257,7 +289,10 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
   const shortfallMinutes = Math.max(0, targetMinutes - activeMinutes);
 
   const distance = totalLocationDistanceKm(points);
-  const missionTrips = missions.map(mission => missionTripMetrics(mission, points, start, end)).filter((trip): trip is MissionTrip => Boolean(trip));
+  const missionTrips = [
+    ...missions.filter(mission=>mission.workflowType!=="multi_stage").map(mission => missionTripMetrics(mission, points, start, end)).filter((trip): trip is MissionTrip => Boolean(trip)),
+    ...multiStageMissionTrips(stepSegmentsResult.results,points,start,end),
+  ];
   const travelMinutes = missionTrips.reduce((sum, trip) => sum + trip.travelMinutes, 0);
   const movingMinutes = missionTrips.reduce((sum, trip) => sum + trip.movingMinutes, 0);
   const stoppedMinutes = missionTrips.reduce((sum, trip) => sum + trip.stoppedMinutes, 0);

@@ -15,6 +15,8 @@ async function applySchema() {
   for (const statement of statements) await database.prepare(statement).run();
 
   const scoringColumns = [
+    { name: "workflow_type", definition: "VARCHAR(24) NOT NULL DEFAULT 'single' AFTER assigned_to" },
+    { name: "current_step_no", definition: "INT NOT NULL DEFAULT 1 AFTER workflow_type" },
     { name: "referrer_name", definition: "VARCHAR(255) NULL AFTER assigned_to" },
     { name: "score_penalty", definition: "INT NOT NULL DEFAULT 0 AFTER score_confirmed" },
     { name: "score_note", definition: "VARCHAR(255) NULL AFTER score_penalty" },
@@ -31,6 +33,8 @@ async function applySchema() {
     const existing = await database.prepare("SELECT COLUMN_NAME AS columnName FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'missions' AND COLUMN_NAME = ?").bind(column.name).first();
     if (!existing) await database.prepare(`ALTER TABLE missions ADD COLUMN ${column.name} ${column.definition}`).run();
   }
+  const attemptStepColumn = await database.prepare("SELECT COLUMN_NAME AS columnName FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mission_attempts' AND COLUMN_NAME = 'mission_step_id'").first();
+  if (!attemptStepColumn) await database.prepare("ALTER TABLE mission_attempts ADD COLUMN mission_step_id CHAR(36) NULL AFTER mission_id").run();
   const workSessionColumns = [
     { name: "start_source", definition: "VARCHAR(24) NOT NULL DEFAULT 'live' AFTER end_note" },
     { name: "end_source", definition: "VARCHAR(24) NULL AFTER start_source" },

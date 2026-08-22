@@ -905,3 +905,29 @@ test("records every mission status with trusted time and a cached reverse-geocod
   assert.match(page, /MissionStatusTimeline events=\{missionTraceEvents\}/);
   assert.match(styles, /\.mission-status-timeline/);
 });
+
+test("supports additive multi-stage missions with isolated route segments", async () => {
+  const [schema, missions, start, destination, complete, workSessions, report, page] = await Promise.all([
+    readFile(new URL("../db/mysql-schema.sql", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/missions/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/missions/[id]/start/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/destinations/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/missions/[id]/complete/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/work-sessions/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/performance-report.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(schema, /workflow_type VARCHAR\(24\) NOT NULL DEFAULT 'single'/);
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS mission_steps/);
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS mission_step_segments/);
+  assert.match(missions, /normalizeMissionSteps/);
+  assert.match(start, /mission\.step_started/);
+  assert.match(destination, /end_reason='arrived'/);
+  assert.match(complete, /hasNextStep/);
+  assert.match(complete, /stage_waiting/);
+  assert.match(workSessions, /end_reason='shift_ended'/);
+  assert.match(report, /multiStageMissionTrips/);
+  assert.match(page, /چندمرحله‌ای/);
+  assert.match(page, /شروع مرحله بعدی/);
+  assert.match(page, /ادامه در زمان دیگر/);
+});

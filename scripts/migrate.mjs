@@ -30,6 +30,8 @@ try {
     if (!rows.length) await connection.execute(`ALTER TABLE users ADD COLUMN ${name} ${definition}`);
   }
   const scoringColumns = [
+    ["workflow_type", "VARCHAR(24) NOT NULL DEFAULT 'single' AFTER assigned_to"],
+    ["current_step_no", "INT NOT NULL DEFAULT 1 AFTER workflow_type"],
     ["referrer_name", "VARCHAR(255) NULL AFTER assigned_to"],
     ["score_penalty", "INT NOT NULL DEFAULT 0 AFTER score_confirmed"],
     ["score_note", "VARCHAR(255) NULL AFTER score_penalty"],
@@ -46,6 +48,8 @@ try {
     const [rows] = await connection.execute("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'missions' AND COLUMN_NAME = ?", [name]);
     if (!rows.length) await connection.execute(`ALTER TABLE missions ADD COLUMN ${name} ${definition}`);
   }
+  const [attemptStepColumns] = await connection.execute("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mission_attempts' AND COLUMN_NAME = 'mission_step_id'");
+  if (!attemptStepColumns.length) await connection.execute("ALTER TABLE mission_attempts ADD COLUMN mission_step_id CHAR(36) NULL AFTER mission_id");
   const workSessionColumns = [
     ["start_source", "VARCHAR(24) NOT NULL DEFAULT 'live' AFTER end_note"],
     ["end_source", "VARCHAR(24) NULL AFTER start_source"],

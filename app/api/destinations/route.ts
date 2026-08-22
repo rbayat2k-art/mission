@@ -65,7 +65,7 @@ export async function POST(request: Request) {
   const recordedAt = new Date(body.recordedAt!).toISOString();
   if (Date.parse(recordedAt) > Date.now() + 5 * 60_000) return Response.json({ error: "زمان ثبت مقصد معتبر نیست." }, { status: 400 });
   const db = await ensureDatabase();
-  const mission = await db.prepare("SELECT id, assigned_to AS assignedTo, status FROM missions WHERE id = ?").bind(body.missionId).first<{ id: string; assignedTo: string; status: string }>();
+  const mission = await db.prepare("SELECT id, assigned_to AS assignedTo, status, workflow_type AS workflowType, current_step_no AS currentStepNo FROM missions WHERE id = ?").bind(body.missionId).first<{ id: string; assignedTo: string; status: string; workflowType:string; currentStepNo:number }>();
   if (!mission) return Response.json({ error: "مأموریت پیدا نشد." }, { status: 404 });
   if (mission.assignedTo !== auth.user.id) return Response.json({ error: "فقط مسئول مأموریت می‌تواند مقصد آن را ثبت کند." }, { status: 403 });
   if (!["open", "in_progress", "revision", "follow_up"].includes(mission.status)) return Response.json({ error: "برای این مأموریت دیگر نمی‌توان مقصد ثبت کرد." }, { status: 409 });
@@ -81,6 +81,29 @@ export async function POST(request: Request) {
   const statusEvent = prepareMissionStatusEvent(db, { missionId:mission.id, actorId:auth.user.id, actorRole:auth.user.role,
     eventType:"destination_registered", fromStatus:mission.status, toStatus:mission.status, serverRecordedAt:now,
     location:capturedLocation, metadata:{ destinationName } });
+  if (mission.workflowType === "multi_stage") {
+    const step = await db.prepare("SELECT id, step_no AS stepNo, title, requires_location AS requiresLocation, status FROM mission_steps WHERE mission_id=? AND step_no=?")
+      .bind(mission.id, mission.currentStepNo).first<{ id:string; stepNo:number; title:string; requiresLocation:number; status:string }>();
+    if (!step) return Response.json({ error:"مرحله فعال مأموریت پیدا نشد." }, { status:409 });
+    if (!step.requiresLocation) return Response.json({ error:"این مرحله نیاز به ثبت مقصد ندارد." }, { status:409 });
+    if (step.status !== "in_progress") return Response.json({ error:"ابتدا این مرحله را شروع کنید." }, { status:409 });
+    const stepEvent = prepareMissionStatusEvent(db, { missionId:mission.id, actorId:auth.user.id, actorRole:auth.user.role,
+      eventType:"destination_registered", fromStatus:"in_progress", toStatus:"in_progress", serverRecordedAt:now,
+      location:capturedLocation, metadata:{ destinationName, stepNo:step.stepNo, stepId:step.id, stepTitle:step.title } });
+    await db.batch([
+      db.prepare(`UPDATE mission_steps SET status='arrived', destination_name=?, arrived_at=?, destination_latitude_e6=?,
+        destination_longitude_e6=?, destination_accuracy_cm=?, destination_recorded_at=?, updated_at=? WHERE id=?`)
+        .bind(destinationName, now, Math.round(body.latitude! * 1_000_000), Math.round(body.longitude! * 1_000_000), Math.round(body.accuracy! * 100), recordedAt, now, step.id),
+      db.prepare(`UPDATE mission_step_segments SET ended_at=?, end_reason='arrived', end_latitude_e6=?, end_longitude_e6=?,
+        end_accuracy_cm=?, end_location_recorded_at=? WHERE mission_step_id=? AND ended_at IS NULL`)
+        .bind(now, Math.round(body.latitude! * 1_000_000), Math.round(body.longitude! * 1_000_000), Math.round(body.accuracy! * 100), recordedAt, step.id),
+      stepEvent.statement,
+      db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.step_destination_registered', 'mission', ?, ?, ?)")
+        .bind(crypto.randomUUID(), auth.user.id, mission.id, JSON.stringify({ stepNo:step.stepNo, stepTitle:step.title, destinationName, recordedAt }), now),
+    ]);
+    void enrichMissionStatusEventLocation(stepEvent.id, capturedLocation);
+    return Response.json({ destination:{ missionId:mission.id, stepNo:step.stepNo, stepTitle:step.title, destinationName, latitude:body.latitude, longitude:body.longitude, accuracy:body.accuracy, recordedAt } }, { status:201 });
+  }
   await db.batch([
     db.prepare(`INSERT INTO mission_destinations (id, mission_id, user_id, work_session_id, destination_name, latitude_e6, longitude_e6, accuracy_cm, recorded_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -133,8 +156,29 @@ export async function GET(request: Request) {
     FROM mission_destinations md JOIN missions m ON m.id = md.mission_id JOIN users u ON u.id = md.user_id
     WHERE ${clauses.join(" AND ")} ORDER BY md.user_id, md.recorded_at`).bind(...values).all<DestinationRow>();
 
+  const stepClauses = ["ms.destination_recorded_at >= ?", "ms.destination_recorded_at < ?", "ms.destination_recorded_at IS NOT NULL"];
+  const stepValues: unknown[] = [start, end];
+  if (auth.user.role === "employee") { stepClauses.push("m.assigned_to = ?"); stepValues.push(auth.user.id); }
+  else if (auth.user.role === "supervisor") {
+    stepClauses.push("(u.supervisor_id = ? OR u.id = ?)"); stepValues.push(auth.user.id, auth.user.id);
+    if (requestedUserId) { stepClauses.push("m.assigned_to = ?"); stepValues.push(requestedUserId); }
+  } else if (requestedUserId) { stepClauses.push("m.assigned_to = ?"); stepValues.push(requestedUserId); }
+  if (activeOnly || liveOnly) stepClauses.push("u.status = 'active'");
+  if (liveOnly) {
+    const liveSince = new Date(Date.now() - 2 * 60_000).toISOString();
+    stepClauses.push("EXISTS (SELECT 1 FROM location_points live_lp JOIN work_sessions live_ws ON live_ws.id=live_lp.work_session_id WHERE live_lp.user_id=m.assigned_to AND live_ws.status='active' AND live_lp.recorded_at >= ?)");
+    stepValues.push(liveSince);
+  }
+  const stepResult = await db.prepare(`SELECT ms.id, ms.mission_id AS missionId, CONCAT(m.title, ' — مرحله ', ms.step_no) AS missionTitle,
+    m.assigned_to AS userId, u.full_name AS fullName, COALESCE(ms.destination_name, ms.title) AS destinationName,
+    ms.destination_latitude_e6 AS latitudeE6, ms.destination_longitude_e6 AS longitudeE6,
+    ms.destination_accuracy_cm AS accuracyCm, ms.destination_recorded_at AS recordedAt, ms.step_no AS stepNo, ms.title AS stepTitle
+    FROM mission_steps ms JOIN missions m ON m.id=ms.mission_id JOIN users u ON u.id=m.assigned_to
+    WHERE ${stepClauses.join(" AND ")}`).bind(...stepValues).all<DestinationRow & { stepNo:number; stepTitle:string }>();
+
   const counters = new Map<string, number>();
-  const destinations = result.results.map((row) => {
+  const rows = [...result.results, ...stepResult.results].sort((a, b) => a.recordedAt.localeCompare(b.recordedAt));
+  const destinations = rows.map((row) => {
     const dateKey = tehranDateKey(row.recordedAt);
     const counterKey = `${row.userId}:${dateKey}`;
     const sequence = (counters.get(counterKey) ?? 0) + 1;
@@ -143,6 +187,7 @@ export async function GET(request: Request) {
       id: row.id, missionId: row.missionId, missionTitle: row.missionTitle, userId: row.userId, fullName: row.fullName,
       destinationName: row.destinationName, latitude: Number(row.latitudeE6) / 1_000_000, longitude: Number(row.longitudeE6) / 1_000_000,
       accuracy: Number(row.accuracyCm) / 100, recordedAt: row.recordedAt, dateKey, sequence,
+      stepNo: "stepNo" in row ? row.stepNo : null, stepTitle: "stepTitle" in row ? row.stepTitle : null,
     };
   });
   return Response.json({ period, endDateKey, start, end, destinations });

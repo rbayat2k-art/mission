@@ -9,6 +9,7 @@ type MissionRow = {
   startLatitudeE6: number | null; startLongitudeE6: number | null; startAccuracyCm: number | null; startLocationRecordedAt: string | null;
   endLatitudeE6: number | null; endLongitudeE6: number | null; endAccuracyCm: number | null; endLocationRecordedAt: string | null;
   scorePending: number; scoreConfirmed: number; scorePenalty: number; scoreNote: string | null;
+  workflowType:string;
 };
 
 type StoredPoint = { latitudeE6: number; longitudeE6: number; accuracyCm: number; recordedAt: string };
@@ -39,11 +40,40 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     u.full_name AS employeeName, u.supervisor_id AS supervisorId, m.created_by AS createdBy, m.started_at AS startedAt, m.completed_at AS completedAt,
     m.start_latitude_e6 AS startLatitudeE6, m.start_longitude_e6 AS startLongitudeE6, m.start_accuracy_cm AS startAccuracyCm, m.start_location_recorded_at AS startLocationRecordedAt,
     m.end_latitude_e6 AS endLatitudeE6, m.end_longitude_e6 AS endLongitudeE6, m.end_accuracy_cm AS endAccuracyCm, m.end_location_recorded_at AS endLocationRecordedAt,
-    m.score_pending AS scorePending, m.score_confirmed AS scoreConfirmed, m.score_penalty AS scorePenalty, m.score_note AS scoreNote
+    m.score_pending AS scorePending, m.score_confirmed AS scoreConfirmed, m.score_penalty AS scorePenalty, m.score_note AS scoreNote,
+    m.workflow_type AS workflowType
     FROM missions m JOIN users u ON u.id = m.assigned_to WHERE m.id = ?`).bind(id).first<MissionRow>();
   if (!mission) return Response.json({ error: "مأموریت پیدا نشد." }, { status: 404 });
   if (auth.user.role === "supervisor" && mission.supervisorId !== auth.user.id && mission.createdBy !== auth.user.id) return Response.json({ error: "شما به اطلاعات مکانی این مأموریت دسترسی ندارید." }, { status: 403 });
   if (!mission.completedAt) return Response.json({ error: "این مأموریت هنوز پایان نیافته است." }, { status: 409 });
+
+  const stepRows = mission.workflowType === "multi_stage" ? (await db.prepare(`SELECT id, step_no AS stepNo, title, action_type AS actionType,
+    requires_location AS requiresLocation, destination_name AS destinationName, status, result, report, started_at AS startedAt,
+    arrived_at AS arrivedAt, completed_at AS completedAt, start_latitude_e6 AS startLatitudeE6, start_longitude_e6 AS startLongitudeE6,
+    start_accuracy_cm AS startAccuracyCm, start_location_recorded_at AS startRecordedAt,
+    destination_latitude_e6 AS destinationLatitudeE6, destination_longitude_e6 AS destinationLongitudeE6,
+    destination_accuracy_cm AS destinationAccuracyCm, destination_recorded_at AS destinationRecordedAt,
+    end_latitude_e6 AS endLatitudeE6, end_longitude_e6 AS endLongitudeE6, end_accuracy_cm AS endAccuracyCm,
+    end_location_recorded_at AS endRecordedAt FROM mission_steps WHERE mission_id=? ORDER BY step_no`).bind(id).all<{
+      id:string;stepNo:number;title:string;actionType:string;requiresLocation:number;destinationName:string|null;status:string;result:string|null;report:string|null;
+      startedAt:string|null;arrivedAt:string|null;completedAt:string|null;startLatitudeE6:number|null;startLongitudeE6:number|null;startAccuracyCm:number|null;startRecordedAt:string|null;
+      destinationLatitudeE6:number|null;destinationLongitudeE6:number|null;destinationAccuracyCm:number|null;destinationRecordedAt:string|null;
+      endLatitudeE6:number|null;endLongitudeE6:number|null;endAccuracyCm:number|null;endRecordedAt:string|null;
+    }>()).results : [];
+  const stepTraces = [] as Array<Record<string,unknown>>;
+  let totalValidDistanceMeters = 0;
+  for (let index=0;index<stepRows.length;index+=1) {
+    const step=stepRows[index];
+    const segments=(await db.prepare("SELECT id, work_session_id AS workSessionId, started_at AS startedAt, ended_at AS endedAt, end_reason AS endReason FROM mission_step_segments WHERE mission_step_id=? AND ended_at IS NOT NULL ORDER BY started_at").bind(step.id).all<{id:string;workSessionId:string;startedAt:string;endedAt:string;endReason:string}>()).results;
+    let validDistanceMeters=0;
+    for(const segment of segments){
+      const points=(await db.prepare("SELECT latitude_e6 AS latitudeE6, longitude_e6 AS longitudeE6 FROM location_points WHERE user_id=? AND work_session_id=? AND recorded_at>=? AND recorded_at<=? AND accuracy_cm<=10000 ORDER BY recorded_at").bind(mission.assignedTo,segment.workSessionId,segment.startedAt,segment.endedAt).all<{latitudeE6:number;longitudeE6:number}>()).results;
+      for(let pointIndex=1;pointIndex<points.length;pointIndex+=1) validDistanceMeters+=distanceMeters({latitude:points[pointIndex-1].latitudeE6/1_000_000,longitude:points[pointIndex-1].longitudeE6/1_000_000},{latitude:points[pointIndex].latitudeE6/1_000_000,longitude:points[pointIndex].longitudeE6/1_000_000});
+    }
+    totalValidDistanceMeters+=validDistanceMeters;
+    const next=stepRows[index+1];
+    stepTraces.push({...step,requiresLocation:Boolean(step.requiresLocation),start:exactPoint(step.startLatitudeE6,step.startLongitudeE6,step.startAccuracyCm,step.startRecordedAt),destination:exactPoint(step.destinationLatitudeE6,step.destinationLongitudeE6,step.destinationAccuracyCm,step.destinationRecordedAt),end:exactPoint(step.endLatitudeE6,step.endLongitudeE6,step.endAccuracyCm,step.endRecordedAt),validDistanceMeters:Math.round(validDistanceMeters),onSiteMinutes:step.arrivedAt&&step.completedAt?Math.max(0,Math.round((Date.parse(step.completedAt)-Date.parse(step.arrivedAt))/60_000)):null,segments,gapToNextMinutes:step.completedAt&&next?.startedAt?Math.max(0,Math.round((Date.parse(next.startedAt)-Date.parse(step.completedAt))/60_000)):null});
+  }
 
   const destination = await db.prepare("SELECT destination_name AS destinationName, latitude_e6 AS latitudeE6, longitude_e6 AS longitudeE6, accuracy_cm AS accuracyCm, recorded_at AS recordedAt FROM mission_destinations WHERE mission_id = ?").bind(id).first<{ destinationName:string; latitudeE6:number; longitudeE6:number; accuracyCm:number; recordedAt:string }>();
   const exactStart = exactPoint(mission.startLatitudeE6, mission.startLongitudeE6, mission.startAccuracyCm, mission.startLocationRecordedAt);
@@ -79,7 +109,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   return Response.json({ trace: {
     mission: { id:mission.id, title:mission.title, description:mission.description, employeeName:mission.employeeName, status:mission.status, result:mission.result, report:mission.report, startedAt:mission.startedAt, completedAt:mission.completedAt, scorePending:Number(mission.scorePending), scoreConfirmed:Number(mission.scoreConfirmed), scorePenalty:Number(mission.scorePenalty), scoreNote:mission.scoreNote },
     points: { start, destination:destinationPoint, end },
-    metrics: { startToDestinationMeters, destinationToEndMeters, totalElapsedMinutes:mission.startedAt ? Math.max(0, Math.round((Date.parse(mission.completedAt)-Date.parse(mission.startedAt))/60_000)) : null },
+    metrics: { startToDestinationMeters, destinationToEndMeters, totalElapsedMinutes:mission.startedAt ? Math.max(0, Math.round((Date.parse(mission.completedAt)-Date.parse(mission.startedAt))/60_000)) : null, totalValidDistanceMeters:Math.round(totalValidDistanceMeters) },
+    steps:stepTraces,
     evaluation: { confidence, flags, scoreHints },
   } });
 }

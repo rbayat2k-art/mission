@@ -136,6 +136,14 @@ export async function POST(request: Request) {
     const deductedMinutes = Math.max(0, gapMinutes - GPS_GAP_GRACE_MINUTES);
     const statements = [
       db.prepare("UPDATE work_sessions SET status = 'ended', ended_at = ?, end_source = ?, end_note = ? WHERE id = ?").bind(endedAt, location ? "employee" : "employee_without_gps", endNote, current.id),
+      db.prepare(`UPDATE mission_step_segments SET ended_at=?, end_reason='shift_ended', end_latitude_e6=?, end_longitude_e6=?,
+        end_accuracy_cm=?, end_location_recorded_at=? WHERE user_id=? AND work_session_id=? AND ended_at IS NULL`)
+        .bind(endedAt, location ? Math.round(location.latitude * 1_000_000) : null, location ? Math.round(location.longitude * 1_000_000) : null,
+          location ? Math.round(location.accuracy * 100) : null, location?.recordedAt ?? null, auth.user.id, current.id),
+      db.prepare(`UPDATE mission_steps ms JOIN missions m ON m.id=ms.mission_id AND m.current_step_no=ms.step_no
+        SET ms.status='waiting', ms.updated_at=? WHERE m.assigned_to=? AND m.workflow_type='multi_stage'
+        AND m.status='in_progress' AND ms.status IN ('in_progress','arrived')`).bind(endedAt, auth.user.id),
+      db.prepare("UPDATE missions SET status='stage_waiting' WHERE assigned_to=? AND workflow_type='multi_stage' AND status='in_progress'").bind(auth.user.id),
       db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'work_session.daily_summary_confirmed', 'work_session', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, current.id, JSON.stringify({ completedCount: summary.completed.length, incompleteCount: summary.incomplete.length, missionIds: summary.confirmationMissionIds, endNoteRecorded: true, endNoteLength: endNote.length, endedAt, clientEndTimeAccepted: requestedEndIsValid, gpsAtEnd: Boolean(location), gpsRecordedAt: location?.recordedAt ?? null, gpsGraceMinutes: GPS_GAP_GRACE_MINUTES, deductedMinutes }), now),
     ];
     if (location) statements.unshift(locationInsert(db, auth.user.id, current.id, location, now));

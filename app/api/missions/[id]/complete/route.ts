@@ -11,11 +11,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   const db = await ensureDatabase();
   const mission = await db.prepare(`SELECT m.id, m.source, m.assigned_to AS assignedTo, m.status, m.started_at AS startedAt,
+    m.workflow_type AS workflowType, m.current_step_no AS currentStepNo,
     m.score_penalty AS scorePenalty, m.start_latitude_e6 AS startLatitudeE6, m.start_longitude_e6 AS startLongitudeE6,
     m.start_accuracy_cm AS startAccuracyCm, m.start_location_recorded_at AS startLocationRecordedAt,
     u.supervisor_id AS supervisorId, s.status AS supervisorStatus, m.title
     FROM missions m JOIN users u ON u.id = m.assigned_to LEFT JOIN users s ON s.id = u.supervisor_id WHERE m.id = ?`).bind(id).first<{
-      id: string; source: string; assignedTo: string; status: string; startedAt: string | null; scorePenalty: number;
+      id: string; source: string; assignedTo: string; status: string; startedAt: string | null; scorePenalty: number; workflowType:string; currentStepNo:number;
       startLatitudeE6: number | null; startLongitudeE6: number | null; startAccuracyCm: number | null; startLocationRecordedAt: string | null;
       supervisorId: string | null; supervisorStatus: string | null; title: string;
     }>();
@@ -25,6 +26,87 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     ? await db.prepare("SELECT id FROM work_sessions WHERE user_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1").bind(auth.user.id).first<{ id: string }>()
     : null;
   if (auth.user.role === "employee" && !activeSession) return Response.json({ error: "فعالیت روزانه پایان یافته است؛ برای ادامه مأموریت ابتدا فعالیت جدیدی شروع کنید." }, { status: 409 });
+  const body = await request.json().catch(() => ({})) as { destinationName?: string; result?: string; report?: string; expenseAmount?: number; endLocation?: unknown; requestSupervisorAction?: boolean; followUpCategory?: string };
+  if (!body.result?.trim() || !body.report?.trim()) return Response.json({ error: "نتیجه و توضیح گزارش الزامی است." }, { status: 400 });
+  const endLocation = parseMissionLocation(body.endLocation);
+  if (!endLocation) return Response.json({ error: "برای تعیین وضعیت مرحله، موقعیت GPS معتبر لازم است." }, { status: 400 });
+  const allowedResults = ["انجام شد", "نیاز به پیگیری", "مسئول نبود", "تعطیل بود", "موکول شد", "سایر"];
+  const workResult = body.result.trim();
+  if (!allowedResults.includes(workResult)) return Response.json({ error: "نتیجه انتخاب‌شده معتبر نیست." }, { status: 400 });
+  if (mission.workflowType === "multi_stage") {
+    const step = await db.prepare(`SELECT id, step_no AS stepNo, title, requires_location AS requiresLocation, status,
+      destination_name AS destinationName, started_at AS startedAt, start_latitude_e6 AS startLatitudeE6,
+      start_longitude_e6 AS startLongitudeE6, start_accuracy_cm AS startAccuracyCm, start_location_recorded_at AS startLocationRecordedAt,
+      destination_latitude_e6 AS destinationLatitudeE6, destination_longitude_e6 AS destinationLongitudeE6,
+      destination_accuracy_cm AS destinationAccuracyCm, destination_recorded_at AS destinationRecordedAt
+      FROM mission_steps WHERE mission_id=? AND step_no=?`).bind(id, mission.currentStepNo).first<{
+        id:string; stepNo:number; title:string; requiresLocation:number; status:string; destinationName:string|null; startedAt:string|null;
+        startLatitudeE6:number|null; startLongitudeE6:number|null; startAccuracyCm:number|null; startLocationRecordedAt:string|null;
+        destinationLatitudeE6:number|null; destinationLongitudeE6:number|null; destinationAccuracyCm:number|null; destinationRecordedAt:string|null;
+      }>();
+    if (!step) return Response.json({ error:"مرحله فعال مأموریت پیدا نشد." }, { status:409 });
+    if (step.requiresLocation && step.status !== "arrived") return Response.json({ error:"ابتدا مقصد این مرحله را ثبت کنید." }, { status:409 });
+    if (!step.requiresLocation && step.status !== "in_progress") return Response.json({ error:"ابتدا این مرحله را شروع کنید." }, { status:409 });
+    const now = new Date().toISOString();
+    const [endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt] = locationSqlValues(endLocation);
+    const rawExpenseAmount = Number(body.expenseAmount ?? 0);
+    const expenseAmount = Number.isFinite(rawExpenseAmount) ? Math.max(0, Math.round(rawExpenseAmount)) : 0;
+    const needsFollowUp = workResult !== "انجام شد";
+    const requestSupervisorAction = needsFollowUp && body.requestSupervisorAction === true;
+    if (requestSupervisorAction && (!mission.supervisorId || mission.supervisorStatus !== "active")) return Response.json({ error:"برای ارجاع پیگیری، یک سرپرست فعال لازم است." }, { status:409 });
+    const stepCount = await db.prepare("SELECT COUNT(*) AS count FROM mission_steps WHERE mission_id=?").bind(id).first<{ count:number }>();
+    const hasNextStep = !needsFollowUp && step.stepNo < Number(stepCount?.count ?? 0);
+    const finalStatus = needsFollowUp ? "follow_up" : hasNextStep ? "stage_waiting" : mission.source === "employee" ? "pending" : "approved";
+    const attempt = await db.prepare("SELECT COALESCE(MAX(attempt_no), 0) + 1 AS attemptNo FROM mission_attempts WHERE mission_id=?").bind(id).first<{ attemptNo:number }>();
+    const attemptNo = Number(attempt?.attemptNo ?? 1);
+    const baseScore = hasNextStep || needsFollowUp ? 0 : 12;
+    const needsFinalApproval = !hasNextStep && !needsFollowUp && mission.source === "employee";
+    const pendingScore = needsFinalApproval ? baseScore : 0;
+    const confirmedScore = needsFinalApproval ? 0 : baseScore;
+    const nextStepNo = hasNextStep ? step.stepNo + 1 : step.stepNo;
+    const followUpRequestId = requestSupervisorAction ? crypto.randomUUID() : null;
+    const followUpMessageId = requestSupervisorAction ? crypto.randomUUID() : null;
+    const statusEvent = prepareMissionStatusEvent(db, { missionId:id, attemptNo, actorId:auth.user.id, actorRole:auth.user.role,
+      eventType:"status_set", fromStatus:mission.status, toStatus:finalStatus, result:workResult, serverRecordedAt:now, location:endLocation,
+      metadata:{ stepNo:step.stepNo, stepId:step.id, stepTitle:step.title, report:body.report.trim(), hasNextStep, requestSupervisorAction } });
+    const statements = [
+      db.prepare(`UPDATE mission_steps SET status=?, result=?, report=?, expense_amount=?, completed_at=?, end_latitude_e6=?,
+        end_longitude_e6=?, end_accuracy_cm=?, end_location_recorded_at=?, updated_at=? WHERE id=?`)
+        .bind(needsFollowUp ? "follow_up" : "completed", workResult, body.report.trim(), expenseAmount, now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, now, step.id),
+      db.prepare(`UPDATE mission_step_segments SET ended_at=COALESCE(ended_at, ?), end_reason=COALESCE(end_reason, ?),
+        end_latitude_e6=COALESCE(end_latitude_e6, ?), end_longitude_e6=COALESCE(end_longitude_e6, ?),
+        end_accuracy_cm=COALESCE(end_accuracy_cm, ?), end_location_recorded_at=COALESCE(end_location_recorded_at, ?) WHERE mission_step_id=? AND ended_at IS NULL`)
+        .bind(now, needsFollowUp ? "follow_up" : "completed", endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, step.id),
+      db.prepare(`UPDATE missions SET status=?, current_step_no=?, result=?, report=?, expense_amount=expense_amount+?,
+        score_pending=?, score_confirmed=?, completed_at=?, end_latitude_e6=?, end_longitude_e6=?, end_accuracy_cm=?, end_location_recorded_at=? WHERE id=?`)
+        .bind(finalStatus, nextStepNo, hasNextStep ? null : workResult, hasNextStep ? null : body.report.trim(), expenseAmount,
+          pendingScore, confirmedScore, hasNextStep || needsFollowUp ? null : now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, id),
+      db.prepare(`INSERT INTO mission_attempts (id, mission_id, mission_step_id, attempt_no, result, report, destination_name,
+        expense_amount, score_awarded, score_penalty, started_at, completed_at, start_latitude_e6, start_longitude_e6,
+        start_accuracy_cm, start_location_recorded_at, destination_latitude_e6, destination_longitude_e6,
+        destination_accuracy_cm, destination_recorded_at, end_latitude_e6, end_longitude_e6, end_accuracy_cm,
+        end_location_recorded_at, approval_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(crypto.randomUUID(), id, step.id, attemptNo, workResult, body.report.trim(), step.destinationName, expenseAmount,
+          baseScore, step.startedAt, now, step.startLatitudeE6, step.startLongitudeE6, step.startAccuracyCm, step.startLocationRecordedAt,
+          step.destinationLatitudeE6, step.destinationLongitudeE6, step.destinationAccuracyCm, step.destinationRecordedAt,
+          endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, needsFinalApproval ? "pending" : "not_required", now),
+      statusEvent.statement,
+      db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.step_completed', 'mission', ?, ?, ?)")
+        .bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ stepNo:step.stepNo, stepTitle:step.title, result:workResult, hasNextStep, nextStepNo, finalStatus }), now),
+    ];
+    if (needsFinalApproval) statements.push(db.prepare("INSERT INTO approvals (id, mission_id, status, created_at) VALUES (?, ?, 'pending', ?) ON DUPLICATE KEY UPDATE status='pending', reason=NULL, decided_at=NULL").bind(crypto.randomUUID(), id, now));
+    if (followUpRequestId && followUpMessageId && mission.supervisorId) {
+      const category = normalizeFollowUpCategory(body.followUpCategory);
+      statements.push(
+        db.prepare("INSERT INTO mission_follow_up_requests (id, mission_id, attempt_no, created_by, supervisor_id, assigned_to, category, request_text, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_supervisor', ?, ?)").bind(followUpRequestId, id, attemptNo, auth.user.id, mission.supervisorId, mission.supervisorId, category, body.report.trim(), now, now),
+        db.prepare("INSERT INTO mission_follow_up_messages (id, request_id, sender_id, message_type, body, created_at) VALUES (?, ?, ?, 'text', ?, ?)").bind(followUpMessageId, followUpRequestId, auth.user.id, body.report.trim(), now),
+      );
+    }
+    await db.batch(statements);
+    void enrichMissionStatusEventLocation(statusEvent.id, endLocation);
+    if (followUpRequestId && mission.supervisorId) await createUserNotification(mission.supervisorId, { type:"follow_up_created", title:"درخواست اقدام جدید", message:`برای مأموریت «${mission.title}» درخواست پیگیری ثبت شد.`, entityType:"follow_up_request", entityId:followUpRequestId, url:"/?panel=admin&screen=actions" });
+    return Response.json({ mission:{ id, status:finalStatus, attemptNo, workflowType:"multi_stage", completedStepNo:step.stepNo, currentStepNo:nextStepNo, hasNextStep, needsFollowUp, requestSupervisorAction, followUpRequestId, scorePending:pendingScore, scoreConfirmed:confirmedScore, endLocation } });
+  }
   if (!["open", "in_progress", "revision", "follow_up"].includes(mission.status)) return Response.json({ error: "این مأموریت قابل پایان نیست." }, { status: 409 });
   const registeredDestination = await db.prepare(`SELECT destination_name AS destinationName, latitude_e6 AS latitudeE6,
     longitude_e6 AS longitudeE6, accuracy_cm AS accuracyCm, recorded_at AS recordedAt
@@ -32,14 +114,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       destinationName: string; latitudeE6: number; longitudeE6: number; accuracyCm: number; recordedAt: string;
     }>();
   if (!registeredDestination) return Response.json({ error: "ابتدا مقصد این مأموریت را با GPS ثبت کنید." }, { status: 409 });
-  const body = await request.json().catch(() => ({})) as { destinationName?: string; result?: string; report?: string; expenseAmount?: number; endLocation?: unknown; requestSupervisorAction?: boolean; followUpCategory?: string };
-  if (!body.result?.trim() || !body.report?.trim()) return Response.json({ error: "نتیجه و توضیح گزارش الزامی است." }, { status: 400 });
-  const endLocation = parseMissionLocation(body.endLocation);
-  if (!endLocation) return Response.json({ error: "برای پایان مأموریت، موقعیت GPS معتبر لازم است." }, { status: 400 });
   const [endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt] = locationSqlValues(endLocation);
-  const allowedResults = ["انجام شد", "نیاز به پیگیری", "مسئول نبود", "تعطیل بود", "موکول شد", "سایر"];
-  const workResult = body.result.trim();
-  if (!allowedResults.includes(workResult)) return Response.json({ error: "نتیجه انتخاب‌شده معتبر نیست." }, { status: 400 });
   const now = new Date().toISOString();
   const rawExpenseAmount = Number(body.expenseAmount ?? 0);
   const expenseAmount = Number.isFinite(rawExpenseAmount) ? Math.max(0, Math.round(rawExpenseAmount)) : 0;
