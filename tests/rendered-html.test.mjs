@@ -306,6 +306,8 @@ test("delivers scoped daily weekly and monthly performance reports with real Exc
   assert.match(reportEngine, /dailySeries/);
   assert.match(reportEngine, /firstStartAt: dailyStarts\[0\]/);
   assert.match(reportEngine, /lastEndAt: dailyEnds\.at\(-1\)/);
+  assert.match(reportEngine, /firstDestinationAt: dailyDestinations\[0\]/);
+  assert.match(reportEngine, /lastDestinationAt: dailyDestinations\.at\(-1\)/);
   assert.match(reportEngine, /totalLocationDistanceKm\(dailyPoints\)/);
   assert.match(reportEngine, /measuredMissionCount/);
   assert.match(reportEngine, /previousPeriodNow/);
@@ -325,6 +327,8 @@ test("delivers scoped daily weekly and monthly performance reports with real Exc
   assert.match(page, /حرکت واقعی با GPS/);
   assert.match(page, /کل زمان مسیر \(شروع تا مقصد\)/);
   assert.match(page, /وقفه GPS داخل فعالیت/);
+  assert.match(page, /اولین ثبت مقصد/);
+  assert.match(page, /آخرین ثبت مقصد/);
   assert.match(page, /شفافیت کارکرد و ارتباط/);
   assert.match(page, /summary\.period === "daily" \? summary\.requiredMinutes/);
   assert.match(page, /وقفه‌ها فقط در فاصله شروع تا پایان فعالیت محاسبه می‌شوند/);
@@ -347,6 +351,8 @@ test("delivers scoped daily weekly and monthly performance reports with real Exc
   assert.match(performanceXlsx, /گزارش ماهانه پرسنل/);
   assert.match(performanceXlsx, /اولین ورود/);
   assert.match(performanceXlsx, /آخرین خروج/);
+  assert.match(performanceXlsx, /اولین ثبت مقصد/);
+  assert.match(performanceXlsx, /آخرین ثبت مقصد/);
   assert.match(performanceXlsx, /شرح کارها و نتیجه/);
   assert.match(performanceXlsx, /جزئیات مأموریت‌ها/);
   assert.match(performanceXlsx, /GPS و اینترنت/);

@@ -37,8 +37,8 @@ function missionsForPoints(row: PerformanceRow, points: PerformanceRow["dailySer
 function personnelPeriodSheet(name: string, report: PerformanceReport, days: number): XlsxSheet {
   const sheet: XlsxSheet = {
     name,
-    widths: [24, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 42],
-    rows: [["پرسنل", "روز دارای فعالیت", "کارکرد دقیقه", "کار انجام‌شده", "کار موفق", "درصد موفقیت", "مسافت حرکت km", "مسافت مأموریت km", "میانگین مسافت مأموریت km", "حضور در محل دقیقه", "وقفه داخل فعالیت GPS / اینترنت دقیقه", "شرح کارهای تعیین‌وضعیت‌شده"]],
+    widths: [24, 18, 18, 18, 18, 18, 18, 18, 18, 18, 20, 20, 18, 42],
+    rows: [["پرسنل", "روز دارای فعالیت", "کارکرد دقیقه", "کار انجام‌شده", "کار موفق", "درصد موفقیت", "مسافت حرکت km", "مسافت مأموریت km", "میانگین مسافت مأموریت km", "حضور در محل دقیقه", "اولین ثبت مقصد", "آخرین ثبت مقصد", "وقفه داخل فعالیت GPS / اینترنت دقیقه", "شرح کارهای تعیین‌وضعیت‌شده"]],
   };
   for (const row of report.rows) {
     const points = pointsForLastDays(row, days);
@@ -60,6 +60,8 @@ function personnelPeriodSheet(name: string, report: PerformanceReport, days: num
       missionDistanceKm,
       averageMissionDistanceKm,
       points.reduce((sum, point) => sum + point.onSiteMinutes, 0),
+      dateTime(points.map(point => point.firstDestinationAt).filter((value): value is string => Boolean(value)).sort()[0]),
+      dateTime(points.map(point => point.lastDestinationAt).filter((value): value is string => Boolean(value)).sort().at(-1)),
       `${points.reduce((sum, point) => sum + point.gpsGapMinutes, 0)} / ${points.reduce((sum, point) => sum + point.internetGapMinutes, 0)}`,
       missions.map(mission => `${mission.title} — ${mission.result ?? "بدون نتیجه"}`).join(" | ") || "بدون کار تعیین‌وضعیت‌شده",
     ]);
@@ -70,8 +72,8 @@ function personnelPeriodSheet(name: string, report: PerformanceReport, days: num
 function dailyPersonnelSheet(report: PerformanceReport): XlsxSheet {
   const sheet: XlsxSheet = {
     name: "گزارش روزانه پرسنل",
-    widths: [18, 24, 18, 20, 18, 18, 18, 18, 18, 18, 18, 18, 46],
-    rows: [["تاریخ", "پرسنل", "اولین ورود", "آخرین خروج", "کارکرد دقیقه", "مسافت حرکت km", "حضور در محل دقیقه", "وقفه GPS داخل فعالیت دقیقه", "وقفه اینترنت داخل فعالیت دقیقه", "میانگین مسافت مأموریت km", "تعداد کار", "کار موفق", "شرح کارها و نتیجه"]],
+    widths: [18, 24, 18, 20, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 46],
+    rows: [["تاریخ", "پرسنل", "اولین ورود", "آخرین خروج", "اولین ثبت مقصد", "آخرین ثبت مقصد", "کارکرد دقیقه", "مسافت حرکت km", "حضور در محل دقیقه", "وقفه GPS داخل فعالیت دقیقه", "وقفه اینترنت داخل فعالیت دقیقه", "میانگین مسافت مأموریت km", "تعداد کار", "کار موفق", "شرح کارها و نتیجه"]],
   };
   for (const row of report.rows) {
     const points = pointsForLastDays(row, 1);
@@ -83,6 +85,8 @@ function dailyPersonnelSheet(report: PerformanceReport): XlsxSheet {
       row.fullName,
       timeOnly(point?.firstStartAt),
       point?.hasActiveSession ? "در حال فعالیت" : timeOnly(point?.lastEndAt),
+      timeOnly(point?.firstDestinationAt),
+      timeOnly(point?.lastDestinationAt),
       point?.activeMinutes ?? 0,
       point?.distanceKm ?? 0,
       point?.onSiteMinutes ?? 0,
@@ -139,10 +143,10 @@ export function buildPerformanceXlsx(report: PerformanceReport, historyReport: P
 
   const daily: XlsxSheet = {
     name: "روند روزانه",
-    widths: [18, 18, 18, 18, 18, 18, 18, 18, 18],
-    rows: [["تاریخ", "کارکرد دقیقه", "تکمیل", "موفق", "کل زمان مسیر", "حضور مقصد", "مسافت km", "وقفه GPS داخل فعالیت", "وقفه اینترنت داخل فعالیت"]],
+    widths: [18, 18, 18, 18, 18, 18, 18, 20, 20, 18, 18],
+    rows: [["تاریخ", "کارکرد دقیقه", "تکمیل", "موفق", "کل زمان مسیر", "حضور مقصد", "مسافت km", "اولین ثبت مقصد", "آخرین ثبت مقصد", "وقفه GPS داخل فعالیت", "وقفه اینترنت داخل فعالیت"]],
   };
-  for (const point of report.dailySeries) daily.rows.push([dateOnly(point.date), point.activeMinutes, point.completedCount, point.successfulCount, point.travelMinutes, point.onSiteMinutes, point.missionDistanceKm, point.gpsGapMinutes, point.internetGapMinutes]);
+  for (const point of report.dailySeries) daily.rows.push([dateOnly(point.date), point.activeMinutes, point.completedCount, point.successfulCount, point.travelMinutes, point.onSiteMinutes, point.missionDistanceKm, dateTime(point.firstDestinationAt), dateTime(point.lastDestinationAt), point.gpsGapMinutes, point.internetGapMinutes]);
 
   const missions: XlsxSheet = {
     name: "جزئیات مأموریت‌ها",

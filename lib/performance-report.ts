@@ -46,6 +46,7 @@ export type PerformanceDailyPoint = {
   date: string; activeMinutes: number; completedCount: number; successfulCount: number;
   travelMinutes: number; onSiteMinutes: number; missionDistanceKm: number;
   distanceKm: number; measuredMissionCount: number; firstStartAt: string | null; lastEndAt: string | null; hasActiveSession: boolean;
+  firstDestinationAt: string | null; lastDestinationAt: string | null;
   gpsGapMinutes: number; internetGapMinutes: number;
 };
 
@@ -257,6 +258,10 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
 
   const sessions = sessionsResult.results;
   const missions = missionsResult.results;
+  const destinationTimestamps = [...new Set([
+    ...missions.map(mission => mission.destinationRecordedAt),
+    ...stepSegmentsResult.results.map(step => step.destinationRecordedAt),
+  ].filter((value): value is string => Boolean(value && value >= start && value < end)))].sort();
   const completed = missions.filter(m => m.completedAt && m.completedAt >= start && m.completedAt < end);
   const created = missions.filter(m => m.createdAt >= start && m.createdAt < end);
   const relevantIds = new Set([...created, ...completed].map(m => m.id));
@@ -349,6 +354,7 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
     const dailyEvents = integrityEvents.filter(event => event.occurredAt >= window.start && event.occurredAt < window.end);
     const dailyStarts = dailySessions.map(session => session.startedAt).filter(value => value >= window.start && value < window.end).sort();
     const dailyEnds = dailySessions.map(session => session.endedAt).filter((value): value is string => Boolean(value && value >= window.start && value < window.end)).sort();
+    const dailyDestinations = destinationTimestamps.filter(value => value >= window.start && value < window.end);
     return {
       date: window.start,
       activeMinutes: Math.floor(work.intervalMilliseconds / 60_000),
@@ -362,6 +368,8 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
       firstStartAt: dailyStarts[0] ?? null,
       lastEndAt: dailyEnds.at(-1) ?? null,
       hasActiveSession: dailySessions.some(session => session.status === "active"),
+      firstDestinationAt: dailyDestinations[0] ?? null,
+      lastDestinationAt: dailyDestinations.at(-1) ?? null,
       gpsGapMinutes: calculateGpsGapMinutes(dailySessions, dailyPoints, window.start, window.end, now),
       internetGapMinutes: dailyEvents.filter(event => event.type === "device_offline").reduce((sum, event) => sum + eventGapMinutes(event), 0),
     };
@@ -391,6 +399,7 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
     movement: {
       distanceKm: distance, missionDistanceKm, travelMinutes, movingMinutes, stoppedMinutes, onSiteMinutes,
       unclassifiedMinutes: Math.max(0, activeMinutes - classifiedMinutes), destinationCount: destinations.length,
+      firstDestinationAt: destinationTimestamps[0] ?? null, lastDestinationAt: destinationTimestamps.at(-1) ?? null,
       destinations, locationPointCount: points.length, missionTrips,
       averageTravelMinutes: missionTrips.length ? Math.round(travelMinutes / missionTrips.length) : 0,
       averageOnSiteMinutes: completed.length ? Math.round(onSiteMinutes / completed.length) : 0,
@@ -484,7 +493,7 @@ function summarizeRows(rows: PerformanceUserReport[]) {
 function summarizeDailySeries(rows: PerformanceUserReport[]) {
   const points = new Map<string, PerformanceDailyPoint>();
   for (const row of rows) for (const point of row.dailySeries) {
-    const current = points.get(point.date) ?? { date: point.date, activeMinutes: 0, completedCount: 0, successfulCount: 0, travelMinutes: 0, onSiteMinutes: 0, missionDistanceKm: 0, distanceKm: 0, measuredMissionCount: 0, firstStartAt: null, lastEndAt: null, hasActiveSession: false, gpsGapMinutes: 0, internetGapMinutes: 0 };
+    const current = points.get(point.date) ?? { date: point.date, activeMinutes: 0, completedCount: 0, successfulCount: 0, travelMinutes: 0, onSiteMinutes: 0, missionDistanceKm: 0, distanceKm: 0, measuredMissionCount: 0, firstStartAt: null, lastEndAt: null, hasActiveSession: false, firstDestinationAt: null, lastDestinationAt: null, gpsGapMinutes: 0, internetGapMinutes: 0 };
     current.activeMinutes += point.activeMinutes;
     current.completedCount += point.completedCount;
     current.successfulCount += point.successfulCount;
@@ -496,6 +505,8 @@ function summarizeDailySeries(rows: PerformanceUserReport[]) {
     current.firstStartAt = [current.firstStartAt, point.firstStartAt].filter((value): value is string => Boolean(value)).sort()[0] ?? null;
     current.lastEndAt = [current.lastEndAt, point.lastEndAt].filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
     current.hasActiveSession ||= point.hasActiveSession;
+    current.firstDestinationAt = [current.firstDestinationAt, point.firstDestinationAt].filter((value): value is string => Boolean(value)).sort()[0] ?? null;
+    current.lastDestinationAt = [current.lastDestinationAt, point.lastDestinationAt].filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
     current.gpsGapMinutes += point.gpsGapMinutes;
     current.internetGapMinutes += point.internetGapMinutes;
     points.set(point.date, current);

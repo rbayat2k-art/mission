@@ -29,13 +29,13 @@ function storedZipEntries(buffer) {
 }
 
 function fixtureReport() {
-  const point = { date:"2026-08-22T00:00:00Z", activeMinutes:510, completedCount:1, successfulCount:1, travelMinutes:30, onSiteMinutes:90, missionDistanceKm:12, distanceKm:15, measuredMissionCount:1, firstStartAt:"2026-08-22T05:00:00Z", lastEndAt:"2026-08-22T13:30:00Z", hasActiveSession:false, gpsGapMinutes:4, internetGapMinutes:2 };
+  const point = { date:"2026-08-22T00:00:00Z", activeMinutes:510, completedCount:1, successfulCount:1, travelMinutes:30, onSiteMinutes:90, missionDistanceKm:12, distanceKm:15, measuredMissionCount:1, firstStartAt:"2026-08-22T05:00:00Z", lastEndAt:"2026-08-22T13:30:00Z", hasActiveSession:false, firstDestinationAt:"2026-08-22T06:00:00Z", lastDestinationAt:"2026-08-22T12:00:00Z", gpsGapMinutes:4, internetGapMinutes:2 };
   const mission = { id:"mission-1", title:"پیگیری پرونده", source:"manager", status:"approved", result:"انجام شد", destinationName:"اداره", createdAt:point.date, startedAt:point.firstStartAt, destinationRecordedAt:"2026-08-22T06:00:00Z", completedAt:point.lastEndAt, deadlineAt:null, attemptCount:1, totalMinutes:510, serviceMinutes:90, travelMinutes:30, distanceKm:12, coverageStatus:"complete", expenseAmount:0, confirmedScore:12, pendingScore:0 };
   const row = {
     id:"user-1", fullName:"کارمند تست", username:"test", supervisorName:"مدیر",
     attendance:{ activeMinutes:510, attendanceDays:1, targetMinutes:510, overtimeMinutes:0, shortfallMinutes:0, lateMinutes:0, unverifiedGpsMinutes:0, pendingCorrectionMinutes:0, selfReportedStartCount:0, firstStartAt:point.firstStartAt, lastEndAt:point.lastEndAt, endNotes:[] },
     missions:{ assignedCount:1, completedCount:1, successfulCount:1, firstVisitSuccessfulCount:1, followUpCount:0, openCount:0, pendingCount:0, approvedCount:1, rejectedCount:0, overdueCount:0, selfCreatedCount:0, completionRate:100, successRate:100, firstVisitSuccessRate:100, followUpRate:0, onTimeRate:100, timedMissionCount:1, averageMissionMinutes:510, missionDetails:[mission] },
-    movement:{ distanceKm:15, missionDistanceKm:12, travelMinutes:30, movingMinutes:25, stoppedMinutes:5, onSiteMinutes:90, unclassifiedMinutes:390, destinationCount:1, destinations:["اداره"], locationPointCount:10, missionTrips:[], averageTravelMinutes:30, averageOnSiteMinutes:90, averageMissionDistanceKm:12 },
+    movement:{ distanceKm:15, missionDistanceKm:12, travelMinutes:30, movingMinutes:25, stoppedMinutes:5, onSiteMinutes:90, unclassifiedMinutes:390, destinationCount:1, firstDestinationAt:point.firstDestinationAt, lastDestinationAt:point.lastDestinationAt, destinations:["اداره"], locationPointCount:10, missionTrips:[], averageTravelMinutes:30, averageOnSiteMinutes:90, averageMissionDistanceKm:12 },
     integrity:{ eventCount:2, openCount:0, gpsGapMinutes:4, internetGapMinutes:2, gpsCoverageRate:99 },
     quality:{ attachmentCount:0, approvalCount:1, rejectedOrRevisionCount:0, firstPassApprovalRate:100, confirmedScore:12, pendingScore:0, deductedScore:0, missedMissionStarts:0 },
     finance:{ total:0, approved:0, pending:0, rejected:0, averagePerMission:0 }, dailySeries:[point],
@@ -58,6 +58,8 @@ test("builds one valid management workbook containing personnel daily weekly and
   const dailySheet = entries.get("xl/worksheets/sheet2.xml") ?? "";
   assert.match(dailySheet, /اولین ورود/);
   assert.match(dailySheet, /آخرین خروج/);
+  assert.match(dailySheet, /اولین ثبت مقصد/);
+  assert.match(dailySheet, /آخرین ثبت مقصد/);
   assert.match(dailySheet, /کارمند تست/);
   assert.match(dailySheet, /پیگیری پرونده — انجام شد/);
 });
