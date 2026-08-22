@@ -325,6 +325,16 @@ test("delivers scoped daily weekly and monthly performance reports with real Exc
   assert.match(page, /حرکت واقعی با GPS/);
   assert.match(page, /کل زمان مسیر \(شروع تا مقصد\)/);
   assert.match(page, /وقفه GPS داخل فعالیت/);
+  assert.match(page, /شفافیت کارکرد و ارتباط/);
+  assert.match(page, /summary\.period === "daily" \? summary\.requiredMinutes/);
+  assert.match(page, /وقفه‌ها فقط در فاصله شروع تا پایان فعالیت محاسبه می‌شوند/);
+  assert.match(page, /وقفه اینترنت داخل فعالیت/);
+  assert.match(page, /زمان غیرقابل‌تأیید پس از مهلت GPS/);
+  assert.match(page, /امتیاز و هزینه‌های من/);
+  assert.match(page, /امتیاز کسرشده/);
+  assert.match(page, /هزینه تأییدشده/);
+  assert.match(page, /روند عملکرد شخصی من/);
+  assert.match(page, /بدون نمایش نقشه/);
   assert.match(page, /پوشش GPS/);
   assert.match(schema, /deadline_at VARCHAR/);
   assert.match(schema, /started_at VARCHAR/);
