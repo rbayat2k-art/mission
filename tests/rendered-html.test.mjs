@@ -542,6 +542,12 @@ test("routes every non-success result into follow-up and makes supervisor action
   assert.match(page, /label:"پیگیری مجدد"/);
   assert.match(page, /setAdminMissionFilter\(filter\.id\)/);
   assert.match(page, /filteredAdminMissions\.map/);
+  assert.match(page, /مرتب‌سازی مأموریت‌ها/);
+  assert.match(page, /مهلت نزدیک‌تر/);
+  assert.match(page, /اولویت بالاتر/);
+  assert.match(page, /adminMissionAssignees/);
+  assert.match(page, /کارمند انتخاب‌شده/);
+  assert.match(page, /toggleAdminMissionAssignee/);
   assert.match(page, /گزارش ثبت و پیگیری بعدی ساخته شد/);
 });
 
