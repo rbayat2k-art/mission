@@ -30,7 +30,7 @@
     "db:backup": "node --env-file-if-exists=.env scripts/backup-database.mjs",
     "db:migrate": "node --env-file-if-exists=.env scripts/migrate.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && npm run build && node --test tests/rendered-html.test.mjs tests/performance-xlsx.test.mjs",
+    "test": "npm run typecheck && npm run build && node --test tests/rendered-html.test.mjs tests/performance-xlsx.test.mjs tests/gps-gap.test.mjs",
     "verify": "npm run lint && npm test && npm audit --audit-level=moderate",
     "lint": "eslint . --ignore-pattern .next"
   },

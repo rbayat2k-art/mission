@@ -299,6 +299,8 @@ test("delivers scoped daily weekly and monthly performance reports with real Exc
   assert.match(reportEngine, /firstByDay\.values\(\)/);
   assert.match(reportEngine, /localMinuteOfDay\(value\) - STANDARD_START_MINUTES/);
   assert.match(reportEngine, /gpsGapMinutes/);
+  assert.match(reportEngine, /calculateGpsGapMinutes\(sessions, points, start, end, now\)/);
+  assert.match(reportEngine, /calculateGpsGapMinutes\(dailySessions, dailyPoints, window\.start, window\.end, now\)/);
   assert.match(reportEngine, /internetGapMinutes/);
   assert.match(reportEngine, /firstVisitSuccessRate/);
   assert.match(reportEngine, /dailySeries/);
@@ -317,10 +319,12 @@ test("delivers scoped daily weekly and monthly performance reports with real Exc
   assert.match(exportRoute, /getPerformanceReport\(auth\.user, "monthly", now\)/);
   assert.match(exportRoute, /format === "print"/);
   assert.match(exportRoute, /جزئیات مسیر ماموریت‌ها/);
-  assert.match(exportRoute, /زمان در حرکت دقیقه/);
+  assert.match(exportRoute, /حرکت واقعی با GPS دقیقه/);
   assert.match(employeeRoute, /performance: performance\.rows\[0\]/);
   assert.match(page, /مسیر هر مأموریتِ/);
-  assert.match(page, /زمان واقعاً در حرکت/);
+  assert.match(page, /حرکت واقعی با GPS/);
+  assert.match(page, /کل زمان مسیر \(شروع تا مقصد\)/);
+  assert.match(page, /وقفه GPS داخل فعالیت/);
   assert.match(page, /پوشش GPS/);
   assert.match(schema, /deadline_at VARCHAR/);
   assert.match(schema, /started_at VARCHAR/);

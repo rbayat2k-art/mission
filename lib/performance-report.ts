@@ -1,5 +1,6 @@
 import { ensureDatabase } from "../db/runtime";
 import type { AppRole } from "./auth";
+import { calculateGpsGapMinutes } from "./gps-gap";
 import { calculateWorkSessionMetrics, OVERTIME_START_MINUTES, REQUIRED_WORK_MINUTES, type WorkSessionPolicyRow } from "./work-session-policy";
 
 export type PerformancePeriod = "daily" | "weekly" | "monthly";
@@ -265,13 +266,12 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
   const totalMissionMinutes = completed.reduce((sum, mission) => mission.startedAt ? sum + clampMinutes(mission.startedAt, mission.completedAt, start, end, nowIso) : sum, 0);
   const classifiedMinutes = Math.min(activeMinutes, Math.round(onSiteMinutes + travelMinutes));
 
-  let gpsGapMinutes = 0;
   let internetGapMinutes = 0;
   const integrityEvents = integrityResult.results;
   for (const event of integrityEvents) {
-    if (event.type === "gps_gap") gpsGapMinutes += eventGapMinutes(event);
     if (event.type === "device_offline") internetGapMinutes += eventGapMinutes(event);
   }
+  const gpsGapMinutes = calculateGpsGapMinutes(sessions, points, start, end, now);
 
   const approvedMissions = completed.filter(m => m.status === "approved");
   const pendingMissions = completed.filter(m => m.status === "pending");
@@ -327,7 +327,7 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
       firstStartAt: dailyStarts[0] ?? null,
       lastEndAt: dailyEnds.at(-1) ?? null,
       hasActiveSession: dailySessions.some(session => session.status === "active"),
-      gpsGapMinutes: dailyEvents.filter(event => event.type === "gps_gap").reduce((sum, event) => sum + eventGapMinutes(event), 0),
+      gpsGapMinutes: calculateGpsGapMinutes(dailySessions, dailyPoints, window.start, window.end, now),
       internetGapMinutes: dailyEvents.filter(event => event.type === "device_offline").reduce((sum, event) => sum + eventGapMinutes(event), 0),
     };
   });

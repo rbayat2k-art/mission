@@ -38,7 +38,7 @@ function personnelPeriodSheet(name: string, report: PerformanceReport, days: num
   const sheet: XlsxSheet = {
     name,
     widths: [24, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 42],
-    rows: [["پرسنل", "روز دارای فعالیت", "کارکرد دقیقه", "کار انجام‌شده", "کار موفق", "درصد موفقیت", "مسافت حرکت km", "مسافت مأموریت km", "میانگین مسافت مأموریت km", "حضور در محل دقیقه", "GPS / اینترنت دقیقه", "شرح کارهای تعیین‌وضعیت‌شده"]],
+    rows: [["پرسنل", "روز دارای فعالیت", "کارکرد دقیقه", "کار انجام‌شده", "کار موفق", "درصد موفقیت", "مسافت حرکت km", "مسافت مأموریت km", "میانگین مسافت مأموریت km", "حضور در محل دقیقه", "وقفه داخل فعالیت GPS / اینترنت دقیقه", "شرح کارهای تعیین‌وضعیت‌شده"]],
   };
   for (const row of report.rows) {
     const points = pointsForLastDays(row, days);
@@ -71,7 +71,7 @@ function dailyPersonnelSheet(report: PerformanceReport): XlsxSheet {
   const sheet: XlsxSheet = {
     name: "گزارش روزانه پرسنل",
     widths: [18, 24, 18, 20, 18, 18, 18, 18, 18, 18, 18, 18, 46],
-    rows: [["تاریخ", "پرسنل", "اولین ورود", "آخرین خروج", "کارکرد دقیقه", "مسافت حرکت km", "حضور در محل دقیقه", "GPS دقیقه", "اینترنت دقیقه", "میانگین مسافت مأموریت km", "تعداد کار", "کار موفق", "شرح کارها و نتیجه"]],
+    rows: [["تاریخ", "پرسنل", "اولین ورود", "آخرین خروج", "کارکرد دقیقه", "مسافت حرکت km", "حضور در محل دقیقه", "وقفه GPS داخل فعالیت دقیقه", "وقفه اینترنت داخل فعالیت دقیقه", "میانگین مسافت مأموریت km", "تعداد کار", "کار موفق", "شرح کارها و نتیجه"]],
   };
   for (const row of report.rows) {
     const points = pointsForLastDays(row, 1);
@@ -122,12 +122,12 @@ export function buildPerformanceXlsx(report: PerformanceReport, historyReport: P
       ["درصد موفقیت مأموریت", total.successRate, comparison?.successRate.previous ?? "—", change(comparison?.successRate), "انجام شد ÷ مأموریت تکمیل‌شده"],
       ["موفقیت در اولین مراجعه", total.firstVisitSuccessRate, comparison?.firstVisitSuccessRate.previous ?? "—", change(comparison?.firstVisitSuccessRate), "انجام موفق بدون مراجعه مجدد"],
       ["میانگین زمان کل مأموریت (دقیقه)", total.averageMissionMinutes, comparison?.averageMissionMinutes.previous ?? "—", change(comparison?.averageMissionMinutes), "شروع مأموریت تا تعیین وضعیت"],
-      ["میانگین زمان مسیر (دقیقه)", total.averageTravelMinutes, comparison?.averageTravelMinutes.previous ?? "—", change(comparison?.averageTravelMinutes), "شروع مأموریت تا ثبت مقصد"],
+      ["میانگین کل زمان مسیر (دقیقه)", total.averageTravelMinutes, comparison?.averageTravelMinutes.previous ?? "—", change(comparison?.averageTravelMinutes), "کل زمان از شروع مأموریت تا ثبت مقصد؛ شامل حرکت و توقف"],
       ["میانگین حضور در مقصد (دقیقه)", total.averageOnSiteMinutes, comparison?.averageOnSiteMinutes.previous ?? "—", change(comparison?.averageOnSiteMinutes), "ثبت مقصد تا تعیین وضعیت"],
       ["میانگین مسافت هر مأموریت (کیلومتر)", total.averageMissionDistanceKm, comparison?.averageMissionDistanceKm.previous ?? "—", change(comparison?.averageMissionDistanceKm), "فقط مسیرهای دارای داده GPS"],
       ["کل مسافت مأموریت‌ها (کیلومتر)", total.missionDistanceKm, comparison?.missionDistanceKm.previous ?? "—", change(comparison?.missionDistanceKm), "مسافت مسیرهای مأموریت"],
       ["پوشش معتبر GPS (درصد)", total.gpsCoverageRate, comparison?.gpsCoverageRate.previous ?? "—", change(comparison?.gpsCoverageRate), "کارکرد معتبر ÷ کل زمان ثبت‌شده"],
-      ["وقفه GPS (دقیقه)", total.gpsGapMinutes, comparison?.gpsGapMinutes.previous ?? "—", change(comparison?.gpsGapMinutes), "جمع رویدادهای قطعی GPS"],
+      ["وقفه GPS داخل فعالیت (دقیقه)", total.gpsGapMinutes, comparison?.gpsGapMinutes.previous ?? "—", change(comparison?.gpsGapMinutes), "محاسبه مستقیم زمان بدون GPS فقط بین شروع و پایان فعالیت"],
       ["وقفه اینترنت (دقیقه)", total.internetGapMinutes, comparison?.internetGapMinutes.previous ?? "—", change(comparison?.internetGapMinutes), "جمع رویدادهای قطع ارتباط ثبت‌شده"],
       ["هزینه ثبت‌شده", total.totalExpenses, comparison?.totalExpenses.previous ?? "—", change(comparison?.totalExpenses), "تومان"],
     ],
@@ -140,7 +140,7 @@ export function buildPerformanceXlsx(report: PerformanceReport, historyReport: P
   const daily: XlsxSheet = {
     name: "روند روزانه",
     widths: [18, 18, 18, 18, 18, 18, 18, 18, 18],
-    rows: [["تاریخ", "کارکرد دقیقه", "تکمیل", "موفق", "زمان مسیر", "حضور مقصد", "مسافت km", "وقفه GPS", "وقفه اینترنت"]],
+    rows: [["تاریخ", "کارکرد دقیقه", "تکمیل", "موفق", "کل زمان مسیر", "حضور مقصد", "مسافت km", "وقفه GPS داخل فعالیت", "وقفه اینترنت داخل فعالیت"]],
   };
   for (const point of report.dailySeries) daily.rows.push([dateOnly(point.date), point.activeMinutes, point.completedCount, point.successfulCount, point.travelMinutes, point.onSiteMinutes, point.missionDistanceKm, point.gpsGapMinutes, point.internetGapMinutes]);
 
@@ -160,7 +160,7 @@ export function buildPerformanceXlsx(report: PerformanceReport, historyReport: P
   const routes: XlsxSheet = {
     name: "مسیر و مسافت",
     widths: [22, 30, 24, 22, 22, 18, 18, 18, 18, 18, 18, 16],
-    rows: [["کارمند", "مأموریت", "مقصد", "شروع مسیر", "ثبت مقصد", "زمان مسیر", "حرکت", "توقف", "مسافت km", "سرعت متوسط", "حداکثر سرعت", "پوشش GPS"]],
+    rows: [["کارمند", "مأموریت", "مقصد", "شروع مسیر", "ثبت مقصد", "کل زمان مسیر", "حرکت واقعی با GPS", "توقف", "مسافت km", "سرعت متوسط", "حداکثر سرعت", "پوشش GPS"]],
   };
   for (const row of report.rows) for (const trip of row.movement.missionTrips) routes.rows.push([
     row.fullName, trip.title, trip.destinationName ?? "—", dateTime(trip.startedAt), dateTime(trip.destinationRecordedAt),
@@ -171,7 +171,7 @@ export function buildPerformanceXlsx(report: PerformanceReport, historyReport: P
   const integrity: XlsxSheet = {
     name: "GPS و اینترنت",
     widths: [24, 18, 18, 18, 18, 18, 18],
-    rows: [["کارمند", "پوشش GPS درصد", "وقفه GPS دقیقه", "وقفه اینترنت دقیقه", "رویداد باز", "خوداظهاری", "شروع مأموریت ثبت‌نشده"]],
+    rows: [["کارمند", "پوشش GPS درصد", "وقفه GPS داخل فعالیت دقیقه", "وقفه اینترنت داخل فعالیت دقیقه", "رویداد باز", "خوداظهاری", "شروع مأموریت ثبت‌نشده"]],
   };
   for (const row of report.rows) integrity.rows.push([row.fullName, row.integrity.gpsCoverageRate, row.integrity.gpsGapMinutes, row.integrity.internetGapMinutes, row.integrity.openCount, row.attendance.selfReportedStartCount, row.quality.missedMissionStarts]);
 
