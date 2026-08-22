@@ -107,8 +107,19 @@ type ApiWorkState = { current:{id:string;startedAt:string;endedAt:string|null;wo
 
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...options, headers: { "Content-Type": "application/json", ...(options?.headers ?? {}) } });
-  const body = await response.json() as T & { error?: string };
-  if (!response.ok) throw new Error(body.error ?? "خطا در ارتباط با سرور");
+  const responseText = await response.text();
+  let body: (T & { error?: string }) | null = null;
+  if (responseText) {
+    try { body = JSON.parse(responseText) as T & { error?: string }; }
+    catch { /* An upstream or framework error may return HTML or an empty response. */ }
+  }
+  if (!response.ok) {
+    const fallback = response.status >= 500
+      ? "سرویس اطلاعات در دسترس نیست؛ اتصال Backend و پایگاه داده را بررسی کنید."
+      : "خطا در ارتباط با سرور";
+    throw new Error(body?.error ?? fallback);
+  }
+  if (!body) throw new Error("پاسخ معتبر از سرور دریافت نشد؛ دوباره تلاش کنید.");
   return body;
 }
 

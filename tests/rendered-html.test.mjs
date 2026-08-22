@@ -342,6 +342,18 @@ test("delivers scoped daily weekly and monthly performance reports with real Exc
   assert.match(performanceXlsx, /GPS و اینترنت/);
 });
 
+test("shows a readable Persian error when the local backend or database is unavailable", async () => {
+  const [page, login] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/auth/login/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /const responseText = await response\.text\(\)/);
+  assert.match(page, /response\.status >= 500/);
+  assert.match(page, /سرویس اطلاعات در دسترس نیست/);
+  assert.match(login, /status: 503/);
+  assert.match(login, /پایگاه داده در دسترس نیست/);
+});
+
 test("ships a clean production seed with only the requested administrator", async () => {
   const [page, runtime, schema, layout, localGuide] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

@@ -10,7 +10,15 @@ export async function POST(request: Request) {
   const password = body.password ?? "";
   if (!username || !password) return Response.json({ error: "نام کاربری و رمز عبور الزامی است." }, { status: 400 });
 
-  const db = await ensureDatabase();
+  let db: Awaited<ReturnType<typeof ensureDatabase>>;
+  try {
+    db = await ensureDatabase();
+  } catch {
+    return Response.json(
+      { error: "پایگاه داده در دسترس نیست؛ تنظیمات Backend را بررسی کنید." },
+      { status: 503, headers: { "Cache-Control": "no-store" } },
+    );
+  }
   const user = await db.prepare(`SELECT id, full_name AS fullName, username, password_hash AS passwordHash, password_salt AS passwordSalt, role, must_change_password AS mustChangePassword, notification_enabled AS notificationEnabled FROM users WHERE username = ? AND status = 'active'`).bind(username).first<LoginRow>();
   if (!user || !(await verifyPassword(password, user.passwordSalt, user.passwordHash))) {
     return Response.json({ error: "نام کاربری یا رمز عبور درست نیست." }, { status: 401 });
