@@ -9,7 +9,7 @@ export type MissionStatusEventInput = {
   attemptNo?: number | null;
   actorId: string;
   actorRole: string;
-  eventType: "created" | "started" | "destination_registered" | "status_set" | "start_cancelled" | "follow_up_decision" | "approval_decision";
+  eventType: "created" | "started" | "destination_registered" | "status_set" | "start_cancelled" | "manager_cancelled" | "follow_up_decision" | "approval_decision";
   fromStatus?: string | null;
   toStatus?: string | null;
   result?: string | null;

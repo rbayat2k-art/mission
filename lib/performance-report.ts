@@ -258,17 +258,21 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
 
   const sessions = sessionsResult.results;
   const missions = missionsResult.results;
+  // A management cancellation is an operational decision, not an employee
+  // failure. Keep its recorded movement in the report, but exclude the mission
+  // from assignment/completion KPIs so it cannot lower the employee's score.
+  const performanceMissions = missions.filter(mission => mission.status !== "cancelled");
   const destinationTimestamps = [...new Set([
     ...missions.map(mission => mission.destinationRecordedAt),
     ...stepSegmentsResult.results.map(step => step.destinationRecordedAt),
   ].filter((value): value is string => Boolean(value && value >= start && value < end)))].sort();
-  const completed = missions.filter(m => m.completedAt && m.completedAt >= start && m.completedAt < end);
-  const created = missions.filter(m => m.createdAt >= start && m.createdAt < end);
+  const completed = performanceMissions.filter(m => m.completedAt && m.completedAt >= start && m.completedAt < end);
+  const created = performanceMissions.filter(m => m.createdAt >= start && m.createdAt < end);
   const relevantIds = new Set([...created, ...completed].map(m => m.id));
   const successful = completed.filter(m => m.result === "انجام شد");
   const followUp = completed.filter(m => m.result && m.result !== "انجام شد");
   const firstVisitSuccessful = successful.filter(m => Number(m.attemptCount || 0) <= 1);
-  const open = missions.filter(m => ["open", "in_progress", "stage_waiting", "revision"].includes(m.status));
+  const open = performanceMissions.filter(m => ["open", "in_progress", "stage_waiting", "revision"].includes(m.status));
   const overdue = open.filter(m => m.deadlineAt && Date.parse(m.deadlineAt) < now.getTime());
   const deadlineCompleted = completed.filter(m => m.deadlineAt);
   const onTime = deadlineCompleted.filter(m => Date.parse(m.completedAt!) <= Date.parse(m.deadlineAt!));

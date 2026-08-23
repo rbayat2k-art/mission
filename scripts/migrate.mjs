@@ -43,6 +43,9 @@ try {
     ["end_longitude_e6", "INT NULL AFTER end_latitude_e6"],
     ["end_accuracy_cm", "INT NULL AFTER end_longitude_e6"],
     ["end_location_recorded_at", "VARCHAR(40) NULL AFTER end_accuracy_cm"],
+    ["cancelled_at", "VARCHAR(40) NULL AFTER end_location_recorded_at"],
+    ["cancelled_by", "CHAR(36) NULL AFTER cancelled_at"],
+    ["cancellation_reason", "TEXT NULL AFTER cancelled_by"],
   ];
   for (const [name, definition] of scoringColumns) {
     const [rows] = await connection.execute("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'missions' AND COLUMN_NAME = ?", [name]);

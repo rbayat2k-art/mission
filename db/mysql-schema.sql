@@ -105,12 +105,16 @@ CREATE TABLE IF NOT EXISTS missions (
   end_longitude_e6 INT NULL,
   end_accuracy_cm INT NULL,
   end_location_recorded_at VARCHAR(40) NULL,
+  cancelled_at VARCHAR(40) NULL,
+  cancelled_by CHAR(36) NULL,
+  cancellation_reason TEXT NULL,
   created_at VARCHAR(40) NOT NULL,
   INDEX idx_missions_assigned_status (assigned_to, status),
   INDEX idx_missions_source_status (source, status),
   INDEX idx_missions_assigned_completed (assigned_to, completed_at),
   CONSTRAINT fk_missions_creator FOREIGN KEY (created_by) REFERENCES users(id),
-  CONSTRAINT fk_missions_assignee FOREIGN KEY (assigned_to) REFERENCES users(id)
+  CONSTRAINT fk_missions_assignee FOREIGN KEY (assigned_to) REFERENCES users(id),
+  CONSTRAINT fk_missions_cancelled_by FOREIGN KEY (cancelled_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- statement-breakpoint
 CREATE TABLE IF NOT EXISTS mission_steps (

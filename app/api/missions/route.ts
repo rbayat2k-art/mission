@@ -9,7 +9,7 @@ export async function GET(request: Request) {
   const auth = await requireRole(request, ["owner", "admin", "supervisor", "employee"]);
   if ("error" in auth) return auth.error;
   const db = await ensureDatabase();
-  const select = `SELECT m.id, m.title, m.description, m.source, m.status, m.priority, m.assigned_to AS assignedTo, m.workflow_type AS workflowType, m.current_step_no AS currentStepNo, m.referrer_name AS referrerName, m.destination_name AS destinationName, m.result, m.report, m.expense_amount AS expenseAmount, m.score_pending AS scorePending, m.score_confirmed AS scoreConfirmed, m.score_penalty AS scorePenalty, m.score_note AS scoreNote, m.deadline, m.deadline_at AS deadlineAt, m.started_at AS startedAt, m.completed_at AS completedAt, m.created_at AS createdAt, u.full_name AS employeeName,
+  const select = `SELECT m.id, m.title, m.description, m.source, m.status, m.priority, m.assigned_to AS assignedTo, m.workflow_type AS workflowType, m.current_step_no AS currentStepNo, m.referrer_name AS referrerName, m.destination_name AS destinationName, m.result, m.report, m.expense_amount AS expenseAmount, m.score_pending AS scorePending, m.score_confirmed AS scoreConfirmed, m.score_penalty AS scorePenalty, m.score_note AS scoreNote, m.deadline, m.deadline_at AS deadlineAt, m.started_at AS startedAt, m.completed_at AS completedAt, m.cancelled_at AS cancelledAt, m.cancelled_by AS cancelledBy, m.cancellation_reason AS cancellationReason, canceller.full_name AS cancelledByName, m.created_at AS createdAt, u.full_name AS employeeName,
     (SELECT COUNT(*) FROM mission_attempts ma WHERE ma.mission_id = m.id) AS attemptCount,
     (SELECT fr.status FROM mission_follow_up_requests fr WHERE fr.mission_id=m.id ORDER BY fr.created_at DESC LIMIT 1) AS followUpRequestStatus,
     (SELECT COUNT(*) FROM audit_logs al WHERE al.entity_type='mission' AND al.entity_id=m.id AND al.action='mission.start_cancelled') AS startCancellationCount,
@@ -20,7 +20,7 @@ export async function GET(request: Request) {
     (SELECT mse.server_recorded_at FROM mission_status_events mse WHERE mse.mission_id=m.id ORDER BY mse.server_recorded_at DESC, mse.id DESC LIMIT 1) AS latestStatusChangedAt,
     (SELECT mse.location_label FROM mission_status_events mse WHERE mse.mission_id=m.id ORDER BY mse.server_recorded_at DESC, mse.id DESC LIMIT 1) AS latestStatusLocationLabel,
     (SELECT mse.accuracy_cm FROM mission_status_events mse WHERE mse.mission_id=m.id ORDER BY mse.server_recorded_at DESC, mse.id DESC LIMIT 1) AS latestStatusAccuracyCm
-    FROM missions m JOIN users u ON u.id = m.assigned_to`;
+    FROM missions m JOIN users u ON u.id = m.assigned_to LEFT JOIN users canceller ON canceller.id=m.cancelled_by`;
   const result = auth.user.role === "employee"
     ? await db.prepare(`${select} WHERE m.assigned_to = ? ORDER BY m.created_at DESC`).bind(auth.user.id).all()
     : auth.user.role === "supervisor"

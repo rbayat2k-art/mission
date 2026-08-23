@@ -28,6 +28,9 @@ async function applySchema() {
     { name: "end_longitude_e6", definition: "INT NULL AFTER end_latitude_e6" },
     { name: "end_accuracy_cm", definition: "INT NULL AFTER end_longitude_e6" },
     { name: "end_location_recorded_at", definition: "VARCHAR(40) NULL AFTER end_accuracy_cm" },
+    { name: "cancelled_at", definition: "VARCHAR(40) NULL AFTER end_location_recorded_at" },
+    { name: "cancelled_by", definition: "CHAR(36) NULL AFTER cancelled_at" },
+    { name: "cancellation_reason", definition: "TEXT NULL AFTER cancelled_by" },
   ];
   for (const column of scoringColumns) {
     const existing = await database.prepare("SELECT COLUMN_NAME AS columnName FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'missions' AND COLUMN_NAME = ?").bind(column.name).first();

@@ -937,3 +937,35 @@ test("supports additive multi-stage missions with isolated route segments", asyn
   assert.match(page, /شروع مرحله بعدی/);
   assert.match(page, /ادامه در زمان دیگر/);
 });
+
+test("allows an authorized manager to cancel an active mission with an audited reason and employee notification", async () => {
+  const [schema, runtime, migration, cancelRoute, missions, events, report, page, styles] = await Promise.all([
+    readFile(new URL("../db/mysql-schema.sql", import.meta.url), "utf8"),
+    readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/migrate.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/missions/[id]/cancel/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/missions/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/mission-status-events.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/performance-report.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/access.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(schema, /cancelled_at VARCHAR\(40\) NULL/);
+  assert.match(schema, /cancellation_reason TEXT NULL/);
+  assert.match(runtime, /name: "cancellation_reason"/);
+  assert.match(migration, /\["cancelled_by", "CHAR\(36\) NULL AFTER cancelled_at"\]/);
+  assert.match(cancelRoute, /requireRole\(request, \["owner", "admin", "supervisor"\]\)/);
+  assert.match(cancelRoute, /reason\.length < 3/);
+  assert.match(cancelRoute, /status='cancelled'/);
+  assert.match(cancelRoute, /end_reason=COALESCE\(end_reason, 'manager_cancelled'\)/);
+  assert.match(cancelRoute, /mission\.manager_cancelled/);
+  assert.match(cancelRoute, /createUserNotification\(mission\.assignedTo/);
+  assert.match(cancelRoute, /دیگر نیاز به پیگیری ندارد/);
+  assert.match(events, /manager_cancelled/);
+  assert.match(missions, /m\.cancellation_reason AS cancellationReason/);
+  assert.match(report, /performanceMissions = missions\.filter\(mission => mission\.status !== "cancelled"\)/);
+  assert.match(page, /دلیل لغو مأموریت/);
+  assert.match(page, /تأیید لغو و ارسال اعلان/);
+  assert.match(page, /لغوشده توسط مدیریت/);
+  assert.match(styles, /\.employee-cancelled-mission/);
+});
