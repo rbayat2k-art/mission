@@ -20,6 +20,8 @@ final class NativeNotificationHelper {
     private static final String CHANNEL_ID = "tapra_account_notifications";
     private static final String PREFERENCES = "tapra_native_notifications";
     private static final String DISPLAYED_IDS = "displayed_notification_ids";
+    private static final String POSTED_SYSTEM_IDS = "posted_system_notification_ids";
+    private static final String ACTIVE_USER_ID = "active_user_id";
     private static final int MAX_DISPLAYED_IDS = 200;
     private static final String DEFAULT_TARGET =
         "https://taprasystem.ir/?panel=employee&screen=notifications";
@@ -41,12 +43,41 @@ final class NativeNotificationHelper {
                 PackageManager.PERMISSION_GRANTED;
     }
 
+    static synchronized String activeUserId(Context context) {
+        String value = preferences(context).getString(ACTIVE_USER_ID, "");
+        return value == null ? "" : value.trim();
+    }
+
+    static synchronized void switchUser(Context context, String userId) {
+        String safeUserId = clean(userId, 64);
+        String current = activeUserId(context);
+        if (safeUserId.equals(current)) return;
+        cancelPostedNotifications(context);
+        preferences(context).edit()
+            .putString(ACTIVE_USER_ID, safeUserId)
+            .remove(DISPLAYED_IDS)
+            .remove(POSTED_SYSTEM_IDS)
+            .apply();
+    }
+
+    static synchronized void clearUser(Context context) {
+        cancelPostedNotifications(context);
+        preferences(context).edit()
+            .remove(ACTIVE_USER_ID)
+            .remove(DISPLAYED_IDS)
+            .remove(POSTED_SYSTEM_IDS)
+            .apply();
+    }
+
     static synchronized boolean show(
         Context context, String notificationId, String title, String message, String targetUrl
     ) {
         if (!hasPermission(context)) return false;
+        String activeUserId = activeUserId(context);
+        if (activeUserId.isEmpty()) return false;
         String safeId = clean(notificationId, 120);
-        if (safeId.isEmpty() || wasDisplayed(context, safeId)) return false;
+        String scopedId = activeUserId + ":" + safeId;
+        if (safeId.isEmpty() || wasDisplayed(context, scopedId)) return false;
 
         ensureChannel(context);
         String safeTitle = clean(title, 160);
@@ -56,7 +87,7 @@ final class NativeNotificationHelper {
         Intent openIntent = new Intent(context, MainActivity.class)
             .setData(Uri.parse(safeTarget))
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        int requestCode = 4000 + Math.abs(safeId.hashCode() % 500_000);
+        int requestCode = 4000 + Math.abs(scopedId.hashCode() % 500_000);
         PendingIntent pendingIntent = PendingIntent.getActivity(
             context, requestCode, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
@@ -78,9 +109,10 @@ final class NativeNotificationHelper {
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .build();
 
-        int systemId = 1000 + Math.abs(safeId.hashCode() % 900_000);
+        int systemId = 1000 + Math.abs(scopedId.hashCode() % 900_000);
         context.getSystemService(NotificationManager.class).notify(systemId, notification);
-        rememberDisplayed(context, safeId);
+        rememberDisplayed(context, scopedId);
+        rememberSystemId(context, systemId);
         return true;
     }
 
@@ -116,16 +148,41 @@ final class NativeNotificationHelper {
         preferences(context).edit().putString(DISPLAYED_IDS, array.toString()).apply();
     }
 
+    private static void rememberSystemId(Context context, int systemId) {
+        LinkedHashSet<String> ids = readStringSet(context, POSTED_SYSTEM_IDS);
+        ids.add(String.valueOf(systemId));
+        while (ids.size() > MAX_DISPLAYED_IDS) ids.remove(ids.iterator().next());
+        writeStringSet(context, POSTED_SYSTEM_IDS, ids);
+    }
+
+    private static void cancelPostedNotifications(Context context) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        for (String value : readStringSet(context, POSTED_SYSTEM_IDS)) {
+            try { manager.cancel(Integer.parseInt(value)); }
+            catch (Exception ignored) { }
+        }
+    }
+
     private static LinkedHashSet<String> readDisplayed(Context context) {
+        return readStringSet(context, DISPLAYED_IDS);
+    }
+
+    private static LinkedHashSet<String> readStringSet(Context context, String key) {
         LinkedHashSet<String> ids = new LinkedHashSet<>();
         try {
-            JSONArray array = new JSONArray(preferences(context).getString(DISPLAYED_IDS, "[]"));
+            JSONArray array = new JSONArray(preferences(context).getString(key, "[]"));
             for (int index = 0; index < array.length(); index++) {
                 String id = array.optString(index, "").trim();
                 if (!id.isEmpty()) ids.add(id);
             }
         } catch (Exception ignored) { }
         return ids;
+    }
+
+    private static void writeStringSet(Context context, String key, LinkedHashSet<String> ids) {
+        JSONArray array = new JSONArray();
+        for (String item : ids) array.put(item);
+        preferences(context).edit().putString(key, array.toString()).apply();
     }
 
     private static SharedPreferences preferences(Context context) {

@@ -6,6 +6,10 @@ type NotificationRow = { id:string; type:string; title:string; message:string; e
 export async function GET(request: Request) {
   const auth = await requireRole(request, ["owner", "admin", "supervisor", "employee"]);
   if ("error" in auth) return auth.error;
+  const expectedUserId = request.headers.get("x-tapra-user-id")?.trim();
+  if (expectedUserId && expectedUserId !== auth.user.id) {
+    return Response.json({ error: "حساب فعال برنامه با نشست سرور یکسان نیست." }, { status: 409 });
+  }
   const db = await ensureDatabase();
   const notifications = (await db.prepare("SELECT id, type, title, message, entity_type AS entityType, entity_id AS entityId, read_at AS readAt, created_at AS createdAt FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50").bind(auth.user.id).all<NotificationRow>()).results;
   const unreadCount = notifications.filter(item => !item.readAt).length;
@@ -22,7 +26,7 @@ export async function GET(request: Request) {
     const row = await db.prepare("SELECT COUNT(*) AS count FROM mission_follow_up_requests WHERE status IN ('awaiting_supervisor','escalated')").first<{count:number}>();
     openRequestCount = Number(row?.count ?? 0);
   }
-  return Response.json({ notifications, unreadCount, openRequestCount });
+  return Response.json({ userId: auth.user.id, notifications, unreadCount, openRequestCount });
 }
 
 export async function PATCH(request: Request) {

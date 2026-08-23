@@ -10,6 +10,7 @@ import AppVersionGuard from "./components/AppVersionGuard";
 import PushNotificationBootstrap from "./components/PushNotificationBootstrap";
 import { EmployeeFollowUpPanel, FollowUpActionCenter } from "./components/FollowUpCenter";
 import { MAX_CONCURRENT_MISSIONS, missionStartCancellationState } from "../lib/mission-start-policy";
+import { detachPushDevice } from "../lib/push-client";
 
 type EmployeeScreen = "home" | "missions" | "new" | "work" | "report" | "mission-detail" | "end-review" | "profile" | "notifications" | "notification-settings" | "account-settings";
 type AdminScreen = "dashboard" | "live" | "missions" | "actions" | "access" | "approvals" | "integrity" | "reports" | "notifications" | "account";
@@ -25,6 +26,8 @@ const ADMIN_CANCELLABLE_MISSION_STATUSES = ["open","in_progress","stage_waiting"
 
 type TapraAndroidBridge = {
   setTrackingActive: (active: boolean) => void;
+  setAuthenticatedUser?: (userId: string) => void;
+  clearAuthenticatedUser?: () => void;
   isNativeApp: () => boolean;
   isLocationPermissionGranted: () => boolean;
   isBatteryOptimizationExempt?: () => boolean;
@@ -44,6 +47,16 @@ function isNativeAndroidApp() {
 
 function syncNativeTracking(active: boolean) {
   try { androidBridge()?.setTrackingActive(active); }
+  catch { /* The browser version intentionally has no native bridge. */ }
+}
+
+function setNativeAuthenticatedUser(userId: string) {
+  try { androidBridge()?.setAuthenticatedUser?.(userId); }
+  catch { /* The browser version intentionally has no native bridge. */ }
+}
+
+function clearNativeAuthenticatedUser() {
+  try { androidBridge()?.clearAuthenticatedUser?.(); }
   catch { /* The browser version intentionally has no native bridge. */ }
 }
 
@@ -328,6 +341,7 @@ function EmployeeDailySummaryView({ summary, onOpenMission }: { summary: Employe
 
 function EmployeeApp() {
   const [signedIn, setSignedIn] = useState(false);
+  const [employeeUserId, setEmployeeUserId] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -482,8 +496,8 @@ function EmployeeApp() {
   }, [signedIn, working, loadEmployeeData]);
 
   useEffect(() => {
-    api<{user:{role:string;mustChangePassword:boolean;fullName:string;username:string;notificationEnabled:boolean}}>("/api/auth/me").then(({user})=>{
-      if (user.role === "employee") { setSignedIn(true); setNeedsPasswordChange(user.mustChangePassword); setEmployeeDisplayName(user.fullName); setUsername(user.username); setEmployeeNotificationEnabled(user.notificationEnabled); }
+    api<{user:{id:string;role:string;mustChangePassword:boolean;fullName:string;username:string;notificationEnabled:boolean}}>("/api/auth/me").then(({user})=>{
+      if (user.role === "employee") { setNativeAuthenticatedUser(user.id); setEmployeeUserId(user.id); setSignedIn(true); setNeedsPasswordChange(user.mustChangePassword); setEmployeeDisplayName(user.fullName); setUsername(user.username); setEmployeeNotificationEnabled(user.notificationEnabled); }
     }).catch(()=>undefined);
   }, []);
 
@@ -733,8 +747,10 @@ function EmployeeApp() {
   const signIn = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      const result = await api<{ user: { role: string; mustChangePassword: boolean; fullName: string; username:string;notificationEnabled:boolean } }>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) });
-      if (result.user.role !== "employee") throw new Error("این حساب برای پنل کارمند نیست.");
+      const result = await api<{ user: { id:string;role: string; mustChangePassword: boolean; fullName: string; username:string;notificationEnabled:boolean } }>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) });
+      if (result.user.role !== "employee") { await detachPushDevice(); await api("/api/auth/logout",{method:"POST"}); clearNativeAuthenticatedUser(); throw new Error("این حساب برای پنل کارمند نیست."); }
+      setNativeAuthenticatedUser(result.user.id);
+      setEmployeeUserId(result.user.id);
       setSignedIn(true);
       setNeedsPasswordChange(result.user.mustChangePassword);
       setEmployeeDisplayName(result.user.fullName);
@@ -909,7 +925,7 @@ function EmployeeApp() {
 
   return (
     <main className="employee-stage" dir="rtl">
-      <PushNotificationBootstrap active={signedIn} onMessage={notify} nativeOnly />
+      <PushNotificationBootstrap active={signedIn && Boolean(employeeUserId)} userId={employeeUserId} onMessage={notify} nativeOnly />
       <div className="employee-context context-right">
         <span className="eyebrow">اپ میدانی</span>
         <h2>سریع، روشن و بدون حواس‌پرتی</h2>
@@ -1077,7 +1093,7 @@ function EmployeeApp() {
           {screen === "notifications" && <NotificationCenter onOpenMissions={()=>{loadEmployeeData().catch(()=>undefined);setScreen("missions")}} onOpenFollowUps={()=>{loadEmployeeData().catch(()=>undefined);setMissionTab("follow_up");setScreen("missions")}} onCounts={setNotificationCounts}/>}
           {screen === "notification-settings" && <NotificationSettings onMessage={notify} onEnabledChange={setEmployeeNotificationEnabled}/>}
           {screen === "account-settings" && <AccountSettings initialFullName={employeeDisplayName} initialUsername={username} onSaved={user=>{setEmployeeDisplayName(user.fullName);setUsername(user.username)}} onMessage={notify}/>}
-          {screen === "profile" && <div className="profile-screen"><div className="avatar large">{employeeDisplayName.slice(0,2)}</div><h2>{employeeDisplayName}</h2><p>کارشناس امور اداری</p><div className="profile-list"><button onClick={()=>setScreen("account-settings")}><span>نام کاربری، رمز و اطلاعات حساب</span>←</button><button onClick={()=>setScreen("notification-settings")}><span>تنظیمات اعلان‌ها</span><b>{employeeNotificationEnabled?"فعال":"غیرفعال"}</b></button><button onClick={()=>setScreen("notifications")}><span>درخواست‌های باز</span><b>{notificationCounts.open.toLocaleString("fa-IR")}</b></button><button onClick={() => syncQueued().catch(() => undefined)}><span>همگام‌سازی اطلاعات</span><b>{pendingSync ? `${pendingSync.toLocaleString("fa-IR")} مورد` : "همگام"}</b></button><button><span>راهنمای استفاده</span>←</button><button className="logout" onClick={async () => {await api("/api/auth/logout",{method:"POST"});setScreen("home");setPassword("");setSignedIn(false);}}><span>خروج از حساب</span>←</button></div></div>}
+          {screen === "profile" && <div className="profile-screen"><div className="avatar large">{employeeDisplayName.slice(0,2)}</div><h2>{employeeDisplayName}</h2><p>کارشناس امور اداری</p><div className="profile-list"><button onClick={()=>setScreen("account-settings")}><span>نام کاربری، رمز و اطلاعات حساب</span>←</button><button onClick={()=>setScreen("notification-settings")}><span>تنظیمات اعلان‌ها</span><b>{employeeNotificationEnabled?"فعال":"غیرفعال"}</b></button><button onClick={()=>setScreen("notifications")}><span>درخواست‌های باز</span><b>{notificationCounts.open.toLocaleString("fa-IR")}</b></button><button onClick={() => syncQueued().catch(() => undefined)}><span>همگام‌سازی اطلاعات</span><b>{pendingSync ? `${pendingSync.toLocaleString("fa-IR")} مورد` : "همگام"}</b></button><button><span>راهنمای استفاده</span>←</button><button className="logout" onClick={async () => {syncNativeTracking(false);clearNativeAuthenticatedUser();await detachPushDevice();await api("/api/auth/logout",{method:"POST"});setEmployeeUserId("");setScreen("home");setPassword("");setSignedIn(false);}}><span>خروج از حساب</span>←</button></div></div>}
         </div>
 
         <nav className="bottom-nav" aria-label="ناوبری اپ">
@@ -1266,15 +1282,15 @@ function AdminPanel() {
     // Live tracking refreshes independently so stale or disabled users disappear without a page reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adminSignedIn, screen]);
-  useEffect(() => { api<{user:{id:string;role:"owner"|"admin"|"supervisor"|"employee";fullName:string;username:string}}>("/api/auth/me").then(({user})=>{if(['owner','admin','supervisor'].includes(user.role)){setAdminUserId(user.id);setAdminRole(user.role as "owner"|"admin"|"supervisor");setAdminDisplayName(user.fullName);setAdminUsername(user.username);setAdminSignedIn(true)}}).catch(()=>undefined); }, []);
+  useEffect(() => { api<{user:{id:string;role:"owner"|"admin"|"supervisor"|"employee";fullName:string;username:string}}>("/api/auth/me").then(({user})=>{if(['owner','admin','supervisor'].includes(user.role)){setNativeAuthenticatedUser(user.id);setAdminUserId(user.id);setAdminRole(user.role as "owner"|"admin"|"supervisor");setAdminDisplayName(user.fullName);setAdminUsername(user.username);setAdminSignedIn(true)}}).catch(()=>undefined); }, []);
   useEffect(()=>{if(!adminSignedIn)return;let active=true;const load=()=>api<{unreadCount:number;openRequestCount:number}>("/api/notifications").then(result=>{if(active)setAdminNotificationCounts({unread:result.unreadCount,open:result.openRequestCount})}).catch(()=>undefined);load();const timer=window.setInterval(load,60_000);return()=>{active=false;window.clearInterval(timer)}},[adminSignedIn]);
 
   const adminSignIn = async (e: FormEvent) => {
     e.preventDefault();
     try {
       const result = await api<{user:{id:string;role:"owner"|"admin"|"supervisor"|"employee";fullName:string;username:string}}>("/api/auth/login", { method:"POST", body:JSON.stringify({username:adminUsername,password:adminPassword}) });
-      if (!['owner','admin','supervisor'].includes(result.user.role)) throw new Error("این حساب دسترسی مدیریتی ندارد.");
-      setAdminUserId(result.user.id); setAdminRole(result.user.role as "owner"|"admin"|"supervisor"); setAdminDisplayName(result.user.fullName); setAdminSignedIn(true); setAdminError("");
+      if (!['owner','admin','supervisor'].includes(result.user.role)) { await detachPushDevice(); await api("/api/auth/logout",{method:"POST"}); clearNativeAuthenticatedUser(); throw new Error("این حساب دسترسی مدیریتی ندارد."); }
+      setNativeAuthenticatedUser(result.user.id); setAdminUserId(result.user.id); setAdminRole(result.user.role as "owner"|"admin"|"supervisor"); setAdminDisplayName(result.user.fullName); setAdminSignedIn(true); setAdminError("");
     } catch (error) { setAdminError(error instanceof Error ? error.message : "ورود ناموفق بود"); }
   };
 
@@ -1546,7 +1562,7 @@ function AdminPanel() {
       <div className="admin-profile" role="button" tabIndex={0} onClick={()=>setScreen("account")} onKeyDown={event=>{if(event.key==="Enter")setScreen("account")}}><div className="avatar">{adminDisplayName.slice(0,2)}</div><span><b>{adminDisplayName}</b><small>{adminRole === "supervisor" ? "سرپرست تیم" : adminRole === "owner" ? "مالک سیستم" : "مدیر سیستم"}</small></span><button aria-label="حساب و امنیت">⋮</button></div>
     </aside>
     <section className="admin-main">
-      <PushNotificationBootstrap active={adminSignedIn} onMessage={notify} />
+      <PushNotificationBootstrap active={adminSignedIn && Boolean(adminUserId)} userId={adminUserId} onMessage={notify} />
       <header className="admin-header"><div><h1>{titles[screen][0]}</h1><p>{titles[screen][1]}</p></div><div className="admin-actions"><label className="search"><Icon>⌕</Icon><input placeholder="جستجو در سامانه..." /></label><button className="round notification-round" onClick={()=>setScreen("notifications")} aria-label="اعلان‌ها">♧{adminNotificationCounts.unread>0&&<i/>}{adminNotificationCounts.open>0&&<b>{adminNotificationCounts.open.toLocaleString("fa-IR")}</b>}</button>{!["notifications","account","actions"].includes(screen)&&<button className="primary" onClick={() => screen === "access" && adminRole !== "supervisor" ? openAccessForm() : openMissionForm()}><Icon>＋</Icon> {screen === "access" && adminRole !== "supervisor" ? "ساخت دسترسی" : "مأموریت جدید"}</button>}</div></header>
       <div className="admin-content">
         {screen === "dashboard" && <>

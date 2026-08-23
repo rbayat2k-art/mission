@@ -5,7 +5,11 @@ import { getVapidPublicKey } from "../../../../lib/push-notifications";
 export async function GET(request: Request) {
   const auth = await requireRole(request, ["owner", "admin", "supervisor", "employee"]);
   if ("error" in auth) return auth.error;
-  return Response.json({ enabled: auth.user.notificationEnabled, publicKey: getVapidPublicKey(), configured: Boolean(getVapidPublicKey()) });
+  const expectedUserId = request.headers.get("x-tapra-user-id")?.trim();
+  if (expectedUserId && expectedUserId !== auth.user.id) {
+    return Response.json({ error: "حساب فعال برنامه با نشست سرور یکسان نیست." }, { status: 409 });
+  }
+  return Response.json({ userId: auth.user.id, enabled: auth.user.notificationEnabled, publicKey: getVapidPublicKey(), configured: Boolean(getVapidPublicKey()) });
 }
 
 export async function PATCH(request: Request) {

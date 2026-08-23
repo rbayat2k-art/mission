@@ -688,7 +688,8 @@ test("restores the exact panel after refresh and delivers follow-up messages as 
   assert.match(page, /url\.searchParams\.get\("panel"\) === "admin"/);
   assert.match(page, /window\.history\.replaceState/);
   assert.match(page, /\["owner", "admin", "supervisor"\]\.includes/);
-  assert.match(page, /<PushNotificationBootstrap active=\{adminSignedIn\}/);
+  assert.match(page, /<PushNotificationBootstrap active=\{adminSignedIn && Boolean\(adminUserId\)\}/);
+  assert.match(page, /userId=\{adminUserId\}/);
   assert.match(bootstrap, /Notification\.requestPermission/);
   assert.match(bootstrap, /Notification\.permission === "granted"/);
   assert.match(pushClient, /navigator\.serviceWorker\.register\("\/sw\.js"\)/);
@@ -970,8 +971,8 @@ test("allows an authorized manager to cancel an active mission with an audited r
   assert.match(styles, /\.employee-cancelled-mission/);
 });
 
-test("ships an Android 1.2.2 wrapper with reliable background GPS and native phone notifications", async () => {
-  const [activity, service, nativeNotifications, manifest, gradle, workflow, page, locations, notificationSettings, bootstrap] = await Promise.all([
+test("ships an Android 1.2.3 wrapper with account-isolated GPS and native notifications", async () => {
+  const [activity, service, nativeNotifications, manifest, gradle, workflow, page, locations, notifications, notificationApiSettings, notificationSettings, bootstrap] = await Promise.all([
     readFile(new URL("../android/app/src/main/java/ir/taprasystem/employee/MainActivity.java", import.meta.url), "utf8"),
     readFile(new URL("../android/app/src/main/java/ir/taprasystem/employee/LocationTrackingService.java", import.meta.url), "utf8"),
     readFile(new URL("../android/app/src/main/java/ir/taprasystem/employee/NativeNotificationHelper.java", import.meta.url), "utf8"),
@@ -980,6 +981,8 @@ test("ships an Android 1.2.2 wrapper with reliable background GPS and native pho
     readFile(new URL("../.github/workflows/android-apk.yml", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/locations/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/notifications/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/notifications/settings/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/components/NotificationSettings.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/PushNotificationBootstrap.tsx", import.meta.url), "utf8"),
   ]);
@@ -998,6 +1001,9 @@ test("ships an Android 1.2.2 wrapper with reliable background GPS and native pho
   assert.match(activity, /openNotificationSettings/);
   assert.match(activity, /showNativeNotification/);
   assert.match(activity, /tapra-notification-permission-changed/);
+  assert.match(activity, /setAuthenticatedUser/);
+  assert.match(activity, /clearAuthenticatedUser/);
+  assert.match(activity, /EXTRA_USER_ID/);
   assert.doesNotMatch(activity, /webView\.restoreState/);
   assert.match(manifest, /android:hardwareAccelerated="true"/);
   assert.match(manifest, /REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
@@ -1006,28 +1012,43 @@ test("ships an Android 1.2.2 wrapper with reliable background GPS and native pho
   assert.match(service, /pollNotifications\(\)/);
   assert.match(service, /\/api\/notifications\/settings/);
   assert.match(service, /NativeNotificationHelper\.show/);
+  assert.match(service, /trackingUserId\.equals\(responseBody\.optString\("userId", ""\)\)/);
+  assert.match(service, /location_queue_user_/);
+  assert.match(service, /X-Tapra-User-Id/);
   assert.match(nativeNotifications, /tapra_account_notifications/);
   assert.match(nativeNotifications, /IMPORTANCE_HIGH/);
   assert.match(nativeNotifications, /MAX_DISPLAYED_IDS = 200/);
   assert.match(nativeNotifications, /wasDisplayed/);
+  assert.match(nativeNotifications, /ACTIVE_USER_ID/);
+  assert.match(nativeNotifications, /cancelPostedNotifications/);
+  assert.match(nativeNotifications, /activeUserId \+ ":" \+ safeId/);
   assert.match(page, /ensureNativeBackgroundTrackingReady/);
   assert.match(page, /nativeOnly/);
+  assert.match(page, /clearNativeAuthenticatedUser\(\);await detachPushDevice\(\);await api\("\/api\/auth\/logout"/);
+  assert.match(page, /setNativeAuthenticatedUser\(result\.user\.id\)/);
   assert.match(page, /موقعیت غیرواقعی شناسایی شد/);
   assert.match(locations, /mock_location_detected/);
   assert.match(locations, /rejectedMocked/);
+  assert.match(locations, /x-tapra-user-id/);
+  assert.match(locations, /expectedUserId !== auth\.user\.id/);
+  assert.match(notifications, /userId: auth\.user\.id/);
+  assert.match(notifications, /expectedUserId !== auth\.user\.id/);
+  assert.match(notificationApiSettings, /userId: auth\.user\.id/);
   assert.match(notificationSettings, /isNotificationPermissionGranted/);
   assert.match(notificationSettings, /requestNotificationPermission/);
   assert.match(notificationSettings, /showNativeActivationTest/);
   assert.match(notificationSettings, /اعلان‌های راهکار فعال شد/);
   assert.match(notificationSettings, /اعلان‌های اندروید راهکار روی این گوشی فعال شد/);
   assert.match(bootstrap, /showNativeNotification/);
+  assert.match(bootstrap, /current\.userId !== userId/);
+  assert.match(bootstrap, /body\.userId !== userId/);
   assert.match(bootstrap, /setInterval\(pollNativeNotifications, 30_000\)/);
-  assert.match(gradle, /versionCode 6/);
-  assert.match(gradle, /versionName '1\.2\.2'/);
+  assert.match(gradle, /versionCode 7/);
+  assert.match(gradle, /versionName '1\.2\.3'/);
   assert.match(workflow, /matrix:\s*\n\s*api-level: \[23, 29, 35\]/);
   assert.match(workflow, /uiautomator dump/);
   assert.match(workflow, /tapra-battery-gate-api/);
   assert.match(workflow, /deviceidle whitelist \+ir\.taprasystem\.employee/);
   assert.match(workflow, /POST_NOTIFICATIONS \|\| true/);
-  assert.match(workflow, /tapra-employee-v1\.2\.2\.apk/);
+  assert.match(workflow, /tapra-employee-v1\.2\.3\.apk/);
 });

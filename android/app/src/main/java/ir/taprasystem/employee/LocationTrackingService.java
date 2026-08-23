@@ -41,6 +41,7 @@ public class LocationTrackingService extends Service implements LocationListener
     public static final String ACTION_START = "ir.taprasystem.employee.action.START_TRACKING";
     public static final String ACTION_STOP = "ir.taprasystem.employee.action.STOP_TRACKING";
     public static final String ACTION_SESSION_ENDED = "ir.taprasystem.employee.action.SESSION_ENDED";
+    public static final String EXTRA_USER_ID = "ir.taprasystem.employee.extra.USER_ID";
 
     private static final String BASE_URL = "https://taprasystem.ir";
     private static final String LOCATION_ENDPOINT = BASE_URL + "/api/locations";
@@ -60,6 +61,7 @@ public class LocationTrackingService extends Service implements LocationListener
     private LocationManager locationManager;
     private SharedPreferences preferences;
     private PowerManager.WakeLock wakeLock;
+    private String trackingUserId = "";
     private volatile boolean flushInProgress;
     private volatile boolean notificationPollInProgress;
 
@@ -87,6 +89,14 @@ public class LocationTrackingService extends Service implements LocationListener
             stopTracking(true);
             return START_NOT_STICKY;
         }
+        String requestedUserId = intent == null ? "" : intent.getStringExtra(EXTRA_USER_ID);
+        requestedUserId = requestedUserId == null ? "" : requestedUserId.trim();
+        String activeUserId = NativeNotificationHelper.activeUserId(this);
+        if (requestedUserId.isEmpty() || !requestedUserId.equals(activeUserId)) {
+            stopTracking(false);
+            return START_NOT_STICKY;
+        }
+        trackingUserId = requestedUserId;
         preferences.edit().putBoolean("tracking_requested", true).apply();
         startForeground(NOTIFICATION_ID, buildNotification("در انتظار دریافت موقعیت دقیق…"));
         startTracking();
@@ -118,7 +128,9 @@ public class LocationTrackingService extends Service implements LocationListener
 
     @Override
     public void onLocationChanged(Location location) {
-        if (location == null || !preferences.getBoolean("tracking_requested", false)) return;
+        if (location == null || !preferences.getBoolean("tracking_requested", false) ||
+            trackingUserId.isEmpty() ||
+            !trackingUserId.equals(NativeNotificationHelper.activeUserId(this))) return;
         try {
             boolean mocked = isMockLocation(location);
             JSONObject point = new JSONObject();
@@ -167,19 +179,20 @@ public class LocationTrackingService extends Service implements LocationListener
         int start = Math.max(0, current.length() - MAX_QUEUE_SIZE + 1);
         for (int index = start; index < current.length(); index++) next.put(current.opt(index));
         next.put(point);
-        preferences.edit().putString("location_queue", next.toString()).apply();
+        preferences.edit().putString(queueKey(), next.toString()).apply();
     }
 
     private synchronized JSONArray readQueue() {
         try {
-            return new JSONArray(preferences.getString("location_queue", "[]"));
+            return new JSONArray(preferences.getString(queueKey(), "[]"));
         } catch (Exception ignored) {
             return new JSONArray();
         }
     }
 
     private void flushQueue() {
-        if (flushInProgress) return;
+        if (flushInProgress || trackingUserId.isEmpty() ||
+            !trackingUserId.equals(NativeNotificationHelper.activeUserId(this))) return;
         final JSONArray batch = firstBatch(readQueue(), 100);
         if (batch.length() == 0) return;
         final String cookies = CookieManager.getInstance().getCookie(BASE_URL);
@@ -198,6 +211,8 @@ public class LocationTrackingService extends Service implements LocationListener
                     if (response.optBoolean("autoEnded", false)) {
                         mainHandler.post(() -> stopTrackingForServerEnd());
                     }
+                } else if (result.status == 409) {
+                    mainHandler.post(() -> stopTracking(false));
                 } else if (result.status == 401 || result.status == 403) {
                     updateNotification("ورود منقضی شده؛ برنامه را باز و دوباره وارد شوید");
                 }
@@ -210,7 +225,9 @@ public class LocationTrackingService extends Service implements LocationListener
     }
 
     private void pollNotifications() {
-        if (notificationPollInProgress || !NativeNotificationHelper.hasPermission(this)) return;
+        if (notificationPollInProgress || !NativeNotificationHelper.hasPermission(this) ||
+            trackingUserId.isEmpty() ||
+            !trackingUserId.equals(NativeNotificationHelper.activeUserId(this))) return;
         final String cookies = CookieManager.getInstance().getCookie(BASE_URL);
         if (cookies == null || cookies.trim().isEmpty()) return;
         notificationPollInProgress = true;
@@ -219,12 +236,14 @@ public class LocationTrackingService extends Service implements LocationListener
                 HttpResult settings = getJson(NOTIFICATION_SETTINGS_ENDPOINT, cookies);
                 if (settings.status < 200 || settings.status >= 300) return;
                 JSONObject settingsBody = new JSONObject(settings.body.isEmpty() ? "{}" : settings.body);
+                if (!trackingUserId.equals(settingsBody.optString("userId", ""))) return;
                 if (!settingsBody.optBoolean("enabled", true)) return;
 
                 HttpResult result = getJson(NOTIFICATIONS_ENDPOINT, cookies);
                 if (result.status < 200 || result.status >= 300) return;
-                JSONArray notifications = new JSONObject(result.body.isEmpty() ? "{}" : result.body)
-                    .optJSONArray("notifications");
+                JSONObject responseBody = new JSONObject(result.body.isEmpty() ? "{}" : result.body);
+                if (!trackingUserId.equals(responseBody.optString("userId", ""))) return;
+                JSONArray notifications = responseBody.optJSONArray("notifications");
                 if (notifications == null) return;
                 int displayed = 0;
                 for (int index = 0; index < notifications.length() && displayed < 5; index++) {
@@ -268,7 +287,11 @@ public class LocationTrackingService extends Service implements LocationListener
             JSONObject item = current.optJSONObject(index);
             if (item == null || !ids.contains(item.optString("clientEventId"))) remaining.put(current.opt(index));
         }
-        preferences.edit().putString("location_queue", remaining.toString()).apply();
+        preferences.edit().putString(queueKey(), remaining.toString()).apply();
+    }
+
+    private String queueKey() {
+        return "location_queue_user_" + trackingUserId;
     }
 
     private HttpResult postJson(String endpoint, String body, String cookies) throws Exception {
@@ -282,6 +305,7 @@ public class LocationTrackingService extends Service implements LocationListener
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cookie", cookies);
             connection.setRequestProperty("User-Agent", "TapraAndroid/" + BuildConfig.VERSION_NAME);
+            connection.setRequestProperty("X-Tapra-User-Id", trackingUserId);
             byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             connection.setFixedLengthStreamingMode(bytes.length);
             try (OutputStream output = connection.getOutputStream()) {
@@ -311,6 +335,7 @@ public class LocationTrackingService extends Service implements LocationListener
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cookie", cookies);
             connection.setRequestProperty("User-Agent", "TapraAndroid/" + BuildConfig.VERSION_NAME);
+            connection.setRequestProperty("X-Tapra-User-Id", trackingUserId);
             int status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                 ? connection.getInputStream() : connection.getErrorStream();

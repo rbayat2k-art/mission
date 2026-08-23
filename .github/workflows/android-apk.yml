@@ -79,18 +79,18 @@ jobs:
           build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
           "$build_tools/apksigner" verify --verbose --print-certs "$apk"
           "$build_tools/aapt" dump badging "$apk" | tee apk-badging.txt
-          grep -q "package: name='ir.taprasystem.employee' versionCode='6' versionName='1.2.2'" apk-badging.txt
+          grep -q "package: name='ir.taprasystem.employee' versionCode='7' versionName='1.2.3'" apk-badging.txt
           grep -q "sdkVersion:'23'" apk-badging.txt
-          cp "$apk" tapra-employee-v1.2.2.apk
-          sha256sum tapra-employee-v1.2.2.apk | tee tapra-employee-v1.2.2.apk.sha256
+          cp "$apk" tapra-employee-v1.2.3.apk
+          sha256sum tapra-employee-v1.2.3.apk | tee tapra-employee-v1.2.3.apk.sha256
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: tapra-employee-android-v1.2.2
+          name: tapra-employee-android-v1.2.3
           path: |
-            android/tapra-employee-v1.2.2.apk
-            android/tapra-employee-v1.2.2.apk.sha256
+            android/tapra-employee-v1.2.3.apk
+            android/tapra-employee-v1.2.3.apk.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -106,7 +106,7 @@ jobs:
       - name: Download APK
         uses: actions/download-artifact@v4
         with:
-          name: tapra-employee-android-v1.2.2
+          name: tapra-employee-android-v1.2.3
           path: apk
 
       - name: Enable Android emulator acceleration
@@ -120,7 +120,7 @@ jobs:
           profile: pixel_2
           disable-animations: true
           script: |
-            adb install -r apk/tapra-employee-v1.2.2.apk
+            adb install -r apk/tapra-employee-v1.2.3.apk
             adb shell pm grant ir.taprasystem.employee android.permission.ACCESS_FINE_LOCATION
             adb shell pm grant ir.taprasystem.employee android.permission.POST_NOTIFICATIONS || true
             adb shell am start -W -n ir.taprasystem.employee/.MainActivity
@@ -147,7 +147,7 @@ jobs:
       - name: Download verified APK
         uses: actions/download-artifact@v4
         with:
-          name: tapra-employee-android-v1.2.2
+          name: tapra-employee-android-v1.2.3
           path: apk
 
       - name: Publish installable APK
@@ -155,11 +155,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          tag="android-test-v1.2.2-${GITHUB_RUN_NUMBER}"
+          tag="android-test-v1.2.3-${GITHUB_RUN_NUMBER}"
           gh release create "$tag" \
-            apk/tapra-employee-v1.2.2.apk \
-            apk/tapra-employee-v1.2.2.apk.sha256 \
+            apk/tapra-employee-v1.2.3.apk \
+            apk/tapra-employee-v1.2.3.apk.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "Tapra Android v1.2.2 (${GITHUB_RUN_NUMBER})" \
+            --title "Tapra Android v1.2.3 (${GITHUB_RUN_NUMBER})" \
             --notes "Installable APK verified on Android 6, Android 10, and Android 15 emulators. Built from ${GITHUB_SHA}."

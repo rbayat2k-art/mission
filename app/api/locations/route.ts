@@ -25,6 +25,10 @@ function validPoint(point: IncomingPoint) {
 export async function POST(request: Request) {
   const auth = await requireRole(request, ["employee", "supervisor", "admin", "owner"]);
   if ("error" in auth) return auth.error;
+  const expectedUserId = request.headers.get("x-tapra-user-id")?.trim();
+  if (expectedUserId && expectedUserId !== auth.user.id) {
+    return Response.json({ error: "حساب فعال برنامه با نشست سرور یکسان نیست." }, { status: 409 });
+  }
   const body = await request.json().catch(() => ({})) as { points?: IncomingPoint[] };
   const incomingPoints = (body.points ?? []).filter(validPoint).slice(0, 100).sort((a, b) => Date.parse(a.recordedAt!) - Date.parse(b.recordedAt!));
   if (!incomingPoints.length) return Response.json({ error: "نقطه موقعیت معتبری دریافت نشد." }, { status: 400 });

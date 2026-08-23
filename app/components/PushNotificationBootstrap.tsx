@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ensurePushDevice, getPushDeviceState, type PushDeviceState } from "../../lib/push-client";
 
-type SettingsResponse = { enabled: boolean; configured: boolean; publicKey: string };
+type SettingsResponse = { userId?: string; enabled: boolean; configured: boolean; publicKey: string };
 type NativeNotificationBridge = {
   isNativeApp?: () => boolean;
   showNativeNotification?: (id: string, title: string, message: string, targetUrl: string) => boolean;
@@ -26,7 +26,7 @@ function isNativeAndroid() {
   catch { return false; }
 }
 
-export default function PushNotificationBootstrap({ active, onMessage, nativeOnly = false }: { active: boolean; onMessage: (message: string) => void; nativeOnly?: boolean }) {
+export default function PushNotificationBootstrap({ active, userId = "", onMessage, nativeOnly = false }: { active: boolean; userId?: string; onMessage: (message: string) => void; nativeOnly?: boolean }) {
   const [state, setState] = useState<PushDeviceState>(getPushDeviceState);
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [busy, setBusy] = useState(false);
@@ -58,19 +58,21 @@ export default function PushNotificationBootstrap({ active, onMessage, nativeOnl
   }, [active, nativeOnly, registerGrantedDevice]);
 
   useEffect(() => {
-    if (!active || !isNativeAndroid()) return;
+    if (!active || !userId || !isNativeAndroid()) return;
     let cancelled = false;
     const pollNativeNotifications = async () => {
       try {
         const bridge = nativeBridge();
         if (!bridge?.showNativeNotification) return;
-        const settingsResponse = await fetch("/api/notifications/settings", { cache: "no-store", credentials: "same-origin" });
+        const headers = { "X-Tapra-User-Id": userId };
+        const settingsResponse = await fetch("/api/notifications/settings", { cache: "no-store", credentials: "same-origin", headers });
         if (!settingsResponse.ok) return;
         const current = await settingsResponse.json() as SettingsResponse;
-        if (!current.enabled || cancelled) return;
-        const response = await fetch("/api/notifications", { cache: "no-store", credentials: "same-origin" });
+        if (current.userId !== userId || !current.enabled || cancelled) return;
+        const response = await fetch("/api/notifications", { cache: "no-store", credentials: "same-origin", headers });
         if (!response.ok || cancelled) return;
-        const body = await response.json() as { notifications?: NotificationItem[] };
+        const body = await response.json() as { userId?:string;notifications?: NotificationItem[] };
+        if (body.userId !== userId) return;
         for (const item of (body.notifications ?? []).filter(item => !item.readAt).slice(0, 5)) {
           const target = item.entityType === "follow_up_request"
             ? "https://taprasystem.ir/?panel=employee&screen=notifications"
@@ -87,7 +89,7 @@ export default function PushNotificationBootstrap({ active, onMessage, nativeOnl
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [active]);
+  }, [active, userId]);
 
   const activate = async () => {
     if (!settings?.configured) return onMessage("ارسال اعلان هنوز روی سرور تنظیم نشده است");

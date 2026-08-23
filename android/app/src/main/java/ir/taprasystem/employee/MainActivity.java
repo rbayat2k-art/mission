@@ -563,6 +563,12 @@ public class MainActivity extends Activity {
     }
 
     private void setTrackingActive(boolean active) {
+        String activeUserId = NativeNotificationHelper.activeUserId(this);
+        if (active && activeUserId.isEmpty()) {
+            Toast.makeText(this,
+                "برای شروع فعالیت دوباره وارد حساب کاربری شوید", Toast.LENGTH_LONG).show();
+            return;
+        }
         if (active && !hasLocationPermission()) {
             requestRuntimePermissions();
             Toast.makeText(this,
@@ -577,9 +583,25 @@ public class MainActivity extends Activity {
             return;
         }
         Intent serviceIntent = new Intent(this, LocationTrackingService.class)
-            .setAction(active ? LocationTrackingService.ACTION_START : LocationTrackingService.ACTION_STOP);
+            .setAction(active ? LocationTrackingService.ACTION_START : LocationTrackingService.ACTION_STOP)
+            .putExtra(LocationTrackingService.EXTRA_USER_ID, activeUserId);
         if (active && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent);
         else startService(serviceIntent);
+    }
+
+    private void setAuthenticatedUser(String userId) {
+        String safeUserId = userId == null ? "" : userId.trim();
+        if (safeUserId.isEmpty() || safeUserId.length() > 64) return;
+        String previousUserId = NativeNotificationHelper.activeUserId(this);
+        if (!previousUserId.isEmpty() && !previousUserId.equals(safeUserId)) {
+            setTrackingActive(false);
+        }
+        NativeNotificationHelper.switchUser(this, safeUserId);
+    }
+
+    private void clearAuthenticatedUser() {
+        setTrackingActive(false);
+        NativeNotificationHelper.clearUser(this);
     }
 
     private boolean isBatteryOptimizationExempt() {
@@ -693,6 +715,16 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean isNativeApp() {
             return true;
+        }
+
+        @JavascriptInterface
+        public void setAuthenticatedUser(String userId) {
+            runOnUiThread(() -> MainActivity.this.setAuthenticatedUser(userId));
+        }
+
+        @JavascriptInterface
+        public void clearAuthenticatedUser() {
+            runOnUiThread(MainActivity.this::clearAuthenticatedUser);
         }
 
         @JavascriptInterface

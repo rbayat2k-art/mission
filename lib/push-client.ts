@@ -35,3 +35,17 @@ export async function ensurePushDevice(publicKey: string) {
   if (!response.ok) throw new Error("ثبت این دستگاه برای اعلان ناموفق بود");
   return subscription;
 }
+
+export async function detachPushDevice() {
+  if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
+  const registration = await navigator.serviceWorker.getRegistration().catch(() => undefined);
+  const subscription = await registration?.pushManager.getSubscription();
+  if (!subscription) return;
+  await fetch("/api/notifications/subscriptions", {
+    method: "DELETE",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint: subscription.endpoint }),
+  }).catch(() => undefined);
+  await subscription.unsubscribe().catch(() => false);
+}
