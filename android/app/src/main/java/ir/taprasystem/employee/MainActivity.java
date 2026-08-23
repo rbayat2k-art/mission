@@ -70,6 +70,10 @@ public class MainActivity extends Activity {
     private boolean permissionRequestInFlight;
     private boolean pageCommitted;
     private boolean mainFrameFailed;
+    private boolean batteryGateVisible;
+    private boolean applicationLoadStarted;
+    private String initialApplicationUrl = APP_URL;
+    private boolean initialClearCache;
     private int automaticRecoveryCount;
 
     private final Runnable loadWatchdog = () -> {
@@ -96,7 +100,9 @@ public class MainActivity extends Activity {
 
         boolean versionChanged = clearStaleCacheAfterUpgrade();
         String savedUrl = savedInstanceState == null ? null : savedInstanceState.getString(SAVED_URL_KEY);
-        loadApplication(isTrustedWebOrigin(savedUrl) ? savedUrl : APP_URL, versionChanged);
+        initialApplicationUrl = isTrustedWebOrigin(savedUrl) ? savedUrl : APP_URL;
+        initialClearCache = versionChanged;
+        enforceBatteryAccessGate();
     }
 
     private void configureSystemBars() {
@@ -159,10 +165,7 @@ public class MainActivity extends Activity {
         retryButton.setTextColor(Color.WHITE);
         retryButton.setBackgroundColor(Color.rgb(55, 103, 233));
         retryButton.setVisibility(View.GONE);
-        retryButton.setOnClickListener(view -> {
-            automaticRecoveryCount = 0;
-            loadApplication(currentSafeUrl(), true);
-        });
+        configurePageRetryButton();
         LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
         retryParams.setMargins(dp(32), 0, dp(32), 0);
@@ -171,6 +174,45 @@ public class MainActivity extends Activity {
         root.addView(statusPanel, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(root);
+    }
+
+    private void configurePageRetryButton() {
+        retryButton.setText("تلاش مجدد");
+        retryButton.setOnClickListener(view -> {
+            automaticRecoveryCount = 0;
+            loadApplication(currentSafeUrl(), true);
+        });
+    }
+
+    private boolean enforceBatteryAccessGate() {
+        if (!isBatteryOptimizationExempt()) {
+            showBatteryRequirement();
+            return false;
+        }
+        if (batteryGateVisible) {
+            batteryGateVisible = false;
+            configurePageRetryButton();
+            webView.setVisibility(View.VISIBLE);
+            statusPanel.setVisibility(View.GONE);
+        }
+        if (!applicationLoadStarted) {
+            applicationLoadStarted = true;
+            loadApplication(initialApplicationUrl, initialClearCache);
+        }
+        return true;
+    }
+
+    private void showBatteryRequirement() {
+        batteryGateVisible = true;
+        mainHandler.removeCallbacks(loadWatchdog);
+        webView.setVisibility(View.GONE);
+        statusPanel.setVisibility(View.VISIBLE);
+        statusProgress.setVisibility(View.GONE);
+        statusTitle.setText("تنظیم باتری برای ورود الزامی است");
+        statusMessage.setText("برای جلوگیری از قطع موقعیت در زمان فعالیت، مصرف باتری برنامه راهکار را روی «بدون محدودیت» قرار دهید. تا تأیید این تنظیم، ورود به برنامه امکان‌پذیر نیست.");
+        retryButton.setText("بازکردن تنظیمات باتری");
+        retryButton.setVisibility(View.VISIBLE);
+        retryButton.setOnClickListener(view -> requestBatteryOptimizationExemption());
     }
 
     private int dp(int value) {
@@ -370,6 +412,10 @@ public class MainActivity extends Activity {
     }
 
     private void loadApplication(String requestedUrl, boolean clearCache) {
+        if (!isBatteryOptimizationExempt()) {
+            showBatteryRequirement();
+            return;
+        }
         mainHandler.removeCallbacks(loadWatchdog);
         pageCommitted = false;
         mainFrameFailed = false;
@@ -553,6 +599,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (webView != null) {
+            if (!enforceBatteryAccessGate()) return;
             webView.onResume();
             if (webView.getUrl() == null || webView.getUrl().trim().isEmpty()) loadApplication(APP_URL, false);
         }

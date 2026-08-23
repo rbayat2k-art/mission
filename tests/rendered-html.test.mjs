@@ -970,7 +970,7 @@ test("allows an authorized manager to cancel an active mission with an audited r
   assert.match(styles, /\.employee-cancelled-mission/);
 });
 
-test("ships an Android 1.2 wrapper that recovers from blank pages and protects background GPS", async () => {
+test("ships an Android 1.2.1 wrapper that blocks access until reliable background GPS is allowed", async () => {
   const [activity, service, manifest, gradle, workflow, page, locations] = await Promise.all([
     readFile(new URL("../android/app/src/main/java/ir/taprasystem/employee/MainActivity.java", import.meta.url), "utf8"),
     readFile(new URL("../android/app/src/main/java/ir/taprasystem/employee/LocationTrackingService.java", import.meta.url), "utf8"),
@@ -988,6 +988,8 @@ test("ships an Android 1.2 wrapper that recovers from blank pages and protects b
   assert.match(activity, /showLoadError/);
   assert.match(activity, /isIgnoringBatteryOptimizations/);
   assert.match(activity, /ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
+  assert.match(activity, /enforceBatteryAccessGate/);
+  assert.match(activity, /تا تأیید این تنظیم، ورود به برنامه امکان‌پذیر نیست/);
   assert.doesNotMatch(activity, /webView\.restoreState/);
   assert.match(manifest, /android:hardwareAccelerated="true"/);
   assert.match(manifest, /REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
@@ -997,10 +999,12 @@ test("ships an Android 1.2 wrapper that recovers from blank pages and protects b
   assert.match(page, /موقعیت غیرواقعی شناسایی شد/);
   assert.match(locations, /mock_location_detected/);
   assert.match(locations, /rejectedMocked/);
-  assert.match(gradle, /versionCode 4/);
-  assert.match(gradle, /versionName '1\.2\.0'/);
+  assert.match(gradle, /versionCode 5/);
+  assert.match(gradle, /versionName '1\.2\.1'/);
   assert.match(workflow, /matrix:\s*\n\s*api-level: \[23, 29, 35\]/);
   assert.match(workflow, /uiautomator dump/);
+  assert.match(workflow, /tapra-battery-gate-api/);
+  assert.match(workflow, /deviceidle whitelist \+ir\.taprasystem\.employee/);
   assert.match(workflow, /POST_NOTIFICATIONS \|\| true/);
-  assert.match(workflow, /tapra-employee-v1\.2\.0\.apk/);
+  assert.match(workflow, /tapra-employee-v1\.2\.1\.apk/);
 });

@@ -77,18 +77,18 @@ jobs:
           build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
           "$build_tools/apksigner" verify --verbose --print-certs "$apk"
           "$build_tools/aapt" dump badging "$apk" | tee apk-badging.txt
-          grep -q "package: name='ir.taprasystem.employee' versionCode='4' versionName='1.2.0'" apk-badging.txt
+          grep -q "package: name='ir.taprasystem.employee' versionCode='5' versionName='1.2.1'" apk-badging.txt
           grep -q "sdkVersion:'23'" apk-badging.txt
-          cp "$apk" tapra-employee-v1.2.0.apk
-          sha256sum tapra-employee-v1.2.0.apk | tee tapra-employee-v1.2.0.apk.sha256
+          cp "$apk" tapra-employee-v1.2.1.apk
+          sha256sum tapra-employee-v1.2.1.apk | tee tapra-employee-v1.2.1.apk.sha256
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: tapra-employee-android-v1.2.0
+          name: tapra-employee-android-v1.2.1
           path: |
-            android/tapra-employee-v1.2.0.apk
-            android/tapra-employee-v1.2.0.apk.sha256
+            android/tapra-employee-v1.2.1.apk
+            android/tapra-employee-v1.2.1.apk.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -104,7 +104,7 @@ jobs:
       - name: Download APK
         uses: actions/download-artifact@v4
         with:
-          name: tapra-employee-android-v1.2.0
+          name: tapra-employee-android-v1.2.1
           path: apk
 
       - name: Enable Android emulator acceleration
@@ -118,9 +118,16 @@ jobs:
           profile: pixel_2
           disable-animations: true
           script: |
-            adb install -r apk/tapra-employee-v1.2.0.apk
+            adb install -r apk/tapra-employee-v1.2.1.apk
             adb shell pm grant ir.taprasystem.employee android.permission.ACCESS_FINE_LOCATION
             adb shell pm grant ir.taprasystem.employee android.permission.POST_NOTIFICATIONS || true
+            adb shell am start -W -n ir.taprasystem.employee/.MainActivity
+            sleep 2
+            adb shell uiautomator dump /sdcard/tapra-battery-gate.xml
+            adb pull /sdcard/tapra-battery-gate.xml tapra-battery-gate-api-${{ matrix.api-level }}.xml
+            grep -q "تنظیم باتری برای ورود الزامی است" tapra-battery-gate-api-${{ matrix.api-level }}.xml
+            adb shell dumpsys deviceidle whitelist +ir.taprasystem.employee
+            adb shell am force-stop ir.taprasystem.employee
             adb shell am start -W -n ir.taprasystem.employee/.MainActivity
             sleep 15
             if adb logcat -d -t 500 | grep -A 20 "FATAL EXCEPTION" | grep -q "ir.taprasystem.employee"; then adb logcat -d -t 500; exit 1; fi
@@ -128,7 +135,7 @@ jobs:
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
             adb shell uiautomator dump /sdcard/tapra-ui.xml
             adb pull /sdcard/tapra-ui.xml tapra-ui-api-${{ matrix.api-level }}.xml
-            if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" tapra-ui-api-${{ matrix.api-level }}.xml; then cat tapra-ui-api-${{ matrix.api-level }}.xml; exit 1; fi
+            if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار|تنظیم باتری برای ورود الزامی است" tapra-ui-api-${{ matrix.api-level }}.xml; then cat tapra-ui-api-${{ matrix.api-level }}.xml; exit 1; fi
 
   publish:
     needs: install-smoke-test
@@ -138,7 +145,7 @@ jobs:
       - name: Download verified APK
         uses: actions/download-artifact@v4
         with:
-          name: tapra-employee-android-v1.2.0
+          name: tapra-employee-android-v1.2.1
           path: apk
 
       - name: Publish installable APK
@@ -146,11 +153,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          tag="android-test-v1.2.0-${GITHUB_RUN_NUMBER}"
+          tag="android-test-v1.2.1-${GITHUB_RUN_NUMBER}"
           gh release create "$tag" \
-            apk/tapra-employee-v1.2.0.apk \
-            apk/tapra-employee-v1.2.0.apk.sha256 \
+            apk/tapra-employee-v1.2.1.apk \
+            apk/tapra-employee-v1.2.1.apk.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "Tapra Android v1.2.0 (${GITHUB_RUN_NUMBER})" \
+            --title "Tapra Android v1.2.1 (${GITHUB_RUN_NUMBER})" \
             --notes "Installable APK verified on Android 6, Android 10, and Android 15 emulators. Built from ${GITHUB_SHA}."
