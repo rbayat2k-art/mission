@@ -115,11 +115,13 @@ public class LocationTrackingService extends Service implements LocationListener
     public void onLocationChanged(Location location) {
         if (location == null || !preferences.getBoolean("tracking_requested", false)) return;
         try {
+            boolean mocked = isMockLocation(location);
             JSONObject point = new JSONObject();
             point.put("clientEventId", UUID.randomUUID().toString());
             point.put("latitude", location.getLatitude());
             point.put("longitude", location.getLongitude());
             point.put("accuracy", Math.max(0, location.getAccuracy()));
+            point.put("mocked", mocked);
             if (location.hasAltitude()) point.put("altitude", location.getAltitude());
             else point.put("altitude", JSONObject.NULL);
             if (location.hasSpeed()) point.put("speed", location.getSpeed());
@@ -128,9 +130,17 @@ public class LocationTrackingService extends Service implements LocationListener
             else point.put("heading", JSONObject.NULL);
             point.put("recordedAt", isoTimestamp(location.getTime()));
             appendPoint(point);
-            updateNotification("آخرین موقعیت ثبت شد · دقت " + Math.round(location.getAccuracy()) + " متر");
+            updateNotification(mocked
+                ? "موقعیت غیرواقعی شناسایی شد؛ این نقطه در کارکرد پذیرفته نمی‌شود"
+                : "آخرین موقعیت ثبت شد · دقت " + Math.round(location.getAccuracy()) + " متر");
             flushQueue();
         } catch (Exception ignored) { }
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean isMockLocation(Location location) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return location.isMock();
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2 && location.isFromMockProvider();
     }
 
     @Override

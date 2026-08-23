@@ -12,6 +12,7 @@ type IncomingPoint = {
   speed?: number | null;
   heading?: number | null;
   recordedAt?: string;
+  mocked?: boolean;
 };
 
 function validPoint(point: IncomingPoint) {
@@ -25,8 +26,10 @@ export async function POST(request: Request) {
   const auth = await requireRole(request, ["employee", "supervisor", "admin", "owner"]);
   if ("error" in auth) return auth.error;
   const body = await request.json().catch(() => ({})) as { points?: IncomingPoint[] };
-  const points = (body.points ?? []).filter(validPoint).slice(0, 100).sort((a, b) => Date.parse(a.recordedAt!) - Date.parse(b.recordedAt!));
-  if (!points.length) return Response.json({ error: "نقطه موقعیت معتبری دریافت نشد." }, { status: 400 });
+  const incomingPoints = (body.points ?? []).filter(validPoint).slice(0, 100).sort((a, b) => Date.parse(a.recordedAt!) - Date.parse(b.recordedAt!));
+  if (!incomingPoints.length) return Response.json({ error: "نقطه موقعیت معتبری دریافت نشد." }, { status: 400 });
+  const mockedPoints = incomingPoints.filter((point) => point.mocked === true);
+  const points = incomingPoints.filter((point) => point.mocked !== true);
 
   const db = await ensureDatabase();
   const session = await db.prepare("SELECT id FROM work_sessions WHERE user_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1").bind(auth.user.id).first<{ id: string }>();
@@ -41,9 +44,9 @@ export async function POST(request: Request) {
     new Date(point.recordedAt!).toISOString(), receivedAt,
   ));
 
-  const firstRecorded = new Date(points[0].recordedAt!).toISOString();
+  const firstRecorded = points.length ? new Date(points[0].recordedAt!).toISOString() : null;
   let gapNotification: { id:string; gapMinutes:number } | null = null;
-  if (previous && Date.parse(firstRecorded) - Date.parse(previous.recordedAt) > GPS_GAP_GRACE_MINUTES * 60_000) {
+  if (previous && firstRecorded && Date.parse(firstRecorded) - Date.parse(previous.recordedAt) > GPS_GAP_GRACE_MINUTES * 60_000) {
     const gapMinutes = Math.round((Date.parse(firstRecorded) - Date.parse(previous.recordedAt)) / 60_000);
     const eventId = crypto.randomUUID();
     statements.push(db.prepare("INSERT INTO integrity_events (id, user_id, work_session_id, type, severity, details, occurred_at, created_at) VALUES (?, ?, ?, 'gps_gap', 'high', ?, ?, ?)").bind(
@@ -57,14 +60,32 @@ export async function POST(request: Request) {
       crypto.randomUUID(), auth.user.id, session.id, JSON.stringify({ accuracy: Math.round(inaccurate.accuracy!) }), inaccurate.recordedAt!, receivedAt,
     ));
   }
-  await db.batch(statements);
+  let mockNotification: { id:string; count:number } | null = null;
+  if (mockedPoints.length) {
+    const existing = await db.prepare("SELECT id FROM integrity_events WHERE user_id = ? AND work_session_id = ? AND type = 'mock_location_detected' AND status = 'open' ORDER BY created_at DESC LIMIT 1").bind(auth.user.id, session.id).first<{id:string}>();
+    if (!existing) {
+      const eventId = crypto.randomUUID();
+      statements.push(db.prepare("INSERT INTO integrity_events (id, user_id, work_session_id, type, severity, details, occurred_at, created_at) VALUES (?, ?, ?, 'mock_location_detected', 'high', ?, ?, ?)").bind(
+        eventId, auth.user.id, session.id,
+        JSON.stringify({ rejectedPoints: mockedPoints.length, providerReportedMock: true }),
+        new Date(mockedPoints[0].recordedAt!).toISOString(), receivedAt,
+      ));
+      mockNotification = { id:eventId, count:mockedPoints.length };
+    }
+  }
+  if (statements.length) await db.batch(statements);
   if (gapNotification) await createManagerIntegrityNotifications(auth.user.id, {
     type:"gps_gap", title:"وقفه GPS کارمند ثبت شد",
     message:`${auth.user.fullName}: ثبت GPS پس از ${gapNotification.gapMinutes.toLocaleString("fa-IR")} دقیقه از سر گرفته شد.`,
     entityId:gapNotification.id, url:"/?panel=admin&screen=integrity",
   });
+  if (mockNotification) await createManagerIntegrityNotifications(auth.user.id, {
+    type:"mock_location_detected", title:"موقعیت غیرواقعی شناسایی شد",
+    message:`${auth.user.fullName}: برنامه اندروید ${mockNotification.count.toLocaleString("fa-IR")} نقطه GPS جعلی را شناسایی و از کارکرد حذف کرد.`,
+    entityId:mockNotification.id, url:"/?panel=admin&screen=integrity",
+  });
   const reconciliation = await reconcileNineHourLimit(auth.user.id, new Date(receivedAt));
-  return Response.json({ accepted: points.length, receivedAt, autoEnded: reconciliation.autoEnded, endedAt: reconciliation.autoEnded ? reconciliation.endedAt : null }, { status: 201 });
+  return Response.json({ accepted: points.length, rejectedMocked: mockedPoints.length, receivedAt, autoEnded: reconciliation.autoEnded, endedAt: reconciliation.autoEnded ? reconciliation.endedAt : null }, { status: 201 });
 }
 
 export async function GET(request: Request) {

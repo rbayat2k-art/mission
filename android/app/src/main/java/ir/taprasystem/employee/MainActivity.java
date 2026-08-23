@@ -17,6 +17,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
@@ -479,10 +480,36 @@ public class MainActivity extends Activity {
                 "برای ثبت فعالیت، دسترسی موقعیت دقیق را مجاز کنید", Toast.LENGTH_LONG).show();
             return;
         }
+        if (active && !isBatteryOptimizationExempt()) {
+            requestBatteryOptimizationExemption();
+            Toast.makeText(this,
+                "برای ادامه ردیابی پس‌زمینه، مصرف باتری راهکار را روی بدون محدودیت قرار دهید",
+                Toast.LENGTH_LONG).show();
+            return;
+        }
         Intent serviceIntent = new Intent(this, LocationTrackingService.class)
             .setAction(active ? LocationTrackingService.ACTION_START : LocationTrackingService.ACTION_STOP);
         if (active && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent);
         else startService(serviceIntent);
+    }
+
+    private boolean isBatteryOptimizationExempt() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true;
+        PowerManager manager = (PowerManager) getSystemService(POWER_SERVICE);
+        return manager != null && manager.isIgnoringBatteryOptimizations(getPackageName());
+    }
+
+    private void requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || isBatteryOptimizationExempt()) return;
+        try {
+            Intent request = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                Uri.parse("package:" + getPackageName()));
+            startActivity(request);
+        } catch (Exception unavailable) {
+            Intent fallback = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", getPackageName(), null));
+            startActivity(fallback);
+        }
     }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
@@ -570,6 +597,16 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean isLocationPermissionGranted() {
             return hasLocationPermission();
+        }
+
+        @JavascriptInterface
+        public boolean isBatteryOptimizationExempt() {
+            return MainActivity.this.isBatteryOptimizationExempt();
+        }
+
+        @JavascriptInterface
+        public void requestBatteryOptimizationExemption() {
+            runOnUiThread(MainActivity.this::requestBatteryOptimizationExemption);
         }
 
         @JavascriptInterface
