@@ -8,6 +8,7 @@ type NativeNotificationBridge = {
   isNotificationPermissionGranted?: () => boolean;
   requestNotificationPermission?: () => void;
   openNotificationSettings?: () => void;
+  showNativeNotification?: (id: string, title: string, message: string, targetUrl: string) => boolean;
 };
 
 function nativeBridge() {
@@ -18,6 +19,17 @@ function nativeBridge() {
 function isNativeAndroid() {
   try { return nativeBridge()?.isNativeApp?.() === true; }
   catch { return false; }
+}
+
+function showNativeActivationTest() {
+  try {
+    nativeBridge()?.showNativeNotification?.(
+      `tapra-notification-test-${Date.now()}`,
+      "اعلان‌های راهکار فعال شد",
+      "از این پس مأموریت، ارجاع و پیام جدید روی صفحه گوشی نمایش داده می‌شود.",
+      "https://taprasystem.ir/?panel=employee&screen=notifications",
+    );
+  } catch { /* The browser version intentionally has no Android notification bridge. */ }
 }
 
 export default function NotificationSettings({
@@ -98,7 +110,10 @@ export default function NotificationSettings({
         return;
       }
       saveEnabled(true)
-        .then(() => onMessage("اعلان‌های اندروید راهکار روی این گوشی فعال شد"))
+        .then(() => {
+          showNativeActivationTest();
+          onMessage("اعلان‌های اندروید راهکار روی این گوشی فعال شد");
+        })
         .catch(error => onMessage(error instanceof Error ? error.message : "فعال‌سازی اعلان ناموفق بود"));
     };
     window.addEventListener("tapra-notification-permission-changed", permissionChanged);
@@ -119,6 +134,7 @@ export default function NotificationSettings({
         if (bridge.isNotificationPermissionGranted()) {
           setPermission("granted");
           await saveEnabled(true);
+          showNativeActivationTest();
           onMessage("اعلان‌های اندروید راهکار روی این گوشی فعال است");
           setBusy(false);
           return;

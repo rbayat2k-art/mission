@@ -1017,6 +1017,8 @@ test("ships an Android 1.2.2 wrapper with reliable background GPS and native pho
   assert.match(locations, /rejectedMocked/);
   assert.match(notificationSettings, /isNotificationPermissionGranted/);
   assert.match(notificationSettings, /requestNotificationPermission/);
+  assert.match(notificationSettings, /showNativeActivationTest/);
+  assert.match(notificationSettings, /اعلان‌های راهکار فعال شد/);
   assert.match(notificationSettings, /اعلان‌های اندروید راهکار روی این گوشی فعال شد/);
   assert.match(bootstrap, /showNativeNotification/);
   assert.match(bootstrap, /setInterval\(pollNativeNotifications, 30_000\)/);
