@@ -969,3 +969,25 @@ test("allows an authorized manager to cancel an active mission with an audited r
   assert.match(page, /لغوشده توسط مدیریت/);
   assert.match(styles, /\.employee-cancelled-mission/);
 });
+
+test("ships an Android 1.2 wrapper that recovers from stale cache and blank WebView pages", async () => {
+  const [activity, manifest, gradle, workflow] = await Promise.all([
+    readFile(new URL("../android/app/src/main/java/ir/taprasystem/employee/MainActivity.java", import.meta.url), "utf8"),
+    readFile(new URL("../android/app/src/main/AndroidManifest.xml", import.meta.url), "utf8"),
+    readFile(new URL("../android/app/build.gradle", import.meta.url), "utf8"),
+    readFile(new URL("../.github/workflows/android-apk.yml", import.meta.url), "utf8"),
+  ]);
+  assert.match(activity, /clearStaleCacheAfterUpgrade/);
+  assert.match(activity, /verifyRenderedPage/);
+  assert.match(activity, /recoverFromBlankPage/);
+  assert.match(activity, /PAGE_LOAD_TIMEOUT_MS = 30_000L/);
+  assert.match(activity, /onRenderProcessGone/);
+  assert.match(activity, /showLoadError/);
+  assert.doesNotMatch(activity, /webView\.restoreState/);
+  assert.match(manifest, /android:hardwareAccelerated="true"/);
+  assert.match(gradle, /versionCode 4/);
+  assert.match(gradle, /versionName '1\.2\.0'/);
+  assert.match(workflow, /matrix:\s*\n\s*api-level: \[23, 29, 35\]/);
+  assert.match(workflow, /uiautomator dump/);
+  assert.match(workflow, /tapra-employee-v1\.2\.0\.apk/);
+});

@@ -2,26 +2,42 @@ package ir.taprasystem.employee;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.net.Uri;
+import android.net.http.SslError;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
+import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.GeolocationPermissions;
-import android.webkit.JavascriptInterface;
+import android.webkit.RenderProcessGoneDetail;
+import android.webkit.SslErrorHandler;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Button;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.ArrayList;
@@ -31,14 +47,32 @@ public class MainActivity extends Activity {
     private static final String APP_URL = "https://taprasystem.ir/";
     private static final String INTERNAL_BROADCAST_PERMISSION =
         "ir.taprasystem.employee.permission.INTERNAL_BROADCAST";
+    private static final String SAVED_URL_KEY = "tapra:last-safe-url";
+    private static final String INSTALLED_VERSION_KEY = "installed_native_version";
     private static final int PERMISSION_REQUEST = 41;
     private static final int FILE_CHOOSER_REQUEST = 42;
+    private static final long PAGE_LOAD_TIMEOUT_MS = 30_000L;
+    private static final int MAX_AUTOMATIC_RECOVERIES = 2;
 
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private WebView webView;
+    private LinearLayout statusPanel;
+    private ProgressBar statusProgress;
+    private TextView statusTitle;
+    private TextView statusMessage;
+    private Button retryButton;
     private ValueCallback<Uri[]> filePathCallback;
     private GeolocationPermissions.Callback pendingGeolocationCallback;
     private String pendingGeolocationOrigin;
     private boolean receiverRegistered;
+    private boolean permissionRequestInFlight;
+    private boolean pageCommitted;
+    private boolean mainFrameFailed;
+    private int automaticRecoveryCount;
+
+    private final Runnable loadWatchdog = () -> {
+        if (!pageCommitted && !mainFrameFailed) recoverFromBlankPage("زمان دریافت صفحه طولانی شد.");
+    };
 
     private final BroadcastReceiver trackingReceiver = new BroadcastReceiver() {
         @Override
@@ -53,18 +87,14 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         configureSystemBars();
-        webView = new WebView(this);
-        webView.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
-        setContentView(webView);
+        createApplicationShell();
         configureWebView();
         registerTrackingReceiver();
         requestRuntimePermissions();
 
-        if (savedInstanceState == null) {
-            webView.loadUrl(APP_URL);
-        } else {
-            webView.restoreState(savedInstanceState);
-        }
+        boolean versionChanged = clearStaleCacheAfterUpgrade();
+        String savedUrl = savedInstanceState == null ? null : savedInstanceState.getString(SAVED_URL_KEY);
+        loadApplication(isTrustedWebOrigin(savedUrl) ? savedUrl : APP_URL, versionChanged);
     }
 
     private void configureSystemBars() {
@@ -73,6 +103,89 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void createApplicationShell() {
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.rgb(239, 244, 252));
+
+        webView = new WebView(this);
+        webView.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        webView.setBackgroundColor(Color.WHITE);
+        root.addView(webView, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        statusPanel = new LinearLayout(this);
+        statusPanel.setOrientation(LinearLayout.VERTICAL);
+        statusPanel.setGravity(Gravity.CENTER);
+        statusPanel.setPadding(dp(30), dp(30), dp(30), dp(30));
+        statusPanel.setBackgroundColor(Color.rgb(239, 244, 252));
+
+        TextView logo = new TextView(this);
+        logo.setText("ر");
+        logo.setTextColor(Color.WHITE);
+        logo.setTextSize(25);
+        logo.setGravity(Gravity.CENTER);
+        logo.setBackgroundColor(Color.rgb(55, 103, 233));
+        LinearLayout.LayoutParams logoParams = new LinearLayout.LayoutParams(dp(64), dp(64));
+        logoParams.bottomMargin = dp(20);
+        statusPanel.addView(logo, logoParams);
+
+        statusProgress = new ProgressBar(this);
+        LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(dp(42), dp(42));
+        progressParams.bottomMargin = dp(18);
+        statusPanel.addView(statusProgress, progressParams);
+
+        statusTitle = new TextView(this);
+        statusTitle.setText("در حال بازکردن راهکار…");
+        statusTitle.setTextColor(Color.rgb(15, 29, 51));
+        statusTitle.setTextSize(19);
+        statusTitle.setGravity(Gravity.CENTER);
+        statusPanel.addView(statusTitle, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        statusMessage = new TextView(this);
+        statusMessage.setText("چند لحظه منتظر بمانید");
+        statusMessage.setTextColor(Color.rgb(98, 116, 145));
+        statusMessage.setTextSize(13);
+        statusMessage.setGravity(Gravity.CENTER);
+        statusMessage.setPadding(0, dp(10), 0, dp(18));
+        statusPanel.addView(statusMessage, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        retryButton = new Button(this);
+        retryButton.setText("تلاش مجدد");
+        retryButton.setTextSize(15);
+        retryButton.setTextColor(Color.WHITE);
+        retryButton.setBackgroundColor(Color.rgb(55, 103, 233));
+        retryButton.setVisibility(View.GONE);
+        retryButton.setOnClickListener(view -> {
+            automaticRecoveryCount = 0;
+            loadApplication(currentSafeUrl(), true);
+        });
+        LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        retryParams.setMargins(dp(32), 0, dp(32), 0);
+        statusPanel.addView(retryButton, retryParams);
+
+        root.addView(statusPanel, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(root);
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    private boolean clearStaleCacheAfterUpgrade() {
+        String installed = getSharedPreferences("tapra_native_app", MODE_PRIVATE)
+            .getString(INSTALLED_VERSION_KEY, "");
+        if (BuildConfig.VERSION_NAME.equals(installed)) return false;
+        webView.clearCache(true);
+        getSharedPreferences("tapra_native_app", MODE_PRIVATE).edit()
+            .putString(INSTALLED_VERSION_KEY, BuildConfig.VERSION_NAME).apply();
+        return true;
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
     private void configureWebView() {
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -82,6 +195,9 @@ public class MainActivity extends Activity {
         settings.setAllowContentAccess(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        settings.setLoadWithOverviewMode(false);
+        settings.setUseWideViewPort(true);
         settings.setUserAgentString(settings.getUserAgentString() + " TapraAndroid/" + BuildConfig.VERSION_NAME);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) settings.setSafeBrowsingEnabled(true);
 
@@ -102,6 +218,22 @@ public class MainActivity extends Activity {
             }
 
             @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                super.onPageStarted(view, url, favicon);
+                pageCommitted = false;
+                mainFrameFailed = false;
+                showLoading("در حال دریافت آخرین نسخه سامانه…");
+                scheduleLoadWatchdog();
+            }
+
+            @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                super.onPageCommitVisible(view, url);
+                pageCommitted = true;
+                mainHandler.removeCallbacks(loadWatchdog);
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 CookieManager.getInstance().flush();
@@ -111,6 +243,49 @@ public class MainActivity extends Activity {
                     GeolocationPermissions.getInstance().allow(origin);
                 }
                 view.evaluateJavascript("window.dispatchEvent(new CustomEvent('tapra-native-ready'))", null);
+                mainHandler.postDelayed(() -> verifyRenderedPage(view), 900L);
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if (request.isForMainFrame()) {
+                    String details = error == null ? "" : String.valueOf(error.getDescription());
+                    showLoadError("ارتباط با سامانه برقرار نشد.", details);
+                }
+            }
+
+            @Override
+            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+                super.onReceivedError(view, errorCode, description, failingUrl);
+                if (failingUrl != null && failingUrl.equals(view.getUrl())) {
+                    showLoadError("ارتباط با سامانه برقرار نشد.", description);
+                }
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse response) {
+                super.onReceivedHttpError(view, request, response);
+                if (request.isForMainFrame() && response.getStatusCode() >= 400) {
+                    showLoadError("سرور پاسخ مناسبی نداد.", "کد خطا: " + response.getStatusCode());
+                }
+            }
+
+            @Override
+            public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
+                handler.cancel();
+                showLoadError("اتصال امن سایت تأیید نشد.", "تاریخ و ساعت گوشی و اتصال اینترنت را بررسی کنید.");
+            }
+
+            @Override
+            @TargetApi(Build.VERSION_CODES.O)
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                mainHandler.removeCallbacks(loadWatchdog);
+                Toast.makeText(MainActivity.this,
+                    "نمایشگر برنامه دوباره راه‌اندازی شد", Toast.LENGTH_LONG).show();
+                view.destroy();
+                recreate();
+                return true;
             }
         });
         webView.setWebChromeClient(new WebChromeClient() {
@@ -143,7 +318,8 @@ public class MainActivity extends Activity {
                     startActivityForResult(intent, FILE_CHOOSER_REQUEST);
                 } catch (Exception error) {
                     filePathCallback = null;
-                    Toast.makeText(MainActivity.this, "انتخاب فایل در این گوشی در دسترس نیست", Toast.LENGTH_LONG).show();
+                    Toast.makeText(MainActivity.this,
+                        "انتخاب فایل در این گوشی در دسترس نیست", Toast.LENGTH_LONG).show();
                     return false;
                 }
                 return true;
@@ -156,6 +332,80 @@ public class MainActivity extends Activity {
                 Toast.makeText(this, "برنامه‌ای برای بازکردن فایل پیدا نشد", Toast.LENGTH_LONG).show();
             }
         });
+    }
+
+    private void verifyRenderedPage(WebView view) {
+        if (mainFrameFailed || view != webView) return;
+        view.evaluateJavascript(
+            "Boolean(document.body && document.body.innerText && document.body.innerText.trim().length > 8)",
+            rendered -> {
+                if ("true".equals(rendered)) {
+                    pageCommitted = true;
+                    automaticRecoveryCount = 0;
+                    mainHandler.removeCallbacks(loadWatchdog);
+                    statusPanel.setVisibility(View.GONE);
+                    webView.setVisibility(View.VISIBLE);
+                } else {
+                    recoverFromBlankPage("محتوای صفحه نمایش داده نشد.");
+                }
+            });
+    }
+
+    private void scheduleLoadWatchdog() {
+        mainHandler.removeCallbacks(loadWatchdog);
+        mainHandler.postDelayed(loadWatchdog, PAGE_LOAD_TIMEOUT_MS);
+    }
+
+    private void recoverFromBlankPage(String reason) {
+        if (automaticRecoveryCount >= MAX_AUTOMATIC_RECOVERIES) {
+            showLoadError("صفحه سامانه بارگذاری نشد.",
+                reason + " اینترنت یا Android System WebView را بررسی کنید.");
+            return;
+        }
+        automaticRecoveryCount++;
+        webView.clearCache(true);
+        loadApplication(currentSafeUrl(), false);
+    }
+
+    private void loadApplication(String requestedUrl, boolean clearCache) {
+        mainHandler.removeCallbacks(loadWatchdog);
+        pageCommitted = false;
+        mainFrameFailed = false;
+        if (clearCache) webView.clearCache(true);
+        showLoading("در حال دریافت آخرین نسخه سامانه…");
+        Uri base = Uri.parse(isTrustedWebOrigin(requestedUrl) ? requestedUrl : APP_URL);
+        Uri target = base.buildUpon()
+            .appendQueryParameter("native_app", "android")
+            .appendQueryParameter("native_version", BuildConfig.VERSION_NAME)
+            .appendQueryParameter("native_refresh", String.valueOf(System.currentTimeMillis()))
+            .build();
+        webView.loadUrl(target.toString());
+        scheduleLoadWatchdog();
+    }
+
+    private String currentSafeUrl() {
+        String current = webView == null ? null : webView.getUrl();
+        return isTrustedWebOrigin(current) ? current : APP_URL;
+    }
+
+    private void showLoading(String message) {
+        statusPanel.setVisibility(View.VISIBLE);
+        statusProgress.setVisibility(View.VISIBLE);
+        retryButton.setVisibility(View.GONE);
+        statusTitle.setText("در حال بازکردن راهکار…");
+        statusMessage.setText(message);
+    }
+
+    private void showLoadError(String title, String details) {
+        mainFrameFailed = true;
+        pageCommitted = false;
+        mainHandler.removeCallbacks(loadWatchdog);
+        statusPanel.setVisibility(View.VISIBLE);
+        statusProgress.setVisibility(View.GONE);
+        retryButton.setVisibility(View.VISIBLE);
+        statusTitle.setText(title);
+        statusMessage.setText(details == null || details.trim().isEmpty()
+            ? "اتصال اینترنت را بررسی کنید و دوباره تلاش کنید." : details);
     }
 
     private boolean openExternalWhenNeeded(Uri uri) {
@@ -172,7 +422,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean isTrustedWebOrigin(String origin) {
-        if (origin == null) return false;
+        if (origin == null || origin.trim().isEmpty()) return false;
         Uri uri = Uri.parse(origin);
         String host = uri.getHost();
         return "https".equalsIgnoreCase(uri.getScheme()) &&
@@ -190,13 +440,17 @@ public class MainActivity extends Activity {
     }
 
     private void requestRuntimePermissions() {
+        if (permissionRequestInFlight) return;
         List<String> permissions = new ArrayList<>();
         if (!hasLocationPermission()) permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS);
         }
-        if (!permissions.isEmpty()) requestPermissions(permissions.toArray(new String[0]), PERMISSION_REQUEST);
+        if (!permissions.isEmpty()) {
+            permissionRequestInFlight = true;
+            requestPermissions(permissions.toArray(new String[0]), PERMISSION_REQUEST);
+        }
     }
 
     private boolean hasLocationPermission() {
@@ -208,6 +462,7 @@ public class MainActivity extends Activity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode != PERMISSION_REQUEST) return;
+        permissionRequestInFlight = false;
         boolean locationGranted = hasLocationPermission();
         resolvePendingGeolocation(locationGranted);
         if (locationGranted && webView != null) {
@@ -219,7 +474,8 @@ public class MainActivity extends Activity {
     private void setTrackingActive(boolean active) {
         if (active && !hasLocationPermission()) {
             requestRuntimePermissions();
-            Toast.makeText(this, "برای ثبت فعالیت، دسترسی موقعیت دقیق را مجاز کنید", Toast.LENGTH_LONG).show();
+            Toast.makeText(this,
+                "برای ثبت فعالیت، دسترسی موقعیت دقیق را مجاز کنید", Toast.LENGTH_LONG).show();
             return;
         }
         Intent serviceIntent = new Intent(this, LocationTrackingService.class)
@@ -260,8 +516,24 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onSaveInstanceState(Bundle outState) {
-        webView.saveState(outState);
+        String current = currentSafeUrl();
+        if (isTrustedWebOrigin(current)) outState.putString(SAVED_URL_KEY, current);
         super.onSaveInstanceState(outState);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (webView != null) {
+            webView.onResume();
+            if (webView.getUrl() == null || webView.getUrl().trim().isEmpty()) loadApplication(APP_URL, false);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        if (webView != null) webView.onPause();
+        super.onPause();
     }
 
     @Override
@@ -272,8 +544,14 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        mainHandler.removeCallbacks(loadWatchdog);
         resolvePendingGeolocation(false);
         if (receiverRegistered) unregisterReceiver(trackingReceiver);
+        if (webView != null) {
+            webView.removeJavascriptInterface("TapraAndroid");
+            webView.stopLoading();
+            webView.destroy();
+        }
         super.onDestroy();
     }
 

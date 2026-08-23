@@ -18,7 +18,8 @@
 gradlew.bat clean lintDebug testDebugUnitTest assembleDebug
 ```
 
-خروجی در `app/build/outputs/apk/debug/app-debug.apk` قرار می‌گیرد.
+خروجی در `app/build/outputs/apk/debug/app-debug.apk` قرار می‌گیرد. نسخه ۱.۲.۰ در صورت
+خرابی WebView، کش قدیمی یا قطع اینترنت دیگر صفحه سفید نشان نمی‌دهد و امکان تلاش مجدد دارد.
 
 ## مجوزهای لازم روی گوشی
 
