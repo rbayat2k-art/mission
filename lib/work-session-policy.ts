@@ -95,6 +95,7 @@ export async function getDailyWorkMetrics(userId: string, now = new Date()) {
     start, end, sessions, intervals,
     firstStartAt: sessions[0] ? new Date(Math.max(Date.parse(sessions[0].startedAt), Date.parse(start))).toISOString() : null,
     lastEndAt: [...sessions].reverse().find(session => session.endedAt)?.endedAt ?? null,
+    activeSeconds: Math.floor(intervalMilliseconds / 1_000),
     activeMinutes: Math.floor(intervalMilliseconds / 60_000),
     regularMinutes: Math.floor(regularMilliseconds / 60_000),
     overtimeMinutes: Math.floor(overtimeMilliseconds / 60_000),

@@ -37,7 +37,7 @@ export async function GET(request: Request) {
     current,
     autoEnded: reconciliation.autoEnded,
     today: {
-      activeMinutes: today.activeMinutes, firstStartAt: today.firstStartAt,
+      activeSeconds: today.activeSeconds, activeMinutes: today.activeMinutes, firstStartAt: today.firstStartAt,
       lastEndAt: today.lastEndAt,
       requiredMinutes: today.requiredMinutes, overtimeStartsAtMinutes: today.overtimeStartsAtMinutes,
       overtimeMinutes: today.overtimeMinutes, unverifiedGpsMinutes: today.unverifiedGpsMinutes,

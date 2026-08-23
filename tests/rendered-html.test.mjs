@@ -214,18 +214,19 @@ test("shows an employee daily report and requires confirmation with a note befor
 });
 
 test("locks mission work outside an active shift and reports daily weekly and monthly hours", async () => {
-  const [page, startRoute, completeRoute, summaryRoute, summaryHelper, workSessions] = await Promise.all([
+  const [page, startRoute, completeRoute, summaryRoute, summaryHelper, workSessions, workPolicy] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/missions/[id]/start/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/missions/[id]/complete/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/employee/daily-summary/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/employee-daily-summary.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/work-sessions/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/work-session-policy.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /if \(!working\) return notify\("برای شروع کار روی مأموریت/);
   assert.match(page, /disabled=\{!working \|\| destinationSaving\} onClick=\{registerDestination\}/);
-  assert.match(page, /formatDurationSeconds\(todayWorkMinutes\*60\+\(working\?Math\.max\(0,\(clockTick-workMinutesSyncedAt\)\/1000\):0\)\)/);
+  assert.match(page, /formatDurationSeconds\(todayWorkSeconds\+\(working\?Math\.max\(0,\(clockTick-workMinutesSyncedAt\)\/1000\):0\)\)/);
   assert.match(page, /ورود \$\{formatPersianTime\(todayFirstStartAt\)\} · خروج/);
   assert.match(page, /۷ روز اخیر/);
   assert.match(page, /۳۰ روز اخیر/);
@@ -237,7 +238,10 @@ test("locks mission work outside an active shift and reports daily weekly and mo
   assert.match(summaryHelper, /period === "weekly" \? 6 : period === "monthly" \? 29/);
   assert.match(summaryHelper, /firstStartAt/);
   assert.match(summaryHelper, /lastEndAt/);
-  assert.match(workSessions, /activeMinutes: today\.activeMinutes, firstStartAt: today\.firstStartAt/);
+  assert.match(workSessions, /activeSeconds: today\.activeSeconds, activeMinutes: today\.activeMinutes, firstStartAt: today\.firstStartAt/);
+  assert.match(workPolicy, /activeSeconds: Math\.floor\(intervalMilliseconds \/ 1_000\)/);
+  assert.match(page, /setTodayWorkSeconds\(workData\.today\.activeSeconds \?\? workData\.today\.activeMinutes \* 60\)/);
+  assert.match(page, /formatDurationSeconds\(todayWorkSeconds\+/);
   assert.match(workSessions, /lastEndAt: today\.lastEndAt/);
 });
 

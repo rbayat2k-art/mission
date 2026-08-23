@@ -142,7 +142,7 @@ function currentMissionStep(mission: Pick<ApiMission,"steps"|"currentStepNo">) {
   return mission.steps?.find(step => Number(step.stepNo) === Number(mission.currentStepNo ?? 1)) ?? mission.steps?.[0] ?? null;
 }
 type EmployeeDailySummary = { period: "daily" | "weekly" | "monthly"; date: string; completed: ApiMission[]; incomplete: ApiMission[]; destinations: string[]; locationSummary: { pointCount: number; firstAt: string | null; lastAt: string | null }; sessions: { id: string; status: string; startedAt: string; endedAt: string | null; endNote?: string | null; startSource?:string;endSource?:string|null;workType?:string;approvalStatus?:string;scorePenalty?:number;durationMinutes: number }[]; firstStartAt: string | null; lastEndAt: string | null; activeMinutes: number; rawSessionMinutes:number;unverifiedGpsMinutes:number;pendingCorrectionMinutes:number;requiredMinutes:number;overtimeStartsAtMinutes:number;overtimeMinutes:number;confirmedScore: number; pendingScore: number; confirmationMissionIds: string[]; performance?:ApiReportRow|null; policy?:{standardStart:string;standardDailyMinutes:number;overtimeStartMinutes?:number;note:string} };
-type ApiWorkState = { current:{id:string;startedAt:string;endedAt:string|null;workType?:string}|null;autoEnded?:boolean;today:{activeMinutes:number;firstStartAt:string|null;lastEndAt:string|null;requiredMinutes:number;overtimeStartsAtMinutes:number;overtimeMinutes:number;unverifiedGpsMinutes:number;pendingCorrectionMinutes:number} };
+type ApiWorkState = { current:{id:string;startedAt:string;endedAt:string|null;workType?:string}|null;autoEnded?:boolean;today:{activeSeconds:number;activeMinutes:number;firstStartAt:string|null;lastEndAt:string|null;requiredMinutes:number;overtimeStartsAtMinutes:number;overtimeMinutes:number;unverifiedGpsMinutes:number;pendingCorrectionMinutes:number} };
 
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...options, headers: { "Content-Type": "application/json", ...(options?.headers ?? {}) } });
@@ -355,7 +355,7 @@ function EmployeeApp() {
   const [working, setWorking] = useState(false);
   const [workToggleBusy, setWorkToggleBusy] = useState(false);
   const [workSessionStartAt, setWorkSessionStartAt] = useState<string | null>(null);
-  const [todayWorkMinutes, setTodayWorkMinutes] = useState(0);
+  const [todayWorkSeconds, setTodayWorkSeconds] = useState(0);
   const [workMinutesSyncedAt, setWorkMinutesSyncedAt] = useState(() => Date.now());
   const [todayFirstStartAt, setTodayFirstStartAt] = useState<string | null>(null);
   const [todayLastEndAt, setTodayLastEndAt] = useState<string | null>(null);
@@ -434,7 +434,7 @@ function EmployeeApp() {
     setWorking(Boolean(workData.current));
     syncNativeTracking(Boolean(workData.current));
     setWorkSessionStartAt(workData.current?.startedAt ?? null);
-    setTodayWorkMinutes(workData.today.activeMinutes);
+    setTodayWorkSeconds(workData.today.activeSeconds ?? workData.today.activeMinutes * 60);
     setWorkMinutesSyncedAt(Date.now());
     setTodayFirstStartAt(workData.today.firstStartAt);
     setTodayLastEndAt(workData.today.lastEndAt);
@@ -478,7 +478,7 @@ function EmployeeApp() {
       const nextDayKey = currentTehranDayKey();
       if (nextDayKey === displayDayKey) return;
       setDisplayDayKey(nextDayKey);
-      setTodayWorkMinutes(0);
+      setTodayWorkSeconds(0);
       setTodayUnverifiedGpsMinutes(0);
       setTodayPendingCorrectionMinutes(0);
       setTodayFirstStartAt(working ? new Date().toISOString() : null);
@@ -868,8 +868,8 @@ function EmployeeApp() {
     try {
       const endTime = new Date().toISOString();
       const location = latestGps && Date.now() - Date.parse(latestGps.recordedAt) <= 2 * 60_000 && latestGps.accuracy <= 100 ? latestGps : null;
-      const result = await sendJsonOrQueue<{session:{endedAt:string};today?:{activeMinutes:number;unverifiedGpsMinutes:number};gpsWarning?:boolean;deductedMinutes?:number}>("/api/work-sessions", "POST", { action:"end", endTime, confirmDailySummary:true, confirmedMissionIds:dailySummary.confirmationMissionIds, endNote:endWorkNote.trim(), location });
-      setWorking(false); setWorkSessionStartAt(null); setTodayLastEndAt(result.data?.session.endedAt ?? endTime); setTodayWorkMinutes(result.data?.today?.activeMinutes ?? dailySummary.activeMinutes); setTodayUnverifiedGpsMinutes(result.data?.today?.unverifiedGpsMinutes ?? dailySummary.unverifiedGpsMinutes); setWorkMinutesSyncedAt(Date.now()); setSummaryConfirmed(false); setEndWorkNote(""); setScreen("home");
+      const result = await sendJsonOrQueue<{session:{endedAt:string};today?:{activeSeconds:number;activeMinutes:number;unverifiedGpsMinutes:number};gpsWarning?:boolean;deductedMinutes?:number}>("/api/work-sessions", "POST", { action:"end", endTime, confirmDailySummary:true, confirmedMissionIds:dailySummary.confirmationMissionIds, endNote:endWorkNote.trim(), location });
+      setWorking(false); setWorkSessionStartAt(null); setTodayLastEndAt(result.data?.session.endedAt ?? endTime); setTodayWorkSeconds(result.data?.today?.activeSeconds ?? (result.data?.today?.activeMinutes ?? dailySummary.activeMinutes) * 60); setTodayUnverifiedGpsMinutes(result.data?.today?.unverifiedGpsMinutes ?? dailySummary.unverifiedGpsMinutes); setWorkMinutesSyncedAt(Date.now()); setSummaryConfirmed(false); setEndWorkNote(""); setScreen("home");
       syncNativeTracking(false);
       setPendingSync(await getOutboxCount());
       if (!result.queued) await loadEmployeeData();
@@ -952,7 +952,7 @@ function EmployeeApp() {
               </div>
               <section className={`work-card ${working ? "active" : ""}`}>
                 <div className="work-card-top"><span className="live-dot"><i />{working ? gpsStatus === "active" ? "فعالیت و GPS در حال ثبت" : "فعالیت در حال ثبت" : "آماده شروع"}</span><button onClick={() => syncQueued().catch(() => undefined)}>↻</button></div>
-                <div className="timer">{formatDurationSeconds(todayWorkMinutes*60+(working?Math.max(0,(clockTick-workMinutesSyncedAt)/1000):0))}</div>
+                <div className="timer">{formatDurationSeconds(todayWorkSeconds+(working?Math.max(0,(clockTick-workMinutesSyncedAt)/1000):0))}</div>
                 <p>{working ? `شروع این نوبت، ${formatPersianTime(workSessionStartAt)} · کارکرد واقعی امروز` : todayLastEndAt ? `ورود ${formatPersianTime(todayFirstStartAt)} · خروج ${formatPersianTime(todayLastEndAt)} · کارکرد واقعی امروز` : "حداقل روزانه ۸:۳۰ · اضافه‌کاری فقط پس از ۹:۰۰"}</p>
                 <button className={`work-toggle ${working ? "stop" : "start"}`} onClick={toggleWork} disabled={workToggleBusy}><span>{working ? "■" : workToggleBusy ? "⌖" : "▶"}</span>{working ? "پایان فعالیت" : workToggleBusy ? "در حال دریافت موقعیت دقیق..." : "شروع فعالیت"}</button>
               </section>
