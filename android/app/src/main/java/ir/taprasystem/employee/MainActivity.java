@@ -96,11 +96,14 @@ public class MainActivity extends Activity {
         createApplicationShell();
         configureWebView();
         registerTrackingReceiver();
+        NativeNotificationHelper.ensureChannel(this);
         requestRuntimePermissions();
 
         boolean versionChanged = clearStaleCacheAfterUpgrade();
         String savedUrl = savedInstanceState == null ? null : savedInstanceState.getString(SAVED_URL_KEY);
-        initialApplicationUrl = isTrustedWebOrigin(savedUrl) ? savedUrl : APP_URL;
+        String notificationUrl = getIntent() == null ? null : getIntent().getDataString();
+        initialApplicationUrl = isTrustedWebOrigin(notificationUrl)
+            ? notificationUrl : isTrustedWebOrigin(savedUrl) ? savedUrl : APP_URL;
         initialClearCache = versionChanged;
         enforceBatteryAccessGate();
     }
@@ -506,6 +509,45 @@ public class MainActivity extends Activity {
             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
     }
 
+    private boolean hasNotificationPermission() {
+        return NativeNotificationHelper.hasPermission(this);
+    }
+
+    private void requestNotificationPermission() {
+        if (hasNotificationPermission()) {
+            dispatchNativeNotificationPermissionState();
+            return;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || permissionRequestInFlight) return;
+        permissionRequestInFlight = true;
+        requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, PERMISSION_REQUEST);
+    }
+
+    private void dispatchNativeNotificationPermissionState() {
+        if (webView == null) return;
+        String granted = hasNotificationPermission() ? "true" : "false";
+        webView.post(() -> webView.evaluateJavascript(
+            "window.dispatchEvent(new CustomEvent('tapra-notification-permission-changed'," +
+                "{detail:{granted:" + granted + "}}))", null));
+    }
+
+    private void openNotificationSettings() {
+        try {
+            Intent intent;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+            } else {
+                intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", getPackageName(), null));
+            }
+            startActivity(intent);
+        } catch (Exception ignored) {
+            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", getPackageName(), null)));
+        }
+    }
+
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
@@ -513,6 +555,7 @@ public class MainActivity extends Activity {
         permissionRequestInFlight = false;
         boolean locationGranted = hasLocationPermission();
         resolvePendingGeolocation(locationGranted);
+        dispatchNativeNotificationPermissionState();
         if (locationGranted && webView != null) {
             webView.post(() -> webView.evaluateJavascript(
                 "window.dispatchEvent(new CustomEvent('tapra-location-permission-granted'))", null));
@@ -601,8 +644,19 @@ public class MainActivity extends Activity {
         if (webView != null) {
             if (!enforceBatteryAccessGate()) return;
             webView.onResume();
+            dispatchNativeNotificationPermissionState();
             if (webView.getUrl() == null || webView.getUrl().trim().isEmpty()) loadApplication(APP_URL, false);
         }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String target = intent == null ? null : intent.getDataString();
+        if (!isTrustedWebOrigin(target)) return;
+        initialApplicationUrl = target;
+        if (enforceBatteryAccessGate()) loadApplication(target, false);
     }
 
     @Override
@@ -654,6 +708,29 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void requestBatteryOptimizationExemption() {
             runOnUiThread(MainActivity.this::requestBatteryOptimizationExemption);
+        }
+
+        @JavascriptInterface
+        public boolean isNotificationPermissionGranted() {
+            return hasNotificationPermission();
+        }
+
+        @JavascriptInterface
+        public void requestNotificationPermission() {
+            runOnUiThread(MainActivity.this::requestNotificationPermission);
+        }
+
+        @JavascriptInterface
+        public void openNotificationSettings() {
+            runOnUiThread(MainActivity.this::openNotificationSettings);
+        }
+
+        @JavascriptInterface
+        public boolean showNativeNotification(
+            String notificationId, String title, String message, String targetUrl
+        ) {
+            return NativeNotificationHelper.show(
+                MainActivity.this, notificationId, title, message, targetUrl);
         }
 
         @JavascriptInterface

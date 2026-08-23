@@ -44,6 +44,9 @@ public class LocationTrackingService extends Service implements LocationListener
 
     private static final String BASE_URL = "https://taprasystem.ir";
     private static final String LOCATION_ENDPOINT = BASE_URL + "/api/locations";
+    private static final String NOTIFICATION_SETTINGS_ENDPOINT =
+        BASE_URL + "/api/notifications/settings";
+    private static final String NOTIFICATIONS_ENDPOINT = BASE_URL + "/api/notifications";
     private static final String CHANNEL_ID = "tapra_active_tracking";
     private static final String INTERNAL_BROADCAST_PERMISSION =
         "ir.taprasystem.employee.permission.INTERNAL_BROADCAST";
@@ -58,11 +61,13 @@ public class LocationTrackingService extends Service implements LocationListener
     private SharedPreferences preferences;
     private PowerManager.WakeLock wakeLock;
     private volatile boolean flushInProgress;
+    private volatile boolean notificationPollInProgress;
 
     private final Runnable periodicFlush = new Runnable() {
         @Override
         public void run() {
             flushQueue();
+            pollNotifications();
             mainHandler.postDelayed(this, 30_000L);
         }
     };
@@ -204,6 +209,47 @@ public class LocationTrackingService extends Service implements LocationListener
         });
     }
 
+    private void pollNotifications() {
+        if (notificationPollInProgress || !NativeNotificationHelper.hasPermission(this)) return;
+        final String cookies = CookieManager.getInstance().getCookie(BASE_URL);
+        if (cookies == null || cookies.trim().isEmpty()) return;
+        notificationPollInProgress = true;
+        networkExecutor.execute(() -> {
+            try {
+                HttpResult settings = getJson(NOTIFICATION_SETTINGS_ENDPOINT, cookies);
+                if (settings.status < 200 || settings.status >= 300) return;
+                JSONObject settingsBody = new JSONObject(settings.body.isEmpty() ? "{}" : settings.body);
+                if (!settingsBody.optBoolean("enabled", true)) return;
+
+                HttpResult result = getJson(NOTIFICATIONS_ENDPOINT, cookies);
+                if (result.status < 200 || result.status >= 300) return;
+                JSONArray notifications = new JSONObject(result.body.isEmpty() ? "{}" : result.body)
+                    .optJSONArray("notifications");
+                if (notifications == null) return;
+                int displayed = 0;
+                for (int index = 0; index < notifications.length() && displayed < 5; index++) {
+                    JSONObject item = notifications.optJSONObject(index);
+                    if (item == null || !item.isNull("readAt")) continue;
+                    String entityType = item.optString("entityType", "");
+                    String target = "follow_up_request".equals(entityType)
+                        ? BASE_URL + "/?panel=employee&screen=notifications"
+                        : BASE_URL + "/?panel=employee&screen=missions";
+                    if (NativeNotificationHelper.show(
+                        this,
+                        item.optString("id", ""),
+                        item.optString("title", "اعلان راهکار"),
+                        item.optString("message", ""),
+                        target
+                    )) displayed++;
+                }
+            } catch (Exception ignored) {
+                // Notification polling is best-effort and must never interrupt GPS tracking.
+            } finally {
+                notificationPollInProgress = false;
+            }
+        });
+    }
+
     private JSONArray firstBatch(JSONArray source, int maximum) {
         JSONArray batch = new JSONArray();
         for (int index = 0; index < source.length() && index < maximum; index++) batch.put(source.opt(index));
@@ -246,6 +292,32 @@ public class LocationTrackingService extends Service implements LocationListener
             StringBuilder response = new StringBuilder();
             if (stream != null) {
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) response.append(line);
+                }
+            }
+            return new HttpResult(status, response.toString());
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private HttpResult getJson(String endpoint, String cookies) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
+        try {
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(20_000);
+            connection.setReadTimeout(20_000);
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("Cookie", cookies);
+            connection.setRequestProperty("User-Agent", "TapraAndroid/" + BuildConfig.VERSION_NAME);
+            int status = connection.getResponseCode();
+            InputStream stream = status >= 200 && status < 400
+                ? connection.getInputStream() : connection.getErrorStream();
+            StringBuilder response = new StringBuilder();
+            if (stream != null) {
+                try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(stream, StandardCharsets.UTF_8))) {
                     String line;
                     while ((line = reader.readLine()) != null) response.append(line);
                 }

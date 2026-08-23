@@ -970,15 +970,18 @@ test("allows an authorized manager to cancel an active mission with an audited r
   assert.match(styles, /\.employee-cancelled-mission/);
 });
 
-test("ships an Android 1.2.1 wrapper that blocks access until reliable background GPS is allowed", async () => {
-  const [activity, service, manifest, gradle, workflow, page, locations] = await Promise.all([
+test("ships an Android 1.2.2 wrapper with reliable background GPS and native phone notifications", async () => {
+  const [activity, service, nativeNotifications, manifest, gradle, workflow, page, locations, notificationSettings, bootstrap] = await Promise.all([
     readFile(new URL("../android/app/src/main/java/ir/taprasystem/employee/MainActivity.java", import.meta.url), "utf8"),
     readFile(new URL("../android/app/src/main/java/ir/taprasystem/employee/LocationTrackingService.java", import.meta.url), "utf8"),
+    readFile(new URL("../android/app/src/main/java/ir/taprasystem/employee/NativeNotificationHelper.java", import.meta.url), "utf8"),
     readFile(new URL("../android/app/src/main/AndroidManifest.xml", import.meta.url), "utf8"),
     readFile(new URL("../android/app/build.gradle", import.meta.url), "utf8"),
     readFile(new URL("../.github/workflows/android-apk.yml", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/locations/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/NotificationSettings.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/PushNotificationBootstrap.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(activity, /clearStaleCacheAfterUpgrade/);
   assert.match(activity, /verifyRenderedPage/);
@@ -990,21 +993,39 @@ test("ships an Android 1.2.1 wrapper that blocks access until reliable backgroun
   assert.match(activity, /ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
   assert.match(activity, /enforceBatteryAccessGate/);
   assert.match(activity, /تا تأیید این تنظیم، ورود به برنامه امکان‌پذیر نیست/);
+  assert.match(activity, /isNotificationPermissionGranted/);
+  assert.match(activity, /requestNotificationPermission/);
+  assert.match(activity, /openNotificationSettings/);
+  assert.match(activity, /showNativeNotification/);
+  assert.match(activity, /tapra-notification-permission-changed/);
   assert.doesNotMatch(activity, /webView\.restoreState/);
   assert.match(manifest, /android:hardwareAccelerated="true"/);
   assert.match(manifest, /REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
   assert.match(service, /location\.isMock\(\)/);
   assert.match(service, /point\.put\("mocked", mocked\)/);
+  assert.match(service, /pollNotifications\(\)/);
+  assert.match(service, /\/api\/notifications\/settings/);
+  assert.match(service, /NativeNotificationHelper\.show/);
+  assert.match(nativeNotifications, /tapra_account_notifications/);
+  assert.match(nativeNotifications, /IMPORTANCE_HIGH/);
+  assert.match(nativeNotifications, /MAX_DISPLAYED_IDS = 200/);
+  assert.match(nativeNotifications, /wasDisplayed/);
   assert.match(page, /ensureNativeBackgroundTrackingReady/);
+  assert.match(page, /nativeOnly/);
   assert.match(page, /موقعیت غیرواقعی شناسایی شد/);
   assert.match(locations, /mock_location_detected/);
   assert.match(locations, /rejectedMocked/);
-  assert.match(gradle, /versionCode 5/);
-  assert.match(gradle, /versionName '1\.2\.1'/);
+  assert.match(notificationSettings, /isNotificationPermissionGranted/);
+  assert.match(notificationSettings, /requestNotificationPermission/);
+  assert.match(notificationSettings, /اعلان‌های اندروید راهکار روی این گوشی فعال شد/);
+  assert.match(bootstrap, /showNativeNotification/);
+  assert.match(bootstrap, /setInterval\(pollNativeNotifications, 30_000\)/);
+  assert.match(gradle, /versionCode 6/);
+  assert.match(gradle, /versionName '1\.2\.2'/);
   assert.match(workflow, /matrix:\s*\n\s*api-level: \[23, 29, 35\]/);
   assert.match(workflow, /uiautomator dump/);
   assert.match(workflow, /tapra-battery-gate-api/);
   assert.match(workflow, /deviceidle whitelist \+ir\.taprasystem\.employee/);
   assert.match(workflow, /POST_NOTIFICATIONS \|\| true/);
-  assert.match(workflow, /tapra-employee-v1\.2\.1\.apk/);
+  assert.match(workflow, /tapra-employee-v1\.2\.2\.apk/);
 });

@@ -909,6 +909,7 @@ function EmployeeApp() {
 
   return (
     <main className="employee-stage" dir="rtl">
+      <PushNotificationBootstrap active={signedIn} onMessage={notify} nativeOnly />
       <div className="employee-context context-right">
         <span className="eyebrow">اپ میدانی</span>
         <h2>سریع، روشن و بدون حواس‌پرتی</h2>

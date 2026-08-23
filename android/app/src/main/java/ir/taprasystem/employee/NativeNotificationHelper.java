@@ -1,0 +1,134 @@
+package ir.taprasystem.employee;
+
+import android.Manifest;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Build;
+
+import org.json.JSONArray;
+
+import java.util.LinkedHashSet;
+
+final class NativeNotificationHelper {
+    private static final String CHANNEL_ID = "tapra_account_notifications";
+    private static final String PREFERENCES = "tapra_native_notifications";
+    private static final String DISPLAYED_IDS = "displayed_notification_ids";
+    private static final int MAX_DISPLAYED_IDS = 200;
+    private static final String DEFAULT_TARGET =
+        "https://taprasystem.ir/?panel=employee&screen=notifications";
+
+    private NativeNotificationHelper() { }
+
+    static void ensureChannel(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        NotificationChannel channel = new NotificationChannel(
+            CHANNEL_ID, "اعلان‌های مأموریت و پیگیری", NotificationManager.IMPORTANCE_HIGH);
+        channel.setDescription("مأموریت جدید، ارجاع، لغو و پیام‌های عملیاتی راهکار");
+        channel.enableVibration(true);
+        context.getSystemService(NotificationManager.class).createNotificationChannel(channel);
+    }
+
+    static boolean hasPermission(Context context) {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED;
+    }
+
+    static synchronized boolean show(
+        Context context, String notificationId, String title, String message, String targetUrl
+    ) {
+        if (!hasPermission(context)) return false;
+        String safeId = clean(notificationId, 120);
+        if (safeId.isEmpty() || wasDisplayed(context, safeId)) return false;
+
+        ensureChannel(context);
+        String safeTitle = clean(title, 160);
+        String safeMessage = clean(message, 600);
+        String safeTarget = trustedTarget(targetUrl);
+
+        Intent openIntent = new Intent(context, MainActivity.class)
+            .setData(Uri.parse(safeTarget))
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        int requestCode = 4000 + Math.abs(safeId.hashCode() % 500_000);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+            context, requestCode, openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        Notification.Builder builder;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder = new Notification.Builder(context, CHANNEL_ID);
+        } else {
+            builder = new Notification.Builder(context).setPriority(Notification.PRIORITY_HIGH);
+        }
+        Notification notification = builder
+            .setSmallIcon(R.drawable.ic_location)
+            .setContentTitle(safeTitle.isEmpty() ? "اعلان راهکار" : safeTitle)
+            .setContentText(safeMessage)
+            .setStyle(new Notification.BigTextStyle().bigText(safeMessage))
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setCategory(Notification.CATEGORY_MESSAGE)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .build();
+
+        int systemId = 1000 + Math.abs(safeId.hashCode() % 900_000);
+        context.getSystemService(NotificationManager.class).notify(systemId, notification);
+        rememberDisplayed(context, safeId);
+        return true;
+    }
+
+    private static String clean(String value, int maximumLength) {
+        if (value == null) return "";
+        String cleaned = value.trim();
+        return cleaned.length() <= maximumLength ? cleaned : cleaned.substring(0, maximumLength);
+    }
+
+    private static String trustedTarget(String value) {
+        if (value == null || value.trim().isEmpty()) return DEFAULT_TARGET;
+        try {
+            Uri uri = Uri.parse(value);
+            String host = uri.getHost();
+            if ("https".equalsIgnoreCase(uri.getScheme()) &&
+                ("taprasystem.ir".equalsIgnoreCase(host) ||
+                    "www.taprasystem.ir".equalsIgnoreCase(host))) return uri.toString();
+        } catch (Exception ignored) { }
+        return DEFAULT_TARGET;
+    }
+
+    private static boolean wasDisplayed(Context context, String id) {
+        return readDisplayed(context).contains(id);
+    }
+
+    private static void rememberDisplayed(Context context, String id) {
+        LinkedHashSet<String> ids = readDisplayed(context);
+        ids.remove(id);
+        ids.add(id);
+        while (ids.size() > MAX_DISPLAYED_IDS) ids.remove(ids.iterator().next());
+        JSONArray array = new JSONArray();
+        for (String item : ids) array.put(item);
+        preferences(context).edit().putString(DISPLAYED_IDS, array.toString()).apply();
+    }
+
+    private static LinkedHashSet<String> readDisplayed(Context context) {
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        try {
+            JSONArray array = new JSONArray(preferences(context).getString(DISPLAYED_IDS, "[]"));
+            for (int index = 0; index < array.length(); index++) {
+                String id = array.optString(index, "").trim();
+                if (!id.isEmpty()) ids.add(id);
+            }
+        } catch (Exception ignored) { }
+        return ids;
+    }
+
+    private static SharedPreferences preferences(Context context) {
+        return context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE);
+    }
+}

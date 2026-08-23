@@ -4,8 +4,29 @@ import { useCallback, useEffect, useState } from "react";
 import { ensurePushDevice, getPushDeviceState, type PushDeviceState } from "../../lib/push-client";
 
 type SettingsResponse = { enabled: boolean; configured: boolean; publicKey: string };
+type NativeNotificationBridge = {
+  isNativeApp?: () => boolean;
+  showNativeNotification?: (id: string, title: string, message: string, targetUrl: string) => boolean;
+};
+type NotificationItem = {
+  id: string;
+  title: string;
+  message: string;
+  entityType: string | null;
+  readAt: string | null;
+};
 
-export default function PushNotificationBootstrap({ active, onMessage }: { active: boolean; onMessage: (message: string) => void }) {
+function nativeBridge() {
+  if (typeof window === "undefined") return undefined;
+  return (window as Window & { TapraAndroid?: NativeNotificationBridge }).TapraAndroid;
+}
+
+function isNativeAndroid() {
+  try { return nativeBridge()?.isNativeApp?.() === true; }
+  catch { return false; }
+}
+
+export default function PushNotificationBootstrap({ active, onMessage, nativeOnly = false }: { active: boolean; onMessage: (message: string) => void; nativeOnly?: boolean }) {
   const [state, setState] = useState<PushDeviceState>(getPushDeviceState);
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [busy, setBusy] = useState(false);
@@ -18,7 +39,7 @@ export default function PushNotificationBootstrap({ active, onMessage }: { activ
   }, []);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active || isNativeAndroid() || nativeOnly) return;
     let cancelled = false;
     fetch("/api/notifications/settings", { cache: "no-store", credentials: "same-origin" })
       .then(async response => {
@@ -34,7 +55,39 @@ export default function PushNotificationBootstrap({ active, onMessage }: { activ
       })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [active, registerGrantedDevice]);
+  }, [active, nativeOnly, registerGrantedDevice]);
+
+  useEffect(() => {
+    if (!active || !isNativeAndroid()) return;
+    let cancelled = false;
+    const pollNativeNotifications = async () => {
+      try {
+        const bridge = nativeBridge();
+        if (!bridge?.showNativeNotification) return;
+        const settingsResponse = await fetch("/api/notifications/settings", { cache: "no-store", credentials: "same-origin" });
+        if (!settingsResponse.ok) return;
+        const current = await settingsResponse.json() as SettingsResponse;
+        if (!current.enabled || cancelled) return;
+        const response = await fetch("/api/notifications", { cache: "no-store", credentials: "same-origin" });
+        if (!response.ok || cancelled) return;
+        const body = await response.json() as { notifications?: NotificationItem[] };
+        for (const item of (body.notifications ?? []).filter(item => !item.readAt).slice(0, 5)) {
+          const target = item.entityType === "follow_up_request"
+            ? "https://taprasystem.ir/?panel=employee&screen=notifications"
+            : "https://taprasystem.ir/?panel=employee&screen=missions";
+          bridge.showNativeNotification(item.id, item.title, item.message, target);
+        }
+      } catch {
+        // Native polling is best-effort; the in-app notification center remains available.
+      }
+    };
+    pollNativeNotifications();
+    const timer = window.setInterval(pollNativeNotifications, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [active]);
 
   const activate = async () => {
     if (!settings?.configured) return onMessage("ارسال اعلان هنوز روی سرور تنظیم نشده است");
@@ -56,7 +109,7 @@ export default function PushNotificationBootstrap({ active, onMessage }: { activ
     }
   };
 
-  if (!active || dismissed || !settings?.enabled || state === "subscribed" || state === "unsupported") return null;
+  if (isNativeAndroid() || nativeOnly || !active || dismissed || !settings?.enabled || state === "subscribed" || state === "unsupported") return null;
   return <aside className={`push-permission-banner ${state === "denied" ? "blocked" : ""}`} role="status">
     <span aria-hidden="true">♧</span>
     <div><b>{state === "denied" ? "اعلان ویندوز در مرورگر مسدود است" : "اعلان فوری عملیات و GPS را فعال کنید"}</b><small>{state === "denied" ? "در تنظیمات سایت taprasystem.ir، گزینه Notifications را روی Allow بگذارید." : "پس از فعال‌سازی، قطع GPS، ارجاع و پیام جدید حتی بیرون از این صفحه در سمت راست ویندوز نمایش داده می‌شود."}</small></div>
