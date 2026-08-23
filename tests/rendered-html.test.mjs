@@ -1056,3 +1056,28 @@ test("ships an Android 1.2.3 wrapper with account-isolated GPS and native notifi
   assert.match(workflow, /POST_NOTIFICATIONS \|\| true/);
   assert.match(workflow, /tapra-employee-v1\.2\.3\.apk/);
 });
+
+test("supports mission brief attachments with picker, drag/drop, clipboard paste and employee access", async () => {
+  const [page, picker, attachments, attachmentItem, styles] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/MissionAttachmentPicker.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/attachments/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/attachments/[id]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/mission-attachments.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(picker, /window\.addEventListener\("paste", handlePaste\)/);
+  assert.match(picker, /onDrop=\{handleDrop\}/);
+  assert.match(picker, /type="file"\s+multiple/);
+  assert.match(picker, /MAX_FILE_BYTES = 10 \* 1024 \* 1024/);
+  assert.match(picker, /MAX_FILE_COUNT = 10/);
+  assert.match(page, /uploadMissionAttachment\(String\(result\.mission\.id\), file\)/);
+  assert.match(page, /فایل‌های ارسالی همراه مأموریت/);
+  assert.match(page, /attachment\.uploadedByRole !== "employee"/);
+  assert.match(attachments, /uploader\.full_name AS uploadedByName/);
+  assert.match(attachments, /uploader\.role AS uploadedByRole/);
+  assert.match(attachments, /mission\.assignedTo !== auth\.user\.id/);
+  assert.match(attachmentItem, /attachment\.assignedTo !== auth\.user\.id/);
+  assert.match(styles, /\.mission-attachment-dropzone\.dragging/);
+  assert.match(styles, /\.mission-brief-files/);
+});

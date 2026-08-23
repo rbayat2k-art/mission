@@ -9,6 +9,8 @@ import NotificationSettings from "./components/NotificationSettings";
 import AppVersionGuard from "./components/AppVersionGuard";
 import PushNotificationBootstrap from "./components/PushNotificationBootstrap";
 import { EmployeeFollowUpPanel, FollowUpActionCenter } from "./components/FollowUpCenter";
+import MissionAttachmentPicker from "./components/MissionAttachmentPicker";
+import Image from "next/image";
 import { MAX_CONCURRENT_MISSIONS, missionStartCancellationState } from "../lib/mission-start-policy";
 import { detachPushDevice } from "../lib/push-client";
 
@@ -132,6 +134,7 @@ type ApiReportComparisonMetric = {current:number;previous:number;delta:number;pe
 type ApiReportComparison = {previousRange:{start:string;end:string;days:number};previousTotals:Record<string,number>;metrics:Record<string,ApiReportComparisonMetric>};
 type ApiReportTotals = {userCount:number;activeMinutes:number;assignedCount:number;completedCount:number;successfulCount:number;firstVisitSuccessfulCount:number;followUpCount:number;approvedCount:number;overdueCount:number;confirmedScore:number;pendingScore:number;distanceKm:number;missionDistanceKm:number;travelMinutes:number;movingMinutes:number;onSiteMinutes:number;totalExpenses:number;gpsGapMinutes:number;internetGapMinutes:number;completionRate:number;successRate:number;firstVisitSuccessRate:number;followUpRate:number;averageMissionMinutes:number;averageTravelMinutes:number;averageOnSiteMinutes:number;averageMissionDistanceKm:number;gpsCoverageRate:number};
 type UiAttachment = { localId: string; name: string; state: "uploading" | "uploaded" | "queued" | "error"; serverId?: string; queueId?: number };
+type ApiAttachment = { id:string;missionId:string;messageId:string|null;fileName:string;contentType:string;sizeBytes:number;createdAt:string;uploadedByName?:string;uploadedByRole?:string };
 type MissionStepDraft = { localId:string;title:string;actionType:string;description:string;requiresLocation:boolean;destinationName:string;evidenceRequirement:string;deadlineDate:string;deadlineTime:string };
 
 function emptyMissionStepDraft(index = 0): MissionStepDraft {
@@ -160,6 +163,21 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
   }
   if (!body) throw new Error("پاسخ معتبر از سرور دریافت نشد؛ دوباره تلاش کنید.");
   return body;
+}
+
+async function uploadMissionAttachment(missionId: string, file: File) {
+  const form = new FormData();
+  form.append("missionId", missionId);
+  form.append("file", file);
+  const response = await fetch("/api/attachments", { method:"POST", body:form });
+  const responseText = await response.text();
+  let body: { attachment?: ApiAttachment; error?: string } | null = null;
+  if (responseText) {
+    try { body = JSON.parse(responseText) as { attachment?: ApiAttachment; error?: string }; }
+    catch { /* The generic server error below is clearer than a JSON parsing exception. */ }
+  }
+  if (!response.ok || !body?.attachment) throw new Error(body?.error ?? "بارگذاری ضمیمه مأموریت ناموفق بود.");
+  return body.attachment;
 }
 
 function formatPersianDateTime(value?: string) {
@@ -403,6 +421,8 @@ function EmployeeApp() {
   const [selectedMission, setSelectedMission] = useState<UiMission>(emptyMission);
   const [missionEvents, setMissionEvents] = useState<ApiMissionEvent[]>([]);
   const [missionEventsLoading, setMissionEventsLoading] = useState(false);
+  const [missionBriefAttachments, setMissionBriefAttachments] = useState<ApiAttachment[]>([]);
+  const [missionBriefAttachmentsLoading, setMissionBriefAttachmentsLoading] = useState(false);
   const [newReferrerName, setNewReferrerName] = useState("");
   const [newTitle, setNewTitle] = useState("");
 
@@ -766,11 +786,14 @@ function EmployeeApp() {
     setSelectedMission(mission as UiMission);
     setMissionEvents([]);
     setMissionEventsLoading(true);
+    setMissionBriefAttachments([]);
+    setMissionBriefAttachmentsLoading(true);
     setCancelStartOpen(false);
     setCancelStartReason("");
     setDetailReturnScreen(returnScreen);
     setScreen("mission-detail");
     api<{events:ApiMissionEvent[]}>(`/api/missions/${mission.id}/events`).then(result=>setMissionEvents(result.events)).catch(error=>notify(error instanceof Error ? error.message : "دریافت سابقه مأموریت ناموفق بود")).finally(()=>setMissionEventsLoading(false));
+    api<{attachments:ApiAttachment[]}>(`/api/attachments?missionId=${encodeURIComponent(String(mission.id))}`).then(result=>setMissionBriefAttachments(result.attachments.filter(attachment=>!attachment.messageId && attachment.uploadedByRole !== "employee"))).catch(error=>notify(error instanceof Error ? error.message : "دریافت فایل‌های مأموریت ناموفق بود")).finally(()=>setMissionBriefAttachmentsLoading(false));
   };
 
   const openMyReport = async () => {
@@ -1065,6 +1088,7 @@ function EmployeeApp() {
             {selectedMission.backendStatus === "cancelled" && <section className="employee-cancelled-mission"><Icon>×</Icon><div><b>این مأموریت توسط مدیریت لغو شده است</b><p>{selectedMission.cancellationReason || "دلیل جداگانه‌ای ثبت نشده است."}</p><small>{selectedMission.cancelledByName || "مدیریت"} · {formatPersianDateTime(selectedMission.cancelledAt ?? undefined)} · دیگر نیاز به پیگیری ندارد</small></div></section>}
             {(!selectedMission.completedAt || selectedMission.status === "follow_up") && <section className="mission-task-description"><span>شرح وظیفه</span><p>{selectedMission.description?.trim() || "برای این مأموریت توضیح جداگانه‌ای ثبت نشده است؛ در صورت ابهام با مدیر یا سرپرست هماهنگ کنید."}</p><div><small>تاریخ ثبت</small><b>{formatPersianDateTime(selectedMission.createdAt)}</b><small>مهلت</small><b>{selectedMission.deadline ?? "بدون مهلت"}</b><small>اولویت</small><b>{selectedMission.priority ?? "عادی"}</b>{Number(selectedMission.attemptCount ?? 0) > 0 && <><small>تعداد مراجعات ثبت‌شده</small><b>{Number(selectedMission.attemptCount).toLocaleString("fa-IR")}</b></>}</div></section>}
             {selectedMission.workflowType === "multi_stage" && <section className="mission-stage-progress">{selectedMission.steps?.map(step=><article key={step.id} className={`${step.status==="completed"?"done":""} ${Number(step.stepNo)===Number(selectedMission.currentStepNo??1)?"current":""}`}><i>{step.status==="completed"?"✓":step.stepNo.toLocaleString("fa-IR")}</i><span><b>{step.title}</b><small>{step.description||step.destinationName||(!step.requiresLocation?"این مرحله بدون مسیر و مقصد انجام می‌شود":"مقصد هنگام مراجعه ثبت می‌شود")}</small><small>{step.status==="completed"?`انجام‌شده · ${formatPersianDateTime(step.completedAt??undefined)}`:Number(step.stepNo)===Number(selectedMission.currentStepNo??1)?"مرحله جاری":"در انتظار مرحله قبلی"}</small></span></article>)}</section>}
+            {missionBriefAttachmentsLoading ? <section className="mission-brief-files loading">در حال دریافت فایل‌های راهنمای مأموریت...</section> : missionBriefAttachments.length > 0 && <section className="mission-brief-files"><header><span>▤</span><div><b>فایل‌های ارسالی همراه مأموریت</b><small>قبل از شروع کار، تصاویر و اسناد زیر را بررسی کنید.</small></div></header><div>{missionBriefAttachments.map(attachment=><a key={attachment.id} href={`/api/attachments/${attachment.id}`} target="_blank" rel="noreferrer">{attachment.contentType.startsWith("image/") ? <Image unoptimized width={92} height={68} src={`/api/attachments/${attachment.id}`} alt={attachment.fileName} /> : <span>▤</span>}<div><b>{attachment.fileName}</b><small>{attachment.uploadedByName ? `ارسال توسط ${attachment.uploadedByName}` : "فایل راهنمای مأموریت"}</small></div><i>مشاهده</i></a>)}</div></section>}
             <div className="mission-detail-card">{selectedMission.referrerName && <><span>ارجاع‌دهنده کار</span><b>{selectedMission.referrerName}</b></>}<span>نتیجه آخرین مراجعه</span><b className={selectedMission.result === "انجام شد" ? "green" : "amber"}>{selectedMission.result ?? "هنوز نتیجه‌ای ثبت نشده"}</b><span>گزارش من</span><b>{selectedMission.report ?? "هنوز گزارشی ثبت نشده است."}</b><span>مقصد</span><b>{selectedMission.destinationName ?? "مقصد ثبت نشده"}</b>{Number(selectedMission.expenseAmount ?? 0) > 0 && <><span>هزینه انجام‌شده</span><b>{Number(selectedMission.expenseAmount).toLocaleString("fa-IR")} تومان</b></>}{Number(selectedMission.scorePenalty ?? 0) > 0 && <><span>کسر امتیاز</span><b className="score-penalty">−{Number(selectedMission.scorePenalty).toLocaleString("fa-IR")} · {selectedMission.scoreNote}</b></>}<span>وضعیت</span><b>{selectedMission.backendStatus === "cancelled" ? "لغوشده توسط مدیریت" : selectedMission.backendStatus === "follow_up_pending" ? "پیگیری مجدد · منتظر بررسی گزارش قبلی" : selectedMission.backendStatus === "follow_up" ? "آماده پیگیری مجدد" : selectedMission.backendStatus === "pending" || selectedMission.status === "pending" ? "در انتظار تأیید سرپرست" : selectedMission.backendStatus === "rejected" ? "ردشده" : selectedMission.backendStatus === "revision" ? "نیازمند اصلاح" : selectedMission.backendStatus === "in_progress" ? "در حال انجام" : selectedMission.completedAt ? "ثبت و تکمیل‌شده" : "باز"}</b></div>
             <MissionStatusTimeline events={missionEvents} loading={missionEventsLoading}/>
             {selectedMission.id && selectedMission.followUpRequestStatus && selectedMission.result && selectedMission.result !== "انجام شد" && <EmployeeFollowUpPanel missionId={String(selectedMission.id)} onMessage={notify}/>}
@@ -1194,6 +1218,7 @@ function AdminPanel() {
   const [missionAssignee, setMissionAssignee] = useState("");
   const [missionWorkflowType, setMissionWorkflowType] = useState<"single"|"multi_stage">("single");
   const [missionSteps, setMissionSteps] = useState<MissionStepDraft[]>([emptyMissionStepDraft(0), emptyMissionStepDraft(1)]);
+  const [missionDraftAttachments, setMissionDraftAttachments] = useState<File[]>([]);
   const [missionSubmitting, setMissionSubmitting] = useState(false);
   const [missionTrace, setMissionTrace] = useState<ApiMissionTrace | null>(null);
   const [missionTraceEvents, setMissionTraceEvents] = useState<ApiMissionEvent[]>([]);
@@ -1383,6 +1408,7 @@ function AdminPanel() {
       setMissionTitle(mission?.title ?? ""); setMissionDescription(mission?.description ?? ""); setMissionDestination(mission?.destinationName ?? "");
       setMissionPriority(mission?.priority ?? "normal"); setMissionDeadlineDate(parsedDeadline.date); setMissionDeadlineTime(parsedDeadline.time);
       setMissionWorkflowType(mission?.workflowType === "multi_stage" ? "multi_stage" : "single");
+      setMissionDraftAttachments([]);
       setMissionSteps(mission?.steps?.length ? mission.steps.map((step,index)=>{const deadline=splitStoredDeadline(step.deadline);return {localId:step.id||`step-${index}`,title:step.title,actionType:step.actionType||"other",description:step.description||"",requiresLocation:Boolean(step.requiresLocation),destinationName:step.destinationName||"",evidenceRequirement:step.evidenceRequirement||"none",deadlineDate:deadline.date,deadlineTime:deadline.time}}) : [emptyMissionStepDraft(0),emptyMissionStepDraft(1)]);
       setMissionAssignee(mission?.assignedTo && assignable.some(user => user.id === mission.assignedTo) ? mission.assignedTo : assignable[0]?.id ?? "");
       setMissionFormOpen(true);
@@ -1395,16 +1421,27 @@ function AdminPanel() {
     if (missionWorkflowType === "multi_stage" && (missionSteps.length < 2 || missionSteps.some(step=>step.title.trim().length < 2))) return notify("برای مأموریت چندمرحله‌ای حداقل دو مرحله با عنوان مشخص لازم است");
     setMissionSubmitting(true);
     try {
-      await api<{mission:ApiMission}>(missionEditingId ? `/api/missions/${missionEditingId}` : "/api/missions", { method:missionEditingId ? "PATCH" : "POST", body:JSON.stringify({
+      const editingId = missionEditingId;
+      const result = await api<{mission:ApiMission}>(editingId ? `/api/missions/${editingId}` : "/api/missions", { method:editingId ? "PATCH" : "POST", body:JSON.stringify({
         title:missionTitle, description:missionDescription, destinationName:missionDestination,
         priority:missionPriority, deadlineDate:missionDeadlineDate || null, deadlineTime:missionDeadlineTime || null, assignedTo:missionAssignee,
         workflowType:missionWorkflowType, steps:missionWorkflowType === "multi_stage" ? missionSteps.map(step=>({title:step.title,actionType:step.actionType,description:step.description,requiresLocation:step.requiresLocation,destinationName:step.requiresLocation?step.destinationName:null,evidenceRequirement:step.evidenceRequirement,deadlineDate:step.deadlineDate||null,deadlineTime:step.deadlineTime||null})) : undefined,
       }) });
+      const uploads = await Promise.allSettled(missionDraftAttachments.map(file=>uploadMissionAttachment(String(result.mission.id), file)));
+      const failedFiles = missionDraftAttachments.filter((_,index)=>uploads[index].status === "rejected");
+      if (failedFiles.length) {
+        setMissionDraftAttachments(failedFiles);
+        setMissionEditingId(result.mission.id);
+        await loadAdminData("missions");
+        notify(`مأموریت ذخیره شد؛ بارگذاری ${failedFiles.length.toLocaleString("fa-IR")} فایل ناموفق بود. فایل‌ها را بررسی و دوباره ذخیره کنید.`);
+        return;
+      }
       setMissionTitle(""); setMissionDescription(""); setMissionDestination(""); setMissionPriority("normal"); setMissionDeadlineDate(""); setMissionDeadlineTime("");
+      setMissionDraftAttachments([]);
       setMissionWorkflowType("single"); setMissionSteps([emptyMissionStepDraft(0),emptyMissionStepDraft(1)]);
       setMissionFormOpen(false); setScreen("missions");
       await loadAdminData("missions");
-      notify(missionEditingId ? "تغییرات مأموریت ذخیره شد" : "مأموریت ثبت و به کاربر انتخاب‌شده تخصیص داده شد");
+      notify(editingId ? "تغییرات مأموریت و فایل‌ها ذخیره شد" : missionDraftAttachments.length ? "مأموریت همراه فایل‌های راهنما ثبت و تخصیص داده شد" : "مأموریت ثبت و به کاربر انتخاب‌شده تخصیص داده شد");
       setMissionEditingId(null);
     } catch (error) { notify(error instanceof Error ? error.message : "ثبت مأموریت ناموفق بود"); }
     finally { setMissionSubmitting(false); }
@@ -1665,6 +1702,7 @@ function AdminPanel() {
             {/* eslint-disable-next-line jsx-a11y/label-has-associated-control */}
             {missionWorkflowType === "single" ? <label>نام یا آدرس مقصد <small>اختیاری</small><input value={missionDestination} onChange={e=>setMissionDestination(e.target.value)} placeholder="مثلاً: بانک رفاه، خیابان ولیعصر" /></label> : <section className="mission-steps-editor"><div className="mission-steps-head"><span><b>مراحل مأموریت</b><small>کارمند مراحل را به همین ترتیب انجام می‌دهد؛ فقط مرحله جاری فعال است.</small></span><button type="button" disabled={missionSteps.length>=10} onClick={()=>setMissionSteps(current=>[...current,emptyMissionStepDraft(current.length)])}>＋ افزودن مرحله</button></div>{missionSteps.map((step,index)=><article key={step.localId} className="mission-step-editor"><header><b>مرحله {(index+1).toLocaleString("fa-IR")}</b><div><button type="button" disabled={index===0} onClick={()=>setMissionSteps(current=>{const next=[...current];[next[index-1],next[index]]=[next[index],next[index-1]];return next})}>↑</button><button type="button" disabled={index===missionSteps.length-1} onClick={()=>setMissionSteps(current=>{const next=[...current];[next[index],next[index+1]]=[next[index+1],next[index]];return next})}>↓</button><button type="button" disabled={missionSteps.length<=2} onClick={()=>setMissionSteps(current=>current.filter(item=>item.localId!==step.localId))}>×</button></div></header><label>عنوان مرحله <b>*</b><input value={step.title} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,title:event.target.value}:item))} placeholder="مثلاً: دریافت مدارک از دفتر" required /></label><div className="mission-step-grid"><label>نوع اقدام<select value={step.actionType} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,actionType:event.target.value}:item))}><option value="visit">مراجعه</option><option value="follow_up">پیگیری</option><option value="receive">دریافت</option><option value="deliver">تحویل</option><option value="signature">امضا</option><option value="payment">پرداخت</option><option value="purchase">خرید</option><option value="inspection">بازرسی</option><option value="other">سایر</option></select></label><label>مدرک لازم<select value={step.evidenceRequirement} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,evidenceRequirement:event.target.value}:item))}><option value="none">لازم نیست</option><option value="optional">اختیاری</option><option value="photo">عکس</option><option value="file">فایل</option><option value="receipt">رسید</option><option value="any">هر نوع مدرک</option></select></label></div><label className="mission-step-location"><input type="checkbox" checked={step.requiresLocation} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,requiresLocation:event.target.checked}:item))}/><span><b>این مرحله مقصد و مسیر دارد</b><small>فقط زمان و کیلومتر همین بازه در مأموریت محاسبه می‌شود.</small></span></label>{step.requiresLocation&&<label>نام یا آدرس مقصد مرحله<input value={step.destinationName} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,destinationName:event.target.value}:item))} placeholder="در صورت مشخص‌بودن مقصد وارد کنید" /></label>}<label>شرح مرحله <small>اختیاری</small><textarea value={step.description} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,description:event.target.value}:item))} placeholder="دقیقاً چه کاری باید انجام شود؟" /></label><div className="mission-step-grid"><label>تاریخ شمسی مهلت<input value={step.deadlineDate} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,deadlineDate:event.target.value}:item))} placeholder="۱۴۰۵/۰۶/۰۱" /></label><label>ساعت مهلت<input value={step.deadlineTime} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,deadlineTime:event.target.value}:item))} placeholder="۱۴:۳۰" /></label></div></article>)}</section>}
             <label>توضیحات مأموریت <small>اختیاری</small><textarea value={missionDescription} onChange={e=>setMissionDescription(e.target.value)} placeholder="توضیحات و جزئیات لازم برای انجام مأموریت را بنویسید..." /></label>
+            <MissionAttachmentPicker files={missionDraftAttachments} disabled={missionSubmitting} onChange={setMissionDraftAttachments} onMessage={notify}/>
             <div className="server-time-note"><Icon>◷</Icon><span><b>تاریخ و ساعت ثبت خودکار است</b><small>هم‌زمان با ثبت مأموریت، زمان دقیق سرور ذخیره می‌شود و قابل تغییر نیست.</small></span></div>
             <div className="drawer-actions"><button type="button" onClick={()=>{setMissionFormOpen(false);setMissionEditingId(null)}} disabled={missionSubmitting}>انصراف</button><button className="primary" type="submit" disabled={missionSubmitting || !missionAssignee}>{missionSubmitting ? "در حال ثبت..." : missionEditingId ? "ذخیره تغییرات" : "ثبت و تخصیص مأموریت"}</button></div>
           </form>
