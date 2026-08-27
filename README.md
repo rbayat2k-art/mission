@@ -43,7 +43,7 @@ npm start
 
 راهنمای کامل سرور: [deploy/CPANEL_DEPLOYMENT.md](deploy/CPANEL_DEPLOYMENT.md)
 
-قواعد runtime، timer هشدارهای رهگیری در systemd و Nginx امن در [deploy/README.md](deploy/README.md) ثبت شده‌اند. مسیر عادی `deploy.sh` فقط systemd را کنترل می‌کند.
+قواعد runtime، Cron یک‌دقیقه‌ای هشدارهای رهگیری و Nginx امن در [deploy/README.md](deploy/README.md) ثبت شده‌اند. مسیر عادی `deploy.sh` فقط سرویس اصلی systemd را کنترل می‌کند.
 
 ## بررسی کیفیت
 

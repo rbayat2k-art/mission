@@ -6,6 +6,6 @@
 - Every completed development change must pass lint, tests, typecheck, build, and the applicable security audit before it is committed and pushed to `main`.
 - Deploy only through `ssh tapra-server "cd /home/taprasystem/rahkar && ./deploy.sh"`.
 - Never edit production application files directly. Never overwrite or display `.env` and never commit secrets, `node_modules`, `.next`, `storage/uploads`, or `storage/backups`.
-- After deployment, verify `rahkar-taprasystem.service`, `rahkar-tracking-alerts.timer`, `http://127.0.0.1:3000/api/health`, `https://taprasystem.ir/api/health`, and recent journal logs.
+- After deployment, verify `rahkar-taprasystem.service`, the single `tapra-tracking-alerts` user-crontab entry, `http://127.0.0.1:3000/api/health`, `https://taprasystem.ir/api/health`, and recent journal logs.
 - Database migrations must be additive unless the user explicitly approves a destructive migration. The deployment script creates a database backup before applying migrations.
 - For every non-trivial TAPRA development, bug, UI/UX, Android, GPS, reporting, security, or release request, use the personal `$tapra-development-team` skill and the relevant project-scoped agents in `.codex/agents/`. Start with `tapra_product_analyst` and `tapra_architect`, add only relevant read-only specialists, and hand approved implementation to `tapra_worker`. Keep suggestions separate from confirmed requirements, work locally on a non-`main` branch, and do not commit, push, merge, or deploy without explicit user authorization and passing gates.
