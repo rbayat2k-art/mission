@@ -56,7 +56,10 @@ test("schema is additive and supports unique idempotency plus reversal reference
 test("opening backfill is resumable, bounded and safe to run twice", async () => {
   const backfill = await read("../scripts/backfill-score-ledger.mjs");
   assert.match(backfill, /const pageSize = 250/);
-  assert.match(backfill, /WHERE id > \? AND id <= \? AND created_at <= \? ORDER BY id LIMIT \?/);
+  assert.match(backfill, /WHERE id > \? AND id <= \? AND created_at <= \? ORDER BY id LIMIT \$\{pageSize\}/);
+  assert.doesNotMatch(backfill, /LIMIT \?/);
+  assert.match(backfill, /COALESCE\(SUM\(points_delta\),0\) AS total/);
+  assert.match(backfill, /const delta = desired - Number\(existing\.get\(bucket\) \|\| 0\)/);
   assert.match(backfill, /SCORE_LEDGER_BACKFILL_CUTOFF/);
   assert.match(backfill, /SCORE_LEDGER_BACKFILL_MAINTENANCE/);
   assert.match(backfill, /GET_LOCK\('tapra:score-ledger-opening-backfill'/);

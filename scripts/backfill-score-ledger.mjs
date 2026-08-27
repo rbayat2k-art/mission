@@ -33,11 +33,11 @@ async function backfill(kind, highWatermark) {
     const sql = kind === "mission"
       ? `SELECT id, assigned_to AS userId, completed_at AS occurredAt, created_at AS createdAt,
           score_confirmed AS confirmed, score_pending AS pending, score_penalty AS penalty
-        FROM missions WHERE id > ? AND id <= ? AND created_at <= ? ORDER BY id LIMIT ?`
+        FROM missions WHERE id > ? AND id <= ? AND created_at <= ? ORDER BY id LIMIT ${pageSize}`
       : `SELECT id, user_id AS userId, ended_at AS occurredAt, created_at AS createdAt,
           0 AS confirmed, 0 AS pending, score_penalty AS penalty
-        FROM work_sessions WHERE id > ? AND id <= ? AND created_at <= ? ORDER BY id LIMIT ?`;
-    const [rows] = await connection.execute(sql, [cursor, highWatermark, cutoff, pageSize]);
+        FROM work_sessions WHERE id > ? AND id <= ? AND created_at <= ? ORDER BY id LIMIT ${pageSize}`;
+    const [rows] = await connection.execute(sql, [cursor, highWatermark, cutoff]);
     if (!rows.length) break;
     await connection.beginTransaction();
     try {
@@ -45,7 +45,13 @@ async function backfill(kind, highWatermark) {
         const sourceEventId = `${kind}:${row.id}`;
         const occurredAt = row.occurredAt || row.createdAt || new Date(0).toISOString();
         const createdAt = new Date().toISOString();
-        for (const [bucket, delta] of [["confirmed", Number(row.confirmed || 0)], ["pending", Number(row.pending || 0)], ["penalty", -Number(row.penalty || 0)]]) {
+        const balanceSql = kind === "mission"
+          ? "SELECT bucket, COALESCE(SUM(points_delta),0) AS total FROM score_ledger_entries WHERE mission_id = ? GROUP BY bucket"
+          : "SELECT bucket, COALESCE(SUM(points_delta),0) AS total FROM score_ledger_entries WHERE work_session_id = ? GROUP BY bucket";
+        const [existingRows] = await connection.execute(balanceSql, [row.id]);
+        const existing = new Map(existingRows.map((entry) => [entry.bucket, Number(entry.total || 0)]));
+        for (const [bucket, desired] of [["confirmed", Number(row.confirmed || 0)], ["pending", Number(row.pending || 0)], ["penalty", -Number(row.penalty || 0)]]) {
+          const delta = desired - Number(existing.get(bucket) || 0);
           if (!delta) continue;
           await connection.execute(insert, [randomUUID(), row.userId, kind === "mission" ? row.id : null,
             kind === "session" ? row.id : null, delta, bucket, sourceEventId, keyFor(sourceEventId, bucket),
