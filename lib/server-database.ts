@@ -1,4 +1,9 @@
-import mysql, { type Pool, type PoolConnection, type ResultSetHeader } from "mysql2/promise";
+import mysql, {
+  type ExecuteValues,
+  type Pool,
+  type PoolConnection,
+  type ResultSetHeader,
+} from "mysql2/promise";
 
 export type DatabaseResult<T = Record<string, unknown>> = {
   success: true;
@@ -40,11 +45,11 @@ export function getMySqlPool() {
 }
 
 export class PreparedStatement {
-  private values: unknown[] = [];
+  private values: ExecuteValues[] = [];
 
   constructor(private readonly sql: string, private readonly executor?: QueryExecutor) {}
 
-  bind(...values: unknown[]) {
+  bind(...values: ExecuteValues[]) {
     this.values = values;
     return this;
   }
