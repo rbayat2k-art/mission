@@ -1,5 +1,6 @@
 import { ensureDatabase } from "../db/runtime";
 import { calculateWorkSessionMetrics, OVERTIME_START_MINUTES, REQUIRED_WORK_MINUTES, type WorkLocationPoint, type WorkSessionPolicyRow } from "./work-session-policy";
+import { MAX_TRUSTED_LOCATION_ACCURACY_METERS } from "./mission-location";
 
 const TEHRAN_OFFSET_MINUTES = 210;
 export type ReportPeriod = "daily" | "weekly" | "monthly";
@@ -34,12 +35,12 @@ export async function getEmployeeActivitySummary(userId: string, period: ReportP
   const [completedResult, incompleteResult, locationResult, sessionResult, workLocationResult] = await Promise.all([
     db.prepare(`SELECT id, title, status, result, report, destination_name AS destinationName, expense_amount AS expenseAmount, score_pending AS scorePending, score_confirmed AS scoreConfirmed, score_penalty AS scorePenalty, score_note AS scoreNote, deadline, completed_at AS completedAt FROM missions WHERE assigned_to = ? AND completed_at >= ? AND completed_at < ? ORDER BY completed_at DESC`).bind(userId, start, end).all<DailyMission>(),
     db.prepare(`SELECT id, title, status, result, report, destination_name AS destinationName, expense_amount AS expenseAmount, score_pending AS scorePending, score_confirmed AS scoreConfirmed, score_penalty AS scorePenalty, score_note AS scoreNote, deadline, completed_at AS completedAt FROM missions WHERE assigned_to = ? AND status IN ('open', 'in_progress', 'revision', 'follow_up', 'follow_up_pending') ORDER BY created_at DESC`).bind(userId).all<DailyMission>(),
-    db.prepare("SELECT COUNT(*) AS pointCount, MIN(recorded_at) AS firstAt, MAX(recorded_at) AS lastAt FROM location_points WHERE user_id = ? AND recorded_at >= ? AND recorded_at < ?").bind(userId, start, end).first<{ pointCount: number; firstAt: string | null; lastAt: string | null }>(),
+    db.prepare("SELECT COUNT(*) AS pointCount, MIN(recorded_at) AS firstAt, MAX(recorded_at) AS lastAt FROM location_points WHERE user_id = ? AND accuracy_cm <= ? AND recorded_at >= ? AND recorded_at < ?").bind(userId, MAX_TRUSTED_LOCATION_ACCURACY_METERS * 100, start, end).first<{ pointCount: number; firstAt: string | null; lastAt: string | null }>(),
     db.prepare(`SELECT id, status, started_at AS startedAt, ended_at AS endedAt, end_note AS endNote,
       COALESCE(start_source, 'live') AS startSource, end_source AS endSource, COALESCE(work_type, 'regular') AS workType,
       COALESCE(approval_status, 'approved') AS approvalStatus, COALESCE(score_penalty, 0) AS scorePenalty
       FROM work_sessions WHERE user_id = ? AND started_at < ? AND COALESCE(ended_at, ?) >= ? ORDER BY started_at ASC`).bind(userId, end, now.toISOString(), start).all<WorkSessionPolicyRow & { endNote: string | null }>(),
-    db.prepare("SELECT work_session_id AS workSessionId, recorded_at AS recordedAt FROM location_points WHERE user_id = ? AND recorded_at >= ? AND recorded_at < ? ORDER BY recorded_at").bind(userId, start, end).all<WorkLocationPoint>(),
+    db.prepare("SELECT work_session_id AS workSessionId, recorded_at AS recordedAt FROM location_points WHERE user_id = ? AND accuracy_cm <= ? AND recorded_at >= ? AND recorded_at < ? ORDER BY recorded_at").bind(userId, MAX_TRUSTED_LOCATION_ACCURACY_METERS * 100, start, end).all<WorkLocationPoint>(),
   ]);
   const completed = completedResult.results;
   const incomplete = incompleteResult.results;

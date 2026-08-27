@@ -1,4 +1,9 @@
-import mysql, { type Pool, type PoolConnection, type ResultSetHeader } from "mysql2/promise";
+import mysql, {
+  type ExecuteValues,
+  type Pool,
+  type PoolConnection,
+  type ResultSetHeader,
+} from "mysql2/promise";
 
 export type DatabaseResult<T = Record<string, unknown>> = {
   success: true;
@@ -6,7 +11,10 @@ export type DatabaseResult<T = Record<string, unknown>> = {
   meta: { changes?: number; lastRowId?: number | string };
 };
 
-type QueryExecutor = Pool | PoolConnection;
+// Pool and PoolConnection expose compatible execute methods, but keeping them
+// as a union makes TypeScript intersect their overloaded signatures. mysql2
+// 3.23 tightened those overloads, so describe only the shared capability.
+type QueryExecutor = Pick<Pool, "execute">;
 
 let pool: Pool | null = null;
 
@@ -47,7 +55,11 @@ export class PreparedStatement {
   }
 
   private async execute(executor?: QueryExecutor) {
-    return (executor ?? this.executor ?? getMySqlPool()).execute(this.sql, this.values);
+    const selectedExecutor = executor ?? this.executor;
+    if (selectedExecutor) {
+      return selectedExecutor.execute(this.sql, this.values as ExecuteValues[]);
+    }
+    return getMySqlPool().execute(this.sql, this.values as ExecuteValues[]);
   }
 
   async first<T = Record<string, unknown>>() {

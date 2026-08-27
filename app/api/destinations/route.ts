@@ -52,7 +52,7 @@ function validBody(body: DestinationBody) {
     typeof body.destinationName === "string" && body.destinationName.trim().length >= 2 && body.destinationName.trim().length <= 255 &&
     Number.isFinite(body.latitude) && body.latitude! >= -90 && body.latitude! <= 90 &&
     Number.isFinite(body.longitude) && body.longitude! >= -180 && body.longitude! <= 180 &&
-    Number.isFinite(body.accuracy) && body.accuracy! >= 0 && body.accuracy! <= 10_000 &&
+    Number.isFinite(body.accuracy) && body.accuracy! >= 0 && body.accuracy! <= 100 &&
     !Number.isNaN(Date.parse(body.recordedAt ?? ""));
 }
 
@@ -147,7 +147,7 @@ export async function GET(request: Request) {
   if (liveOnly) {
     const liveSince = new Date(Date.now() - 2 * 60_000).toISOString();
     clauses.push("u.status = 'active'");
-    clauses.push("EXISTS (SELECT 1 FROM location_points live_lp JOIN work_sessions live_ws ON live_ws.id = live_lp.work_session_id WHERE live_lp.user_id = md.user_id AND live_ws.status = 'active' AND live_lp.recorded_at >= ?)");
+    clauses.push("EXISTS (SELECT 1 FROM location_points live_lp JOIN work_sessions live_ws ON live_ws.id = live_lp.work_session_id WHERE live_lp.user_id = md.user_id AND live_lp.accuracy_cm <= 10000 AND live_ws.status = 'active' AND live_lp.recorded_at >= ?)");
     values.push(liveSince);
   }
 
@@ -166,7 +166,7 @@ export async function GET(request: Request) {
   if (activeOnly || liveOnly) stepClauses.push("u.status = 'active'");
   if (liveOnly) {
     const liveSince = new Date(Date.now() - 2 * 60_000).toISOString();
-    stepClauses.push("EXISTS (SELECT 1 FROM location_points live_lp JOIN work_sessions live_ws ON live_ws.id=live_lp.work_session_id WHERE live_lp.user_id=m.assigned_to AND live_ws.status='active' AND live_lp.recorded_at >= ?)");
+    stepClauses.push("EXISTS (SELECT 1 FROM location_points live_lp JOIN work_sessions live_ws ON live_ws.id=live_lp.work_session_id WHERE live_lp.user_id=m.assigned_to AND live_lp.accuracy_cm <= 10000 AND live_ws.status='active' AND live_lp.recorded_at >= ?)");
     stepValues.push(liveSince);
   }
   const stepResult = await db.prepare(`SELECT ms.id, ms.mission_id AS missionId, CONCAT(m.title, ' — مرحله ', ms.step_no) AS missionTitle,

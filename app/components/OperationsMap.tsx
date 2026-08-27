@@ -23,6 +23,21 @@ export type MapTracePoint = {
   source: "captured" | "nearest_gps";
 };
 
+export type MapRouteSegment = {
+  id: string;
+  userId: string;
+  fullName: string;
+  workSessionId: string;
+  points: Array<{
+    id: string;
+    latitude: number;
+    longitude: number;
+    accuracy: number;
+    speed: number | null;
+    recordedAt: string;
+  }>;
+};
+
 function popupContent(title: string, rows: Array<[string, string]>) {
   const root = document.createElement("div");
   root.className = "operations-map-popup";
@@ -62,9 +77,10 @@ function relativeLocationTime(recordedAt: string) {
   return `${Math.floor(hours / 24).toLocaleString("fa-IR")} روز قبل`;
 }
 
-export default function OperationsMap({ currentLocations, destinations, tracePoints = [], large = false }: { currentLocations: MapCurrentLocation[]; destinations: MapDestination[]; tracePoints?: MapTracePoint[]; large?: boolean }) {
+export default function OperationsMap({ currentLocations, destinations, routeSegments = [], tracePoints = [], large = false }: { currentLocations: MapCurrentLocation[]; destinations: MapDestination[]; routeSegments?: MapRouteSegment[]; tracePoints?: MapTracePoint[]; large?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LeafletMap | null>(null);
+  const savedViewRef = useRef<{ latitude: number; longitude: number; zoom: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,6 +126,21 @@ export default function OperationsMap({ currentLocations, destinations, tracePoi
         L.polyline(ordered.map((item) => [item.latitude, item.longitude] as [number, number]), { color: routeColor(ordered[0].userId), weight: 3, opacity: 0.65, dashArray: "7 7" }).addTo(map);
       }
 
+      for (const segment of routeSegments) {
+        const linePoints = segment.points.map((point) => [point.latitude, point.longitude] as [number, number]);
+        bounds.push(...linePoints);
+        if (linePoints.length < 2) continue;
+        const firstPoint = segment.points[0];
+        const lastPoint = segment.points[segment.points.length - 1];
+        L.polyline(linePoints, {
+          color: routeColor(segment.userId), weight: 4, opacity: 0.82, lineCap: "round", lineJoin: "round",
+        }).bindPopup(popupContent(`مسیر واقعی ${segment.fullName}`, [
+          ["شروع این بخش", new Date(firstPoint.recordedAt).toLocaleString("fa-IR")],
+          ["پایان این بخش", new Date(lastPoint.recordedAt).toLocaleString("fa-IR")],
+          ["نقاط معتبر", segment.points.length.toLocaleString("fa-IR")],
+        ])).addTo(map);
+      }
+
       for (const tracePoint of tracePoints) {
         const point: [number, number] = [tracePoint.latitude, tracePoint.longitude];
         bounds.push(point);
@@ -123,7 +154,8 @@ export default function OperationsMap({ currentLocations, destinations, tracePoi
         L.polyline(tracePoints.map((point) => [point.latitude, point.longitude] as [number, number]), { color:"#243a64", weight:3, opacity:0.72, dashArray:"8 6" }).addTo(map);
       }
 
-      if (bounds.length === 1) map.setView(bounds[0], 15);
+      if (savedViewRef.current) map.setView([savedViewRef.current.latitude, savedViewRef.current.longitude], savedViewRef.current.zoom);
+      else if (bounds.length === 1) map.setView(bounds[0], 15);
       else if (bounds.length > 1) map.fitBounds(L.latLngBounds(bounds), { padding: [42, 42], maxZoom: 16 });
       else map.setView([35.6892, 51.389], 11);
       window.setTimeout(() => map.invalidateSize(), 0);
@@ -131,13 +163,17 @@ export default function OperationsMap({ currentLocations, destinations, tracePoi
     renderMap().catch(() => undefined);
     return () => {
       cancelled = true;
+      if (mapRef.current) {
+        const center = mapRef.current.getCenter();
+        savedViewRef.current = { latitude: center.lat, longitude: center.lng, zoom: mapRef.current.getZoom() };
+      }
       mapRef.current?.remove();
       mapRef.current = null;
     };
-  }, [currentLocations, destinations, tracePoints]);
+  }, [currentLocations, destinations, routeSegments, tracePoints]);
 
   return <div className={`operations-map ${large ? "large" : ""}`}>
-    <div ref={containerRef} className="operations-map-canvas" aria-label="نقشه موقعیت فعلی و مقصدهای ثبت‌شده" />
-    <div className="operations-map-legend">{tracePoints.length ? <><span><i className="trace-start" />شروع</span><span><i className="trace-destination" />مقصد</span><span><i className="trace-end" />پایان</span></> : <><span><i className="live" />زنده</span>{currentLocations.some(location=>!location.isLive)&&<><span><i className="recent" />تا ۳۰ دقیقه</span><span><i className="stale" />قدیمی</span></>}<span><i className="pin" />مقصدهای شماره‌دار</span></>}</div>
+    <div ref={containerRef} className="operations-map-canvas" aria-label="نقشه موقعیت فعلی، مسیر واقعی حرکت و مقصدهای ثبت‌شده" />
+    <div className="operations-map-legend">{tracePoints.length ? <><span><i className="trace-start" />شروع</span><span><i className="trace-destination" />مقصد</span><span><i className="trace-end" />پایان</span></> : <><span><i className="live" />زنده</span>{routeSegments.some(segment=>segment.points.length>1)&&<span><i className="route" />مسیر واقعی امروز</span>}{currentLocations.some(location=>!location.isLive)&&<><span><i className="recent" />تا ۳۰ دقیقه</span><span><i className="stale" />قدیمی</span></>}<span><i className="pin" />مقصدهای شماره‌دار</span></>}</div>
   </div>;
 }

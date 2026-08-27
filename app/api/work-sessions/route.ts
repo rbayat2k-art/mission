@@ -6,6 +6,7 @@ import { getDailyWorkMetrics, GPS_GAP_GRACE_MINUTES, OVERTIME_START_MINUTES, rec
 
 type WorkSessionBody = {
   action?: "start" | "end" | "self_report_start";
+  clientSessionId?: string;
   location?: unknown;
   startTime?: string;
   reason?: string;
@@ -57,12 +58,25 @@ export async function POST(request: Request) {
 
   if (body.action === "start") {
     const location = freshLocation(body.location, nowDate);
+    const requestedSessionId = body.clientSessionId?.trim() ?? "";
+    const clientSessionId = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedSessionId)
+      ? requestedSessionId
+      : null;
     if (!location) return Response.json({ error: "شروع فعالیت فقط با GPS روشن، موقعیت تازه و دقت حداکثر ۱۰۰ متر امکان‌پذیر است." }, { status: 400 });
+    if (clientSessionId) {
+      const replay = await db.prepare("SELECT id, user_id AS userId, status, started_at AS startedAt, COALESCE(work_type, 'regular') AS workType FROM work_sessions WHERE id = ?")
+        .bind(clientSessionId).first<{id:string;userId:string;status:string;startedAt:string;workType:string}>();
+      if (replay) {
+        if (replay.userId !== auth.user.id) return Response.json({ error:"شناسه فعالیت معتبر نیست." }, { status:409 });
+        return Response.json({ session:{ id:replay.id, status:replay.status, startedAt:replay.startedAt, workType:replay.workType }, replayed:true });
+      }
+    }
     const existing = await db.prepare("SELECT id FROM work_sessions WHERE user_id = ? AND status = 'active'").bind(auth.user.id).first<{ id: string }>();
     if (existing) return Response.json({ error: "فعالیت باز وجود دارد." }, { status: 409 });
     const metrics = await getDailyWorkMetrics(auth.user.id, nowDate);
     const workType = metrics.regularMinutes >= OVERTIME_START_MINUTES ? "overtime" : "regular";
-    const session = { id: crypto.randomUUID(), status: "active", startedAt: now, workType };
+    const sessionId = clientSessionId ?? crypto.randomUUID();
+    const session = { id: sessionId, status: "active", startedAt: now, workType };
     await db.batch([
       db.prepare("INSERT INTO work_sessions (id, user_id, status, started_at, start_source, work_type, approval_status, score_penalty, created_at) VALUES (?, ?, 'active', ?, 'live', ?, 'approved', 0, ?)").bind(session.id, auth.user.id, now, workType, now),
       locationInsert(db, auth.user.id, session.id, location, now),
@@ -128,7 +142,7 @@ export async function POST(request: Request) {
     const summary = await getEmployeeDailySummary(auth.user.id, endedAtDate);
     const confirmedMissionIds = [...new Set(body.confirmedMissionIds ?? [])].sort();
     if (JSON.stringify(confirmedMissionIds) !== JSON.stringify(summary.confirmationMissionIds)) return Response.json({ error: "فهرست فعالیت‌ها تغییر کرده است؛ گزارش امروز را دوباره مرور و تأیید کنید." }, { status: 409 });
-    const previousPoint = await db.prepare("SELECT recorded_at AS recordedAt FROM location_points WHERE user_id = ? AND work_session_id = ? AND recorded_at <= ? ORDER BY recorded_at DESC LIMIT 1")
+    const previousPoint = await db.prepare("SELECT recorded_at AS recordedAt FROM location_points WHERE user_id = ? AND work_session_id = ? AND accuracy_cm <= 10000 AND recorded_at <= ? ORDER BY recorded_at DESC LIMIT 1")
       .bind(auth.user.id, current.id, endedAt).first<{ recordedAt: string }>();
     const gapStartedAt = previousPoint?.recordedAt ?? current.startedAt;
     const gapEndedAt = location?.recordedAt ?? endedAt;

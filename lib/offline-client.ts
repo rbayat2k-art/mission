@@ -3,6 +3,12 @@ export type OutboxResult<T = unknown> = { queued: boolean; data?: T; queueId?: n
 type JsonEntry = { id?: number; kind: "json"; url: string; method: string; body: unknown; createdAt: string };
 type FileEntry = { id?: number; kind: "file"; url: string; fields: Record<string, string>; file: File; createdAt: string };
 type OutboxEntry = JsonEntry | FileEntry;
+type LocationAck = {
+  acceptedIds?: string[];
+  duplicateIds?: string[];
+  permanentRejected?: Array<{clientEventId?:string}>;
+  retryableRejected?: Array<{clientEventId?:string}>;
+};
 
 const databaseName = "rahkar-offline-v1";
 const storeName = "outbox";
@@ -66,12 +72,39 @@ async function responseBody<T>(response: Response): Promise<T> {
   return body;
 }
 
+function isLocationEntry(entry:JsonEntry) {
+  return entry.url === "/api/locations" && entry.method.toUpperCase() === "POST";
+}
+
+export function locationBatchHasFinalAck(points:Array<{clientEventId?:string}> | undefined, body:LocationAck) {
+  if (!Array.isArray(points)) return false;
+  const expected = points.map((point) => point.clientEventId).filter((id):id is string => typeof id === "string" && id.length > 0);
+  if (expected.length !== points.length) return false;
+  const terminal = new Set([
+    ...(body.acceptedIds ?? []),
+    ...(body.duplicateIds ?? []),
+    ...(body.permanentRejected ?? []).map((item) => item.clientEventId).filter((id):id is string => Boolean(id)),
+  ]);
+  const retryable = new Set((body.retryableRejected ?? []).map((item) => item.clientEventId).filter((id):id is string => Boolean(id)));
+  return expected.every((id) => terminal.has(id) && !retryable.has(id));
+}
+
+function locationEntryHasFinalAck(entry:JsonEntry, body:LocationAck) {
+  const points = (entry.body as {points?:Array<{clientEventId?:string}>} | null)?.points;
+  return locationBatchHasFinalAck(points, body);
+}
+
 export async function sendJsonOrQueue<T>(url: string, method: string, body: unknown): Promise<OutboxResult<T>> {
   const entry: JsonEntry = { kind: "json", url, method, body, createdAt: new Date().toISOString() };
   if (!navigator.onLine) { await enqueue(entry); return { queued: true }; }
   try {
     const response = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    return { queued: false, data: await responseBody<T>(response) };
+    const data = await responseBody<T>(response);
+    if (isLocationEntry(entry) && !locationEntryHasFinalAck(entry, data as LocationAck)) {
+      await enqueue(entry);
+      return { queued:true, data };
+    }
+    return { queued: false, data };
   } catch (error) {
     if (error instanceof TypeError) { await enqueue(entry); return { queued: true }; }
     throw error;
@@ -113,7 +146,11 @@ export async function flushOutbox() {
         form.set("file", entry.file);
         response = await fetch(entry.url, { method: "POST", body: form });
       }
-      if (!response.ok && (response.status >= 500 || response.status === 401)) break;
+      if (entry.kind === "json" && isLocationEntry(entry)) {
+        if (!response.ok) break;
+        const body = await response.json().catch(() => null) as LocationAck | null;
+        if (!body || !locationEntryHasFinalAck(entry, body)) break;
+      } else if (!response.ok && (response.status >= 500 || response.status === 401)) break;
       await remove(entry.id);
       sent += 1;
     } catch {

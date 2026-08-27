@@ -2,6 +2,7 @@ import { ensureDatabase } from "../db/runtime";
 import type { AppRole } from "./auth";
 import { calculateGpsGapMinutes } from "./gps-gap";
 import { calculateWorkSessionMetrics, OVERTIME_START_MINUTES, REQUIRED_WORK_MINUTES, type WorkSessionPolicyRow } from "./work-session-policy";
+import { MAX_TRUSTED_LOCATION_ACCURACY_METERS } from "./mission-location";
 
 export type PerformancePeriod = "daily" | "weekly" | "monthly";
 export type PerformanceMetricKey =
@@ -246,7 +247,7 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
       WHERE m.assigned_to = ? AND
       (m.created_at >= ? AND m.created_at < ? OR m.started_at >= ? AND m.started_at < ? OR m.completed_at >= ? AND m.completed_at < ? OR md.recorded_at >= ? AND md.recorded_at < ? OR m.completed_at IS NULL)
       ORDER BY COALESCE(m.completed_at, m.created_at) DESC`).bind(user.id, start, end, start, end, start, end, start, end).all<MissionRow>(),
-    db.prepare("SELECT work_session_id AS workSessionId, latitude_e6 AS latitudeE6, longitude_e6 AS longitudeE6, speed_cms AS speedCms, recorded_at AS recordedAt FROM location_points WHERE user_id = ? AND recorded_at >= ? AND recorded_at < ? ORDER BY recorded_at").bind(user.id, start, end).all<LocationRow>(),
+    db.prepare("SELECT work_session_id AS workSessionId, latitude_e6 AS latitudeE6, longitude_e6 AS longitudeE6, speed_cms AS speedCms, recorded_at AS recordedAt FROM location_points WHERE user_id = ? AND accuracy_cm <= ? AND recorded_at >= ? AND recorded_at < ? ORDER BY recorded_at").bind(user.id, MAX_TRUSTED_LOCATION_ACCURACY_METERS * 100, start, end).all<LocationRow>(),
     db.prepare("SELECT type, status, details, occurred_at AS occurredAt FROM integrity_events WHERE user_id = ? AND occurred_at >= ? AND occurred_at < ? ORDER BY occurred_at").bind(user.id, start, end).all<IntegrityRow>(),
     db.prepare("SELECT COUNT(*) AS count FROM attachments a JOIN missions m ON m.id = a.mission_id WHERE m.assigned_to = ? AND a.created_at >= ? AND a.created_at < ?").bind(user.id, start, end).first<{ count: number }>(),
     db.prepare("SELECT a.status FROM approvals a JOIN missions m ON m.id = a.mission_id WHERE m.assigned_to = ? AND a.created_at >= ? AND a.created_at < ?").bind(user.id, start, end).all<{ status: string }>(),

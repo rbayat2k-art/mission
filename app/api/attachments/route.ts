@@ -55,6 +55,10 @@ export async function GET(request: Request) {
   if (!mission) return Response.json({ error: "مأموریت پیدا نشد." }, { status: 404 });
   if (auth.user.role === "employee" && mission.assignedTo !== auth.user.id) return Response.json({ error: "forbidden" }, { status: 403 });
   if (auth.user.role === "supervisor" && mission.assignedTo !== auth.user.id && mission.assigneeSupervisorId !== auth.user.id) return Response.json({ error: "forbidden" }, { status: 403 });
-  const result = await db.prepare("SELECT id, mission_id AS missionId, follow_up_message_id AS messageId, file_name AS fileName, content_type AS contentType, size_bytes AS sizeBytes, created_at AS createdAt FROM attachments WHERE mission_id = ? ORDER BY created_at DESC").bind(missionId).all();
+  const result = await db.prepare(`SELECT a.id, a.mission_id AS missionId, a.follow_up_message_id AS messageId,
+    a.file_name AS fileName, a.content_type AS contentType, a.size_bytes AS sizeBytes, a.created_at AS createdAt,
+    uploader.full_name AS uploadedByName, uploader.role AS uploadedByRole
+    FROM attachments a JOIN users uploader ON uploader.id = a.uploaded_by
+    WHERE a.mission_id = ? ORDER BY a.created_at DESC`).bind(missionId).all();
   return Response.json({ attachments: result.results });
 }

@@ -17,7 +17,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   return new Response(object.body, { headers: {
     "Content-Type": attachment.contentType,
     "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(attachment.fileName)}`,
-    "Cache-Control": "private, max-age=300",
+    "Cache-Control": "private, no-store, max-age=0",
+    "Pragma": "no-cache",
     "X-Content-Type-Options": "nosniff",
   } });
 }
