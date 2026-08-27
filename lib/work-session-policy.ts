@@ -1,4 +1,5 @@
 import { ensureDatabase } from "../db/runtime";
+import { MAX_TRUSTED_LOCATION_ACCURACY_METERS } from "./mission-location";
 
 export const REQUIRED_WORK_MINUTES = 8 * 60 + 30;
 export const OVERTIME_START_MINUTES = 9 * 60;
@@ -86,8 +87,8 @@ export async function getDailyWorkMetrics(userId: string, now = new Date()) {
       COALESCE(approval_status, 'approved') AS approvalStatus, COALESCE(score_penalty, 0) AS scorePenalty
       FROM work_sessions WHERE user_id = ? AND started_at < ? AND COALESCE(ended_at, ?) >= ? ORDER BY started_at`)
       .bind(userId, end, now.toISOString(), start).all<WorkSessionPolicyRow>(),
-    db.prepare("SELECT work_session_id AS workSessionId, recorded_at AS recordedAt FROM location_points WHERE user_id = ? AND recorded_at >= ? AND recorded_at < ? ORDER BY recorded_at")
-      .bind(userId, start, end).all<WorkLocationPoint>(),
+    db.prepare("SELECT work_session_id AS workSessionId, recorded_at AS recordedAt FROM location_points WHERE user_id = ? AND accuracy_cm <= ? AND recorded_at >= ? AND recorded_at < ? ORDER BY recorded_at")
+      .bind(userId, MAX_TRUSTED_LOCATION_ACCURACY_METERS * 100, start, end).all<WorkLocationPoint>(),
   ]);
   const sessions = sessionResult.results;
   const { intervals, intervalMilliseconds, regularMilliseconds, overtimeMilliseconds, rawMilliseconds, pendingCorrectionMilliseconds } = calculateWorkSessionMetrics(sessions, locationResult.results, start, end, now);

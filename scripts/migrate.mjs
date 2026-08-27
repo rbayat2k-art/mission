@@ -74,6 +74,8 @@ try {
   }
   const [attachmentIndexes] = await connection.execute("SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'attachments' AND INDEX_NAME = 'idx_attachments_follow_up_message'");
   if (!attachmentIndexes.length) await connection.execute("ALTER TABLE attachments ADD INDEX idx_attachments_follow_up_message (follow_up_message_id, created_at)");
+  const [locationRouteIndexes] = await connection.execute("SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'location_points' AND INDEX_NAME = 'idx_location_route_day'");
+  if (!locationRouteIndexes.length) await connection.execute("ALTER TABLE location_points ADD INDEX idx_location_route_day (recorded_at, accuracy_cm, user_id, work_session_id)");
 
   await connection.execute(`INSERT INTO mission_status_events (id, mission_id, actor_id, actor_role, event_type, to_status,
     server_recorded_at, geocode_status, metadata, created_at)

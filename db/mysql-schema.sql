@@ -55,6 +55,17 @@ CREATE TABLE IF NOT EXISTS sessions (
   CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- statement-breakpoint
+CREATE TABLE IF NOT EXISTS login_rate_limits (
+  key_hash CHAR(64) PRIMARY KEY,
+  key_type VARCHAR(16) NOT NULL,
+  failures INT NOT NULL DEFAULT 0,
+  window_started_at BIGINT NOT NULL,
+  reset_at BIGINT NOT NULL,
+  blocked_until BIGINT NOT NULL DEFAULT 0,
+  updated_at VARCHAR(40) NOT NULL,
+  INDEX idx_login_rate_limits_expiry (reset_at, blocked_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- statement-breakpoint
 CREATE TABLE IF NOT EXISTS work_sessions (
   id CHAR(36) PRIMARY KEY,
   user_id CHAR(36) NOT NULL,
@@ -337,6 +348,7 @@ CREATE TABLE IF NOT EXISTS location_points (
   received_at VARCHAR(40) NOT NULL,
   INDEX idx_location_user_recorded (user_id, recorded_at),
   INDEX idx_location_session_recorded (work_session_id, recorded_at),
+  INDEX idx_location_route_day (recorded_at, accuracy_cm, user_id, work_session_id),
   CONSTRAINT fk_locations_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   CONSTRAINT fk_locations_session FOREIGN KEY (work_session_id) REFERENCES work_sessions(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

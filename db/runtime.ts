@@ -54,6 +54,8 @@ async function applySchema() {
   if (!attachmentMessageColumn) await database.prepare("ALTER TABLE attachments ADD COLUMN follow_up_message_id CHAR(36) NULL AFTER size_bytes").run();
   const attachmentMessageIndex = await database.prepare("SELECT INDEX_NAME AS indexName FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'attachments' AND INDEX_NAME = 'idx_attachments_follow_up_message'").first();
   if (!attachmentMessageIndex) await database.prepare("ALTER TABLE attachments ADD INDEX idx_attachments_follow_up_message (follow_up_message_id, created_at)").run();
+  const locationRouteIndex = await database.prepare("SELECT INDEX_NAME AS indexName FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'location_points' AND INDEX_NAME = 'idx_location_route_day'").first();
+  if (!locationRouteIndex) await database.prepare("ALTER TABLE location_points ADD INDEX idx_location_route_day (recorded_at, accuracy_cm, user_id, work_session_id)").run();
   const notificationColumn = await database.prepare("SELECT COLUMN_NAME AS columnName FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'notification_enabled'").first();
   if (!notificationColumn) await database.prepare("ALTER TABLE users ADD COLUMN notification_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER must_change_password").run();
 }

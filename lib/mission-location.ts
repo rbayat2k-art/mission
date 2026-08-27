@@ -5,6 +5,9 @@ export type CapturedMissionLocation = {
   recordedAt: string;
 };
 
+export const MAX_TRUSTED_LOCATION_ACCURACY_METERS = 100;
+export const MAX_LOCATION_FUTURE_SKEW_MS = 2 * 60_000;
+
 export function parseMissionLocation(input: unknown): CapturedMissionLocation | null {
   if (!input || typeof input !== "object") return null;
   const value = input as Record<string, unknown>;
@@ -14,8 +17,8 @@ export function parseMissionLocation(input: unknown): CapturedMissionLocation | 
   const recordedTime = Date.parse(String(value.recordedAt ?? ""));
   if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
     !Number.isFinite(longitude) || longitude < -180 || longitude > 180 ||
-    !Number.isFinite(accuracy) || accuracy < 0 || accuracy > 10_000 ||
-    Number.isNaN(recordedTime) || recordedTime > Date.now() + 5 * 60_000) return null;
+    !Number.isFinite(accuracy) || accuracy < 0 || accuracy > MAX_TRUSTED_LOCATION_ACCURACY_METERS ||
+    Number.isNaN(recordedTime) || recordedTime > Date.now() + MAX_LOCATION_FUTURE_SKEW_MS) return null;
   return { latitude, longitude, accuracy, recordedAt: new Date(recordedTime).toISOString() };
 }
 

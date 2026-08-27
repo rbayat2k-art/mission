@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { flushOutbox, getOutboxCount, removeQueuedItem, sendFileOrQueue, sendJsonOrQueue } from "../lib/offline-client";
-import OperationsMap, { type MapTracePoint } from "./components/OperationsMap";
+import OperationsMap, { type MapRouteSegment, type MapTracePoint } from "./components/OperationsMap";
 import AccountSettings from "./components/AccountSettings";
 import NotificationCenter from "./components/NotificationCenter";
 import NotificationSettings from "./components/NotificationSettings";
@@ -27,7 +27,7 @@ const OFFLINE_START_STORAGE_KEY = "tapra:employee-offline-start";
 const ADMIN_CANCELLABLE_MISSION_STATUSES = ["open","in_progress","stage_waiting","follow_up","follow_up_pending","revision","pending","pending_approval"];
 
 type TapraAndroidBridge = {
-  setTrackingActive: (active: boolean) => void;
+  setTrackingActive: (active: boolean, workSessionId?: string) => void;
   setAuthenticatedUser?: (userId: string) => void;
   clearAuthenticatedUser?: () => void;
   isNativeApp: () => boolean;
@@ -47,9 +47,14 @@ function isNativeAndroidApp() {
   catch { return false; }
 }
 
-function syncNativeTracking(active: boolean) {
-  try { androidBridge()?.setTrackingActive(active); }
-  catch { /* The browser version intentionally has no native bridge. */ }
+function syncNativeTracking(active: boolean, workSessionId = "") {
+  const bridge = androidBridge();
+  if (!bridge) return;
+  try { bridge.setTrackingActive(active, workSessionId); }
+  catch {
+    // Installed APKs before session-aware tracking expose the one-argument bridge.
+    try { bridge.setTrackingActive(active); } catch { /* The browser version intentionally has no native bridge. */ }
+  }
 }
 
 function setNativeAuthenticatedUser(userId: string) {
@@ -373,6 +378,7 @@ function EmployeeApp() {
   const [working, setWorking] = useState(false);
   const [workToggleBusy, setWorkToggleBusy] = useState(false);
   const [workSessionStartAt, setWorkSessionStartAt] = useState<string | null>(null);
+  const [workSessionId, setWorkSessionId] = useState<string | null>(null);
   const [todayWorkSeconds, setTodayWorkSeconds] = useState(0);
   const [workMinutesSyncedAt, setWorkMinutesSyncedAt] = useState(() => Date.now());
   const [todayFirstStartAt, setTodayFirstStartAt] = useState<string | null>(null);
@@ -452,7 +458,8 @@ function EmployeeApp() {
     ]);
     setNotificationCounts({unread:notificationData.unreadCount,open:notificationData.openRequestCount});
     setWorking(Boolean(workData.current));
-    syncNativeTracking(Boolean(workData.current));
+    syncNativeTracking(Boolean(workData.current), workData.current?.id ?? "");
+    setWorkSessionId(workData.current?.id ?? null);
     setWorkSessionStartAt(workData.current?.startedAt ?? null);
     setTodayWorkSeconds(workData.today.activeSeconds ?? workData.today.activeMinutes * 60);
     setWorkMinutesSyncedAt(Date.now());
@@ -573,14 +580,14 @@ function EmployeeApp() {
       if (Date.now() - lastGpsSentAt.current < 15_000) return;
       lastGpsSentAt.current = Date.now();
       const point = {
-        clientEventId: createClientId(), latitude: position.coords.latitude, longitude: position.coords.longitude,
+        clientEventId: createClientId(), workSessionId:workSessionId ?? undefined, latitude: position.coords.latitude, longitude: position.coords.longitude,
         accuracy: position.coords.accuracy, altitude: position.coords.altitude, speed: position.coords.speed,
         heading: position.coords.heading, recordedAt,
       };
       const result = await sendJsonOrQueue<{autoEnded:boolean;endedAt:string|null}>("/api/locations", "POST", { points: [point] }).catch(() => ({ queued: true as const, data: undefined }));
       if (result.queued) setPendingSync(await getOutboxCount().catch(() => 1));
       if (result.data?.autoEnded) {
-        setWorking(false); setWorkSessionStartAt(null); setTodayLastEndAt(result.data.endedAt ?? new Date().toISOString());
+        setWorking(false); setWorkSessionStartAt(null); setWorkSessionId(null); setTodayLastEndAt(result.data.endedAt ?? new Date().toISOString());
         syncNativeTracking(false);
         notify("۹ ساعت کار دارای GPS تکمیل شد؛ پایان فعالیت به‌صورت خودکار ثبت شد. برای اضافه‌کاری دوباره شروع کنید");
         await loadEmployeeData().catch(() => undefined);
@@ -595,7 +602,7 @@ function EmployeeApp() {
       }
     }, { enableHighAccuracy: true, maximumAge: 10_000, timeout: 20_000 });
     return () => { window.clearTimeout(timer); navigator.geolocation.clearWatch(watchId); };
-  }, [signedIn, working, loadEmployeeData, notify]);
+  }, [signedIn, working, workSessionId, loadEmployeeData, notify]);
 
   const addMission = async (e: FormEvent) => {
     e.preventDefault();
@@ -854,10 +861,12 @@ function EmployeeApp() {
     setWorkToggleBusy(true);
     try {
       const location = await captureFreshGps();
-      const result = await sendJsonOrQueue<{session:{startedAt:string;workType?:string}}>("/api/work-sessions", "POST", { action: "start", location });
+      const clientSessionId = createClientId();
+      const result = await sendJsonOrQueue<{session:{id:string;startedAt:string;workType?:string}}>("/api/work-sessions", "POST", { action: "start", clientSessionId, location });
       const startedAt = result.data?.session.startedAt ?? new Date().toISOString();
-      setWorking(true); setWorkSessionStartAt(startedAt); setTodayFirstStartAt(current=>current ?? startedAt); setTodayLastEndAt(null); setClockTick(Date.now()); setWorkMinutesSyncedAt(Date.now());
-      syncNativeTracking(true);
+      const sessionId = result.data?.session.id ?? clientSessionId;
+      setWorking(true); setWorkSessionStartAt(startedAt); setWorkSessionId(sessionId); setTodayFirstStartAt(current=>current ?? startedAt); setTodayLastEndAt(null); setClockTick(Date.now()); setWorkMinutesSyncedAt(Date.now());
+      syncNativeTracking(true, sessionId);
       setPendingSync(await getOutboxCount().catch(() => 0));
       notify(result.queued ? "شروع فعالیت همراه GPS روی گوشی ذخیره شد" : result.data?.session.workType === "overtime" ? "اضافه‌کاری و ثبت GPS آغاز شد" : "فعالیت و ثبت GPS آغاز شد");
     } catch (error) { notify(error instanceof Error ? error.message : "عملیات ناموفق بود"); }
@@ -875,9 +884,9 @@ function EmployeeApp() {
     setMissedStartSaving(true);
     try {
       const location = await captureFreshGps();
-      const result = await api<{correction:{claimedMinutes:number;scorePenalty:number};session:{startedAt:string;workType:string}}>("/api/work-sessions", { method:"POST", body:JSON.stringify({ action:"self_report_start", startTime:missedStartTime, reason:missedStartReason.trim(), location }) });
-      setWorking(true); setWorkSessionStartAt(result.session.startedAt); setWorkMinutesSyncedAt(Date.now()); setTodayFirstStartAt(current=>current ?? result.session.startedAt); setTodayLastEndAt(null);
-      syncNativeTracking(true);
+      const result = await api<{correction:{claimedMinutes:number;scorePenalty:number};session:{id:string;startedAt:string;workType:string}}>("/api/work-sessions", { method:"POST", body:JSON.stringify({ action:"self_report_start", startTime:missedStartTime, reason:missedStartReason.trim(), location }) });
+      setWorking(true); setWorkSessionStartAt(result.session.startedAt); setWorkSessionId(result.session.id); setWorkMinutesSyncedAt(Date.now()); setTodayFirstStartAt(current=>current ?? result.session.startedAt); setTodayLastEndAt(null);
+      syncNativeTracking(true, result.session.id);
       setMissedStartOpen(false); setMissedStartTime(""); setMissedStartReason("");
       await loadEmployeeData();
       notify(`${result.correction.claimedMinutes.toLocaleString("fa-IR")} دقیقه خوداظهاری با کسر ${result.correction.scorePenalty.toLocaleString("fa-IR")} امتیاز، در انتظار تأیید سرپرست ثبت شد`);
@@ -892,7 +901,7 @@ function EmployeeApp() {
       const endTime = new Date().toISOString();
       const location = latestGps && Date.now() - Date.parse(latestGps.recordedAt) <= 2 * 60_000 && latestGps.accuracy <= 100 ? latestGps : null;
       const result = await sendJsonOrQueue<{session:{endedAt:string};today?:{activeSeconds:number;activeMinutes:number;unverifiedGpsMinutes:number};gpsWarning?:boolean;deductedMinutes?:number}>("/api/work-sessions", "POST", { action:"end", endTime, confirmDailySummary:true, confirmedMissionIds:dailySummary.confirmationMissionIds, endNote:endWorkNote.trim(), location });
-      setWorking(false); setWorkSessionStartAt(null); setTodayLastEndAt(result.data?.session.endedAt ?? endTime); setTodayWorkSeconds(result.data?.today?.activeSeconds ?? (result.data?.today?.activeMinutes ?? dailySummary.activeMinutes) * 60); setTodayUnverifiedGpsMinutes(result.data?.today?.unverifiedGpsMinutes ?? dailySummary.unverifiedGpsMinutes); setWorkMinutesSyncedAt(Date.now()); setSummaryConfirmed(false); setEndWorkNote(""); setScreen("home");
+      setWorking(false); setWorkSessionStartAt(null); setWorkSessionId(null); setTodayLastEndAt(result.data?.session.endedAt ?? endTime); setTodayWorkSeconds(result.data?.today?.activeSeconds ?? (result.data?.today?.activeMinutes ?? dailySummary.activeMinutes) * 60); setTodayUnverifiedGpsMinutes(result.data?.today?.unverifiedGpsMinutes ?? dailySummary.unverifiedGpsMinutes); setWorkMinutesSyncedAt(Date.now()); setSummaryConfirmed(false); setEndWorkNote(""); setScreen("home");
       syncNativeTracking(false);
       setPendingSync(await getOutboxCount());
       if (!result.queued) await loadEmployeeData();
@@ -1139,9 +1148,11 @@ function EmployeeApp() {
   );
 }
 
-function LiveMap({ locations, destinations, focus }: { locations: ApiLocation[]; destinations: ApiDestination[]; focus?: boolean }) {
-  if (!locations.length && !destinations.length) return <div className={`live-map-empty live-map-blank ${focus ? "large" : ""}`}><div><Icon>⌖</Icon><b>هنوز موقعیتی ثبت نشده است</b><span>مکان فعلی پس از شروع فعالیت و پین‌های شماره‌دار پس از «ثبت مقصد» کارمند اینجا نمایش داده می‌شوند.</span></div></div>;
-  return <OperationsMap currentLocations={locations} destinations={destinations} large={focus} />;
+function LiveMap({ locations, destinations, routeSegments, focus }: { locations: ApiLocation[]; destinations: ApiDestination[]; routeSegments: MapRouteSegment[]; focus?: boolean }) {
+  const visibleUsers = new Set(locations.map(location=>location.userId));
+  const visibleRoutes = routeSegments.filter(segment=>visibleUsers.has(segment.userId));
+  if (!locations.length && !destinations.length && !visibleRoutes.length) return <div className={`live-map-empty live-map-blank ${focus ? "large" : ""}`}><div><Icon>⌖</Icon><b>هنوز موقعیتی ثبت نشده است</b><span>مکان فعلی پس از شروع فعالیت و پین‌های شماره‌دار پس از «ثبت مقصد» کارمند اینجا نمایش داده می‌شوند.</span></div></div>;
+  return <OperationsMap currentLocations={locations} destinations={destinations} routeSegments={visibleRoutes} large={focus} />;
 }
 
 function AdminPerformanceReports({ rows, totals, dailySeries, comparison, destinations, period, onPeriodChange, policy }: { rows:ApiReportRow[]; totals:ApiReportTotals|null; dailySeries:ApiReportDailyPoint[]; comparison:ApiReportComparison|null; destinations:ApiDestination[]; period:"daily"|"weekly"|"monthly"; onPeriodChange:(value:"daily"|"weekly"|"monthly")=>void; policy?:{standardStart:string;standardDailyMinutes:number;note:string} }) {
@@ -1230,6 +1241,7 @@ function AdminPanel() {
   const [approvalItems, setApprovalItems] = useState<ApiApproval[]>([]);
   const [liveLocations, setLiveLocations] = useState<ApiLocation[]>([]);
   const [lastLocations, setLastLocations] = useState<ApiLocation[]>([]);
+  const [routeSegments, setRouteSegments] = useState<MapRouteSegment[]>([]);
   const [locationView, setLocationView] = useState<"live"|"last">("live");
   const [destinationPins, setDestinationPins] = useState<ApiDestination[]>([]);
   const [lastDestinationPins, setLastDestinationPins] = useState<ApiDestination[]>([]);
@@ -1266,6 +1278,7 @@ function AdminPanel() {
     }
     if (target === "approvals") setApprovalItems((await api<{approvals:ApiApproval[]}>("/api/approvals")).approvals);
     if (target === "dashboard") {
+      void api<{segments:MapRouteSegment[]}>("/api/locations/routes").then(routes=>setRouteSegments(routes.segments)).catch(()=>undefined);
       const [locations, lastKnown, destinations, lastDestinations, missions, users, approvals, integrity] = await Promise.all([
         api<{locations:ApiLocation[]}>("/api/locations"), api<{locations:ApiLocation[]}>("/api/locations?mode=last"), api<{destinations:ApiDestination[]}>("/api/destinations?period=daily&live=1"), api<{destinations:ApiDestination[]}>("/api/destinations?period=daily&active=1"),
         api<{missions:ApiMission[]}>("/api/missions"), api<{users:ApiUser[]}>("/api/admin/users"), api<{approvals:ApiApproval[]}>("/api/approvals"), api<{events:ApiIntegrityEvent[]}>("/api/integrity"),
@@ -1273,6 +1286,7 @@ function AdminPanel() {
       setLiveLocations(locations.locations); setLastLocations(lastKnown.locations); setDestinationPins(destinations.destinations); setLastDestinationPins(lastDestinations.destinations); setAdminMissions(missions.missions); setAdminUsers(users.users); setApprovalItems(approvals.approvals); setIntegrityEvents(integrity.events);
     }
     if (target === "live") {
+      void api<{segments:MapRouteSegment[]}>("/api/locations/routes").then(routes=>setRouteSegments(routes.segments)).catch(()=>undefined);
       const [locations, lastKnown, destinations, lastDestinations] = await Promise.all([api<{locations:ApiLocation[]}>("/api/locations"), api<{locations:ApiLocation[]}>("/api/locations?mode=last"), api<{destinations:ApiDestination[]}>("/api/destinations?period=daily&live=1"), api<{destinations:ApiDestination[]}>("/api/destinations?period=daily&active=1")]);
       setLiveLocations(locations.locations); setLastLocations(lastKnown.locations); setDestinationPins(destinations.destinations); setLastDestinationPins(lastDestinations.destinations);
     }
@@ -1610,7 +1624,7 @@ function AdminPanel() {
             <div className="kpi"><span className="kpi-icon red">◇</span><span><small>هشدار یکپارچگی</small><b>{openIntegrityCount.toLocaleString("fa-IR")} <em>هشدار باز</em></b></span><i className={openIntegrityCount?"warning":""}>{openIntegrityCount?"بررسی":"بدون هشدار"}</i></div>
           </div>
           <div className="dashboard-grid">
-            <section className="panel map-panel"><div className="panel-head"><div><h2>{locationView === "live" ? "موقعیت زنده و مقصدهای امروز" : "آخرین موقعیت GPS یا نقطه کاری نیروها"}</h2><p>{locationView === "live" ? `${liveLocations.length.toLocaleString("fa-IR")} موقعیت زنده · ${destinationPins.length.toLocaleString("fa-IR")} مقصد شماره‌دار` : `${lastKnownEmployeeCount.toLocaleString("fa-IR")} کارمند · ${lastDestinationPins.length.toLocaleString("fa-IR")} نقطه کاری امروز؛ نقاط خاکستری زنده نیستند`}</p></div><div className="location-panel-actions"><div className="location-view-toggle"><button className={locationView==="live"?"active":""} onClick={()=>{setLocationView("live");setSelected(0)}}>زنده</button><button className={locationView==="last"?"active":""} onClick={()=>{setLocationView("last");setSelected(0)}}>آخرین موقعیت</button></div><button onClick={() => setScreen("live")}>نمایش کامل ←</button></div></div><LiveMap locations={displayedLocations} destinations={displayedDestinationPins} /></section>
+            <section className="panel map-panel"><div className="panel-head"><div><h2>{locationView === "live" ? "موقعیت زنده و مقصدهای امروز" : "آخرین موقعیت GPS یا نقطه کاری نیروها"}</h2><p>{locationView === "live" ? `${liveLocations.length.toLocaleString("fa-IR")} موقعیت زنده · ${destinationPins.length.toLocaleString("fa-IR")} مقصد شماره‌دار` : `${lastKnownEmployeeCount.toLocaleString("fa-IR")} کارمند · ${lastDestinationPins.length.toLocaleString("fa-IR")} نقطه کاری امروز؛ نقاط خاکستری زنده نیستند`}</p></div><div className="location-panel-actions"><div className="location-view-toggle"><button className={locationView==="live"?"active":""} onClick={()=>{setLocationView("live");setSelected(0)}}>زنده</button><button className={locationView==="last"?"active":""} onClick={()=>{setLocationView("last");setSelected(0)}}>آخرین موقعیت</button></div><button onClick={() => setScreen("live")}>نمایش کامل ←</button></div></div><LiveMap locations={displayedLocations} destinations={displayedDestinationPins} routeSegments={routeSegments} /></section>
             <section className="panel active-staff"><div className="panel-head"><div><h2>{locationView === "live" ? "نیروهای دارای موقعیت زنده" : "آخرین موقعیت نیروها"}</h2><p>{(locationView === "live" ? activeEmployeeCount : lastKnownEmployeeCount).toLocaleString("fa-IR")} نفر با موقعیت ثبت‌شده</p></div><button onClick={()=>loadAdminData("dashboard").catch(error=>notify(error.message))}>↻</button></div>
               <div className="staff-list">{displayedLocations.length ? displayedLocations.map((location,i)=>{const freshness=locationFreshness(location);return <button key={location.id} onClick={()=>{setSelected(i);setScreen("live")}}><span className="avatar blue">{location.fullName.slice(0,2)}</span><span><b>{location.fullName}</b><small><i className={freshness}/>{location.isLive ? " موقعیت زنده" : location.source === "work_point" ? " آخرین نقطه کاری" : " آخرین موقعیت ثبت‌شده"}</small></span><time>{new Date(location.recordedAt).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"})}<small>{locationAgeLabel(location.recordedAt)}</small></time></button>}) : <div className="empty-state compact"><span>⌖</span><h3>{locationView === "live" ? "هنوز نیروی فعالی نیست" : "هنوز موقعیتی ثبت نشده است"}</h3><p>{locationView === "live" ? "پس از شروع فعالیت و دریافت GPS، نیروی آنلاین اینجا دیده می‌شود." : "آخرین GPS یا نقطه کاری ثبت‌شده در این قسمت باقی می‌ماند."}</p></div>}</div>
             </section>
@@ -1624,7 +1638,7 @@ function AdminPanel() {
         </>}
 
         {screen === "live" && <div className="live-layout">
-          <section className="panel live-map-panel"><div className="map-toolbar"><div className="map-tabs"><button className={locationView==="live"?"active":""} onClick={()=>{setLocationView("live");setSelected(0)}}>موقعیت زنده</button><button className={locationView==="last"?"active":""} onClick={()=>{setLocationView("last");setSelected(0)}}>آخرین موقعیت</button><button>{displayedLocations.length.toLocaleString("fa-IR")} نیرو · {displayedDestinationPins.length.toLocaleString("fa-IR")} نقطه کاری</button></div><div><button>OpenStreetMap</button><button onClick={()=>loadAdminData("live").catch(error=>notify(error.message))}>↻ به‌روزرسانی</button></div></div><LiveMap locations={displayedLocations} destinations={displayedDestinationPins} focus /></section>
+          <section className="panel live-map-panel"><div className="map-toolbar"><div className="map-tabs"><button className={locationView==="live"?"active":""} onClick={()=>{setLocationView("live");setSelected(0)}}>موقعیت زنده</button><button className={locationView==="last"?"active":""} onClick={()=>{setLocationView("last");setSelected(0)}}>آخرین موقعیت</button><button>{displayedLocations.length.toLocaleString("fa-IR")} نیرو · {displayedDestinationPins.length.toLocaleString("fa-IR")} نقطه کاری</button></div><div><button>OpenStreetMap</button><button onClick={()=>loadAdminData("live").catch(error=>notify(error.message))}>↻ به‌روزرسانی</button></div></div><LiveMap locations={displayedLocations} destinations={displayedDestinationPins} routeSegments={routeSegments} focus /></section>
           <aside className="person-detail"><div className={`detail-head location-${locationFreshness(selectedLocation)}`}><span className="avatar large blue">{selectedLocation?.fullName.slice(0,2) ?? "—"}</span><div><h2>{selectedLocation?.fullName ?? (locationView === "live" ? "بدون موقعیت زنده" : "بدون سابقه موقعیت")}</h2><p><i/> {selectedLocation ? `${selectedLocation.isLive ? "ثبت زنده" : selectedLocation.source === "work_point" ? "آخرین نقطه کاری" : "آخرین دریافت"} · ${locationAgeLabel(selectedLocation.recordedAt)}` : "منتظر دریافت GPS"}</p></div><button>×</button></div><div className="detail-metrics"><span><small>{selectedLocation?.source === "work_point" ? "دقت نقطه کاری" : "دقت GPS"}</small><b>{selectedLocation ? `${Math.round(selectedLocation.accuracy).toLocaleString("fa-IR")} متر` : "—"}</b></span><span><small>سرعت ثبت‌شده</small><b>{selectedLocation?.speed == null ? "—" : `${Math.round(selectedLocation.speed*3.6).toLocaleString("fa-IR")} km/h`}</b></span></div><div className={`current-mission location-${locationFreshness(selectedLocation)}`}><small>{selectedLocation?.isLive ? "موقعیت فعلی" : selectedLocation?.source === "work_point" ? "آخرین نقطه کاری؛ GPS زنده در دسترس نیست" : "آخرین موقعیت ثبت‌شده"}</small><h3>{selectedLocation ? `${selectedLocation.latitude.toFixed(5)}, ${selectedLocation.longitude.toFixed(5)}` : "هنوز ثبت نشده"}</h3><p>{selectedLocation ? `${formatPersianDateTime(selectedLocation.recordedAt)} · دقت ${Math.round(selectedLocation.accuracy).toLocaleString("fa-IR")} متر` : "بعد از دریافت اولین GPS معتبر تکمیل می‌شود"}</p><span>{selectedLocation ? selectedLocation.isLive ? "زنده" : selectedLocation.source === "work_point" ? "نقطه کاری" : "زنده نیست" : "بدون داده"}</span></div><h3 className="timeline-title">خط زمانی موقعیت</h3><div className="timeline"><div className={selectedLocation?.isLive ? "green" : "gray"}><time>{selectedLocation ? new Date(selectedLocation.recordedAt).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"}) : "—"}</time><span><b>{selectedLocation?.isLive ? "آخرین موقعیت زنده GPS" : selectedLocation?.source === "work_point" ? "آخرین نقطه کاری ثبت‌شده" : "آخرین موقعیت دریافت‌شده"}</b><small>{selectedLocation ? `${locationAgeLabel(selectedLocation.recordedAt)} · دقت ${Math.round(selectedLocation.accuracy).toLocaleString("fa-IR")} متر` : "در انتظار ثبت از گوشی"}</small></span></div><div className="blue"><time>—</time><span><b>همگام‌سازی امن</b><small>نقاط آفلاین پس از اتصال به ترتیب ارسال می‌شوند</small></span></div></div><button className="outline-wide" onClick={()=>loadAdminData("live").catch(error=>notify(error.message))}>به‌روزرسانی اطلاعات</button></aside>
         </div>}
 

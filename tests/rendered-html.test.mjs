@@ -370,7 +370,7 @@ test("shows a readable Persian error when the local backend or database is unava
   assert.match(page, /const responseText = await response\.text\(\)/);
   assert.match(page, /response\.status >= 500/);
   assert.match(page, /سرویس اطلاعات در دسترس نیست/);
-  assert.match(login, /status: 503/);
+  assert.match(login, /status:\s*503/);
   assert.match(login, /پایگاه داده در دسترس نیست/);
 });
 
@@ -410,7 +410,7 @@ test("ships a standard Node.js MySQL and cPanel production target", async () => 
   ]);
 
   assert.match(packageJson, /"next": "16\.3\.1"/);
-  assert.match(packageJson, /"mysql2": "3\.15\.3"/);
+  assert.match(packageJson, /"mysql2": "3\.23\.3"/);
   assert.doesNotMatch(packageJson, /vinext|wrangler|cloudflare/);
   assert.match(database, /mysql2\/promise/);
   assert.match(database, /DB_HOST/);
@@ -774,7 +774,7 @@ test("ends shifts without GPS blocking and deducts only beyond the 30 minute gra
   assert.doesNotMatch(policy, /MAX_GPS_GAP_MINUTES = 5/);
   assert.match(locations, /work_session_id = \?/);
   assert.match(locations, /> GPS_GAP_GRACE_MINUTES \* 60_000/);
-  assert.match(locations, /deductedMinutes: Math\.max\(0, gapMinutes - GPS_GAP_GRACE_MINUTES\)/);
+  assert.match(locations, /deductedMinutes:\s*Math\.max\(0, gapMinutes\s*-\s*GPS_GAP_GRACE_MINUTES\)/);
   assert.match(workSessions, /body\.action !== "end"/);
   assert.match(workSessions, /endTime\?: string/);
   assert.match(workSessions, /employee_without_gps/);
@@ -1032,7 +1032,7 @@ test("ships an Android 1.2.3 wrapper with account-isolated GPS and native notifi
   assert.match(page, /setNativeAuthenticatedUser\(result\.user\.id\)/);
   assert.match(page, /موقعیت غیرواقعی شناسایی شد/);
   assert.match(locations, /mock_location_detected/);
-  assert.match(locations, /rejectedMocked/);
+  assert.match(locations, /permanentRejected\.filter\(\(item\) => item\.reason === "mock_location"\)/);
   assert.match(locations, /x-tapra-user-id/);
   assert.match(locations, /expectedUserId !== auth\.user\.id/);
   assert.match(notifications, /userId: auth\.user\.id/);
@@ -1080,4 +1080,46 @@ test("supports mission brief attachments with picker, drag/drop, clipboard paste
   assert.match(attachmentItem, /attachment\.assignedTo !== auth\.user\.id/);
   assert.match(styles, /\.mission-attachment-dropzone\.dragging/);
   assert.match(styles, /\.mission-brief-files/);
+});
+
+test("renders trusted daily GPS routes only for authorized active map users", async () => {
+  const [routes, page, map, styles, schema, runtime, migration] = await Promise.all([
+    readFile(new URL("../app/api/locations/routes/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/OperationsMap.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../db/mysql-schema.sql", import.meta.url), "utf8"),
+    readFile(new URL("../db/runtime.ts", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/migrate.mjs", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(routes, /requireRole\(request, \["owner", "admin", "supervisor"\]\)/);
+  assert.doesNotMatch(routes, /requireRole\(request, \[[^\]]*"employee"/);
+  assert.match(routes, /WHERE u\.status = 'active'/);
+  assert.match(routes, /u\.id = \? OR \(u\.supervisor_id = \? AND u\.role = 'employee'\)/);
+  assert.match(routes, /private, no-store, max-age=0/);
+  assert.match(routes, /"Vary": "Cookie"/);
+  assert.match(routes, /MAX_TRUSTED_LOCATION_ACCURACY_METERS \* 100/);
+  assert.match(routes, /tehranDayBounds\(new Date\(\)\)/);
+  assert.match(routes, /ROUTE_GAP_MS = 2 \* 60_000/);
+  assert.match(routes, /MAX_ROUTE_SPEED_KMH = 160/);
+  assert.match(routes, /current\.workSessionId !== row\.workSessionId/);
+  assert.match(routes, /MAX_POINTS_PER_USER = 900/);
+  assert.match(routes, /MAX_TOTAL_POINTS = 12_000/);
+  assert.match(routes, /MIN\(CONCAT\(sampled\.recorded_at, '#', sampled\.id\)\)/);
+  assert.match(routes, /simplifyPoints\(segment\.points, budgets\[index\]\)/);
+  assert.match(routes, /\[points\[0\], points\[points\.length - 1\]\]/);
+  assert.match(page, /api<\{segments:MapRouteSegment\[\]\}>\("\/api\/locations\/routes"\)/);
+  assert.match(page, /"\/api\/locations\/routes"\)\.then\(routes=>setRouteSegments\(routes\.segments\)\)\.catch\(\(\)=>undefined\)/);
+  assert.match(page, /routeSegments=\{routeSegments\}/);
+  assert.match(map, /routeSegments = \[\]/);
+  assert.match(map, /مسیر واقعی \$\{segment\.fullName\}/);
+  assert.match(map, /savedViewRef\.current/);
+  assert.match(styles, /\.operations-map-legend i\.route/);
+  assert.match(schema, /INDEX idx_location_route_day \(recorded_at, accuracy_cm, user_id, work_session_id\)/);
+  for (const upgradePath of [runtime, migration]) {
+    assert.match(upgradePath, /INFORMATION_SCHEMA\.STATISTICS[^\n]+idx_location_route_day/);
+    assert.match(upgradePath, /if \(![^\n]+\.length\)|if \(!locationRouteIndex\)/);
+    assert.match(upgradePath, /ALTER TABLE location_points ADD INDEX idx_location_route_day \(recorded_at, accuracy_cm, user_id, work_session_id\)/);
+  }
 });

@@ -26,7 +26,7 @@ async function nearestGpsPoint(db: Database, userId: string, actionAt: string | 
   const center = Date.parse(actionAt);
   const start = new Date(center - 2 * 60_000).toISOString();
   const end = new Date(center + 2 * 60_000).toISOString();
-  const rows = await db.prepare("SELECT latitude_e6 AS latitudeE6, longitude_e6 AS longitudeE6, accuracy_cm AS accuracyCm, recorded_at AS recordedAt FROM location_points WHERE user_id = ? AND recorded_at >= ? AND recorded_at <= ? ORDER BY recorded_at").bind(userId, start, end).all<StoredPoint>();
+  const rows = await db.prepare("SELECT latitude_e6 AS latitudeE6, longitude_e6 AS longitudeE6, accuracy_cm AS accuracyCm, recorded_at AS recordedAt FROM location_points WHERE user_id = ? AND accuracy_cm <= 10000 AND recorded_at >= ? AND recorded_at <= ? ORDER BY recorded_at").bind(userId, start, end).all<StoredPoint>();
   const nearest = rows.results.sort((a, b) => Math.abs(Date.parse(a.recordedAt) - center) - Math.abs(Date.parse(b.recordedAt) - center))[0];
   return nearest ? { latitude:Number(nearest.latitudeE6)/1_000_000, longitude:Number(nearest.longitudeE6)/1_000_000, accuracy:Number(nearest.accuracyCm)/100, recordedAt:nearest.recordedAt, source:"nearest_gps" } : null;
 }
