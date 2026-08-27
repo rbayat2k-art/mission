@@ -2,6 +2,9 @@ import { ensureDatabase } from "../../../../../db/runtime";
 import { requireRole } from "../../../../../lib/auth";
 import { createUserNotification } from "../../../../../lib/push-notifications";
 import { prepareMissionStatusEvent } from "../../../../../lib/mission-status-events";
+import { pushScoreLedgerEntry, scoreDelta } from "../../../../../lib/score-ledger";
+
+class TransitionConflict extends Error {}
 
 const cancellableStatuses = [
   "open",
@@ -22,6 +25,8 @@ type MissionRow = {
   createdBy: string;
   employeeName: string;
   assigneeSupervisorId: string | null;
+  scorePending: number;
+  attemptId: string | null;
 };
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -36,7 +41,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   const db = await ensureDatabase();
   const mission = await db.prepare(`SELECT m.id, m.title, m.status, m.assigned_to AS assignedTo, m.created_by AS createdBy,
-    employee.full_name AS employeeName, employee.supervisor_id AS assigneeSupervisorId
+    employee.full_name AS employeeName, employee.supervisor_id AS assigneeSupervisorId, m.score_pending AS scorePending,
+    (SELECT ma.id FROM mission_attempts ma WHERE ma.mission_id=m.id ORDER BY ma.attempt_no DESC LIMIT 1) AS attemptId
     FROM missions m JOIN users employee ON employee.id=m.assigned_to WHERE m.id=?`).bind(id).first<MissionRow>();
   if (!mission) return Response.json({ error: "مأموریت پیدا نشد." }, { status: 404 });
   if (auth.user.role === "supervisor" && mission.assigneeSupervisorId !== auth.user.id && mission.createdBy !== auth.user.id) {
@@ -60,7 +66,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     metadata: { reason, title: mission.title, employeeName: mission.employeeName },
   });
 
-  await db.batch([
+  const statements = [
     db.prepare(`UPDATE missions SET status='cancelled', cancelled_at=?, cancelled_by=?, cancellation_reason=?,
       score_pending=0 WHERE id=? AND status IN (${cancellableStatuses.map(() => "?").join(",")})`)
       .bind(now, auth.user.id, reason, mission.id, ...cancellableStatuses),
@@ -76,7 +82,22 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     statusEvent.statement,
     db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.manager_cancelled', 'mission', ?, ?, ?)")
       .bind(crypto.randomUUID(), auth.user.id, mission.id, JSON.stringify({ reason, fromStatus: mission.status, assignedTo: mission.assignedTo }), now),
-  ]);
+  ];
+  pushScoreLedgerEntry(statements,db,{userId:mission.assignedTo,missionId:mission.id,attemptId:mission.attemptId,actorId:auth.user.id,
+    pointsDelta:scoreDelta(Number(mission.scorePending??0),0),bucket:"pending",reasonCode:"manager_cancelled",
+    source:"mission_cancel",sourceEventId:statusEvent.id,occurredAt:now,metadata:{reason}});
+  try {
+    await db.transaction(async transaction=>{
+      const locked=await transaction.prepare("SELECT status, score_pending AS scorePending FROM missions WHERE id=? FOR UPDATE")
+        .bind(mission.id).first<{status:string;scorePending:number}>();
+      if(!locked||locked.status!==mission.status||Number(locked.scorePending)!==Number(mission.scorePending))throw new TransitionConflict();
+      const results=await transaction.batch(statements);
+      if((results[0]?.meta.changes??0)!==1)throw new TransitionConflict();
+    });
+  } catch(error) {
+    if(error instanceof TransitionConflict)return Response.json({error:"وضعیت مأموریت هم‌زمان تغییر کرده است؛ صفحه را تازه کنید."},{status:409});
+    throw error;
+  }
 
   await createUserNotification(mission.assignedTo, {
     type: "mission_cancelled",

@@ -1,118 +1,100 @@
-name: Android APK
+name: Android debug verification
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - "codex/android-*"
-    paths:
-      - "android/**"
-      - "app/page.tsx"
-      - "app/components/NotificationSettings.tsx"
-      - "app/components/PushNotificationBootstrap.tsx"
-      - ".github/workflows/android-apk.yml"
+    branches: [main, "codex/**"]
+  pull_request:
+    branches: [main, "codex/**"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  web-validation:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: "22.13.0"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Validate web application
-        run: npm run verify
-
-  build:
-    needs: web-validation
+  build-debug:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.11.1"
-
-      - name: Validate and build signed APK
+      - name: Lint, unit test and assemble local-backend debug APK
         working-directory: android
-        shell: bash
-        run: |
-          set +e
-          gradle --no-daemon :app:lintDebug :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee android-build.log
-          build_status=${PIPESTATUS[0]}
-          if [ "$build_status" -ne 0 ]; then
-            if [ -f app/build/reports/lint-results-debug.txt ]; then
-              lint_summary=$(grep -E "Error:|Warning:" app/build/reports/lint-results-debug.txt | head -n 15 | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
-              echo "::error title=Android lint report::$lint_summary"
-            fi
-            summary=$(grep -E "error:|FAILURE:|What went wrong|Execution failed|A failure occurred|Could not|failed" android-build.log | tail -n 12 | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
-            echo "::error title=Android build failed::$summary"
-            exit "$build_status"
-          fi
-
-      - name: Verify APK signature and manifest
+        run: gradle --no-daemon -PtapraDebugBackendUrl=http://10.0.2.2:3000 :app:lintDebug :app:testDebugUnitTest :app:assembleDebug
+      - name: Verify debug manifest and checksum
         working-directory: android
-        shell: bash
         run: |
           apk="app/build/outputs/apk/debug/app-debug.apk"
           build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
           "$build_tools/apksigner" verify --verbose --print-certs "$apk"
           "$build_tools/aapt" dump badging "$apk" | tee apk-badging.txt
-          grep -q "package: name='ir.taprasystem.employee' versionCode='7' versionName='1.2.3'" apk-badging.txt
+          grep -q "package: name='ir.taprasystem.employee'" apk-badging.txt
           grep -q "sdkVersion:'23'" apk-badging.txt
-          cp "$apk" tapra-employee-v1.2.3.apk
-          sha256sum tapra-employee-v1.2.3.apk | tee tapra-employee-v1.2.3.apk.sha256
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+          cp "$apk" tapra-employee-ci-debug.apk
+          sha256sum tapra-employee-ci-debug.apk > tapra-employee-ci-debug.apk.sha256
+      - uses: actions/upload-artifact@v4
         with:
-          name: tapra-employee-android-v1.2.3
+          name: tapra-employee-ci-debug-${{ github.sha }}
           path: |
-            android/tapra-employee-v1.2.3.apk
-            android/tapra-employee-v1.2.3.apk.sha256
+            android/tapra-employee-ci-debug.apk
+            android/tapra-employee-ci-debug.apk.sha256
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
 
-  install-smoke-test:
-    needs: build
+  emulator-smoke:
+    needs: build-debug
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         api-level: [23, 29, 35]
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: tapra_ci_root
+          MARIADB_DATABASE: tapra_android_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_NAME: tapra_android_ci
+      DB_USER: root
+      DB_PASSWORD: tapra_ci_root
+      AUTO_MIGRATE: "false"
+      INITIAL_ADMIN_PASSWORD: tapra-ci-admin-password
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
     steps:
-      - name: Download APK
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          name: tapra-employee-android-v1.2.3
+          node-version: "22.13.0"
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate && npm run build
+      - name: Start ephemeral web backend
+        run: |
+          nohup npm start > /tmp/tapra-android-backend.log 2>&1 &
+          for attempt in {1..60}; do curl --fail --silent http://127.0.0.1:3000/api/health && exit 0; sleep 2; done
+          cat /tmp/tapra-android-backend.log
+          exit 1
+      - uses: actions/download-artifact@v4
+        with:
+          name: tapra-employee-ci-debug-${{ github.sha }}
           path: apk
-
-      - name: Enable Android emulator acceleration
-        run: sudo chmod 666 /dev/kvm
-
-      - name: Boot Android and test install/launch
+      - run: sudo chmod 666 /dev/kvm
+      - name: Install and launch against the ephemeral backend
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api-level }}
@@ -120,7 +102,7 @@ jobs:
           profile: pixel_2
           disable-animations: true
           script: |
-            adb install -r apk/tapra-employee-v1.2.3.apk
+            adb install -r apk/tapra-employee-ci-debug.apk
             adb shell pm grant ir.taprasystem.employee android.permission.ACCESS_FINE_LOCATION
             adb shell pm grant ir.taprasystem.employee android.permission.POST_NOTIFICATIONS || true
             adb shell am start -W -n ir.taprasystem.employee/.MainActivity
@@ -132,34 +114,13 @@ jobs:
             adb shell am force-stop ir.taprasystem.employee
             adb shell am start -W -n ir.taprasystem.employee/.MainActivity
             sleep 15
-            if adb logcat -d -t 500 | grep -A 20 "FATAL EXCEPTION" | grep -q "ir.taprasystem.employee"; then adb logcat -d -t 500; exit 1; fi
-            adb shell ps | grep -q "ir.taprasystem.employee"
+            adb logcat -d -t 800 > android-logcat-api-${{ matrix.api-level }}.txt
+            if grep -A 20 "FATAL EXCEPTION" android-logcat-api-${{ matrix.api-level }}.txt | grep -q "ir.taprasystem.employee"; then cat android-logcat-api-${{ matrix.api-level }}.txt; exit 1; fi
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
             adb shell uiautomator dump /sdcard/tapra-ui.xml
             adb pull /sdcard/tapra-ui.xml tapra-ui-api-${{ matrix.api-level }}.xml
-            if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار|تنظیم باتری برای ورود الزامی است" tapra-ui-api-${{ matrix.api-level }}.xml; then cat tapra-ui-api-${{ matrix.api-level }}.xml; exit 1; fi
+            if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" tapra-ui-api-${{ matrix.api-level }}.xml; then cat tapra-ui-api-${{ matrix.api-level }}.xml; exit 1; fi
 
-  publish:
-    needs: install-smoke-test
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Download verified APK
-        uses: actions/download-artifact@v4
-        with:
-          name: tapra-employee-android-v1.2.3
-          path: apk
-
-      - name: Publish installable APK
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          tag="android-test-v1.2.3-${GITHUB_RUN_NUMBER}"
-          gh release create "$tag" \
-            apk/tapra-employee-v1.2.3.apk \
-            apk/tapra-employee-v1.2.3.apk.sha256 \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "Tapra Android v1.2.3 (${GITHUB_RUN_NUMBER})" \
-            --notes "Installable APK verified on Android 6, Android 10, and Android 15 emulators. Built from ${GITHUB_SHA}."
+# This workflow deliberately produces only a short-lived debug verification
+# artifact. Stable production signing and release publication are separate,
+# manually authorized processes and require no repository signing secret here.

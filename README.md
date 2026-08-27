@@ -7,7 +7,7 @@
 - رابط و API: Next.js 16 روی Node.js 22
 - دیتابیس: MySQL/MariaDB
 - فایل‌ها و رسیدها: دیسک همان سرور در `storage/uploads`
-- استقرار: cPanel Application Manager یا PM2 پشت Apache/Nginx
+- استقرار Production: سرویس canonical با نام `rahkar-taprasystem.service` در systemd، پشت Apache/Nginx
 - DNS/CDN: رکوردهای A دامنه اصلی و `www` به IP سرور
 
 این نسخه هیچ وابستگی اجرایی به Cloudflare Workers، D1 یا R2 ندارد. استفاده از هر CDN استاندارد فقط در لایه DNS/Proxy و SSL مجاز است.
@@ -42,6 +42,8 @@ npm start
 رمز اولیه را بلافاصله بعد از اولین ورود تغییر دهید. اطلاعات حساب اولیه را می‌توان پیش از اولین اجرا از متغیرهای `INITIAL_ADMIN_*` تغییر داد.
 
 راهنمای کامل سرور: [deploy/CPANEL_DEPLOYMENT.md](deploy/CPANEL_DEPLOYMENT.md)
+
+قواعد runtime، timer هشدارهای رهگیری در systemd و Nginx امن در [deploy/README.md](deploy/README.md) ثبت شده‌اند. مسیر عادی `deploy.sh` فقط systemd را کنترل می‌کند.
 
 ## بررسی کیفیت
 

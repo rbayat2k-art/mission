@@ -46,7 +46,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class MainActivity extends Activity {
-    private static final String APP_URL = "https://taprasystem.ir/";
+    private static final String APP_URL = BuildConfig.BASE_URL.replaceAll("/+$", "") + "/";
     private static final String INTERNAL_BROADCAST_PERMISSION =
         "ir.taprasystem.employee.permission.INTERNAL_BROADCAST";
     private static final String SAVED_URL_KEY = "tapra:last-safe-url";
@@ -460,9 +460,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean openExternalWhenNeeded(Uri uri) {
-        String host = uri.getHost();
-        boolean trusted = "https".equalsIgnoreCase(uri.getScheme()) &&
-            ("taprasystem.ir".equalsIgnoreCase(host) || "www.taprasystem.ir".equalsIgnoreCase(host));
+        boolean trusted = isBackendOrigin(uri);
         if (trusted) return false;
         try {
             startActivity(new Intent(Intent.ACTION_VIEW, uri));
@@ -474,10 +472,14 @@ public class MainActivity extends Activity {
 
     private boolean isTrustedWebOrigin(String origin) {
         if (origin == null || origin.trim().isEmpty()) return false;
-        Uri uri = Uri.parse(origin);
-        String host = uri.getHost();
-        return "https".equalsIgnoreCase(uri.getScheme()) &&
-            ("taprasystem.ir".equalsIgnoreCase(host) || "www.taprasystem.ir".equalsIgnoreCase(host));
+        return isBackendOrigin(Uri.parse(origin));
+    }
+
+    private boolean isBackendOrigin(Uri uri) {
+        Uri backend = Uri.parse(APP_URL);
+        return backend.getScheme() != null && backend.getScheme().equalsIgnoreCase(uri.getScheme()) &&
+            backend.getHost() != null && backend.getHost().equalsIgnoreCase(uri.getHost()) &&
+            backend.getPort() == uri.getPort();
     }
 
     private void resolvePendingGeolocation(boolean granted) {
@@ -562,11 +564,16 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void setTrackingActive(boolean active) {
+    private void setTrackingActive(boolean active, String workSessionId) {
         String activeUserId = NativeNotificationHelper.activeUserId(this);
+        String safeWorkSessionId = workSessionId == null ? "" : workSessionId.trim();
         if (active && activeUserId.isEmpty()) {
             Toast.makeText(this,
                 "برای شروع فعالیت دوباره وارد حساب کاربری شوید", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (active && safeWorkSessionId.isEmpty()) {
+            Toast.makeText(this, "شناسه فعالیت دریافت نشد؛ برنامه را تازه‌سازی کنید", Toast.LENGTH_LONG).show();
             return;
         }
         if (active && !hasLocationPermission()) {
@@ -584,7 +591,8 @@ public class MainActivity extends Activity {
         }
         Intent serviceIntent = new Intent(this, LocationTrackingService.class)
             .setAction(active ? LocationTrackingService.ACTION_START : LocationTrackingService.ACTION_STOP)
-            .putExtra(LocationTrackingService.EXTRA_USER_ID, activeUserId);
+            .putExtra(LocationTrackingService.EXTRA_USER_ID, activeUserId)
+            .putExtra(LocationTrackingService.EXTRA_WORK_SESSION_ID, safeWorkSessionId);
         if (active && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent);
         else startService(serviceIntent);
     }
@@ -594,13 +602,13 @@ public class MainActivity extends Activity {
         if (safeUserId.isEmpty() || safeUserId.length() > 64) return;
         String previousUserId = NativeNotificationHelper.activeUserId(this);
         if (!previousUserId.isEmpty() && !previousUserId.equals(safeUserId)) {
-            setTrackingActive(false);
+            setTrackingActive(false, "");
         }
         NativeNotificationHelper.switchUser(this, safeUserId);
     }
 
     private void clearAuthenticatedUser() {
-        setTrackingActive(false);
+        setTrackingActive(false, "");
         NativeNotificationHelper.clearUser(this);
     }
 
@@ -708,8 +716,8 @@ public class MainActivity extends Activity {
 
     private final class AndroidBridge {
         @JavascriptInterface
-        public void setTrackingActive(boolean active) {
-            runOnUiThread(() -> MainActivity.this.setTrackingActive(active));
+        public void setTrackingActive(boolean active, String workSessionId) {
+            runOnUiThread(() -> MainActivity.this.setTrackingActive(active, workSessionId));
         }
 
         @JavascriptInterface

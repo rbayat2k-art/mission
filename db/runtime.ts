@@ -58,6 +58,10 @@ async function applySchema() {
   if (!locationRouteIndex) await database.prepare("ALTER TABLE location_points ADD INDEX idx_location_route_day (recorded_at, accuracy_cm, user_id, work_session_id)").run();
   const notificationColumn = await database.prepare("SELECT COLUMN_NAME AS columnName FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'notification_enabled'").first();
   if (!notificationColumn) await database.prepare("ALTER TABLE users ADD COLUMN notification_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER must_change_password").run();
+  const notificationDedupeColumn = await database.prepare("SELECT COLUMN_NAME AS columnName FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notifications' AND COLUMN_NAME = 'dedupe_key'").first();
+  if (!notificationDedupeColumn) await database.prepare("ALTER TABLE notifications ADD COLUMN dedupe_key VARCHAR(190) NULL AFTER user_id").run();
+  const notificationDedupeIndex = await database.prepare("SELECT INDEX_NAME AS indexName FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notifications' AND INDEX_NAME = 'idx_notifications_user_dedupe'").first();
+  if (!notificationDedupeIndex) await database.prepare("ALTER TABLE notifications ADD UNIQUE INDEX idx_notifications_user_dedupe (user_id, dedupe_key)").run();
 }
 
 async function seedDatabase() {

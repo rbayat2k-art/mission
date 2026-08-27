@@ -3,6 +3,7 @@ import { requireRole } from "../../../lib/auth";
 import { getEmployeeDailySummary } from "../../../lib/employee-daily-summary";
 import { parseMissionLocation } from "../../../lib/mission-location";
 import { getDailyWorkMetrics, GPS_GAP_GRACE_MINUTES, OVERTIME_START_MINUTES, reconcileNineHourLimit, SELF_REPORTED_START_PENALTY, tehranDayBounds, tehranTimeTodayToIso } from "../../../lib/work-session-policy";
+import { pushScoreLedgerEntry } from "../../../lib/score-ledger";
 
 type WorkSessionBody = {
   action?: "start" | "end" | "self_report_start";
@@ -77,12 +78,13 @@ export async function POST(request: Request) {
     const workType = metrics.regularMinutes >= OVERTIME_START_MINUTES ? "overtime" : "regular";
     const sessionId = clientSessionId ?? crypto.randomUUID();
     const session = { id: sessionId, status: "active", startedAt: now, workType };
-    await db.batch([
+    const statements = [
       db.prepare("INSERT INTO work_sessions (id, user_id, status, started_at, start_source, work_type, approval_status, score_penalty, created_at) VALUES (?, ?, 'active', ?, 'live', ?, 'approved', 0, ?)").bind(session.id, auth.user.id, now, workType, now),
       locationInsert(db, auth.user.id, session.id, location, now),
       db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'work_session.started_with_gps', 'work_session', ?, ?, ?)")
         .bind(crypto.randomUUID(), auth.user.id, session.id, JSON.stringify({ workType, accuracy: Math.round(location.accuracy), recordedAt: location.recordedAt }), now),
-    ]);
+    ];
+    await db.batch(statements);
     return Response.json({ session, policy: { overtime: workType === "overtime" } }, { status: 201 });
   }
 
@@ -110,7 +112,7 @@ export async function POST(request: Request) {
     const liveSessionId = crypto.randomUUID();
     const liveWorkType = metrics.regularMinutes + claimedMinutes >= OVERTIME_START_MINUTES ? "overtime" : "regular";
     const eventId = crypto.randomUUID();
-    await db.batch([
+    const statements = [
       db.prepare("INSERT INTO work_sessions (id, user_id, status, started_at, ended_at, end_note, start_source, end_source, work_type, approval_status, score_penalty, created_at) VALUES (?, ?, 'ended', ?, ?, ?, 'self_reported', 'self_report_submitted', 'regular', 'pending', ?, ?)")
         .bind(correctionId, auth.user.id, claimedStart, claimedEnd, reason, SELF_REPORTED_START_PENALTY, now),
       db.prepare("INSERT INTO work_sessions (id, user_id, status, started_at, start_source, work_type, approval_status, score_penalty, created_at) VALUES (?, ?, 'active', ?, 'live', ?, 'approved', 0, ?)")
@@ -120,7 +122,11 @@ export async function POST(request: Request) {
         .bind(eventId, auth.user.id, correctionId, JSON.stringify({ sessionId: correctionId, claimedStart, claimedEnd, claimedMinutes, reason, scorePenalty: SELF_REPORTED_START_PENALTY }), now, now),
       db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'work_session.self_reported_start', 'work_session', ?, ?, ?)")
         .bind(crypto.randomUUID(), auth.user.id, correctionId, JSON.stringify({ claimedStart, claimedEnd, claimedMinutes, reason, scorePenalty: SELF_REPORTED_START_PENALTY, approvalStatus: "pending", continuedSessionId: liveSessionId }), now),
-    ]);
+    ];
+    pushScoreLedgerEntry(statements,db,{userId:auth.user.id,workSessionId:correctionId,actorId:auth.user.id,
+      pointsDelta:-SELF_REPORTED_START_PENALTY,bucket:"penalty",reasonCode:"self_reported_work_start",
+      source:"work_session_self_report",sourceEventId:correctionId,occurredAt:now,metadata:{claimedStart,claimedEnd,claimedMinutes}});
+    await db.batch(statements);
     return Response.json({
       correction: { id: correctionId, status: "pending", startedAt: claimedStart, endedAt: claimedEnd, claimedMinutes, scorePenalty: SELF_REPORTED_START_PENALTY },
       session: { id: liveSessionId, status: "active", startedAt: now, workType: liveWorkType },

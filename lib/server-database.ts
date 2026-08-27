@@ -94,6 +94,12 @@ class MySqlTransaction {
   prepare(query: string) {
     return new PreparedStatement(query, this.connection);
   }
+
+  async batch<T = Record<string, unknown>>(statements: PreparedStatement[]) {
+    const results: DatabaseResult<T>[] = [];
+    for (const statement of statements) results.push(await statement.runWith<T>(this.connection));
+    return results;
+  }
 }
 
 export class MySqlDatabase {

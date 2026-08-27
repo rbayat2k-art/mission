@@ -1054,7 +1054,9 @@ test("ships an Android 1.2.3 wrapper with account-isolated GPS and native notifi
   assert.match(workflow, /tapra-battery-gate-api/);
   assert.match(workflow, /deviceidle whitelist \+ir\.taprasystem\.employee/);
   assert.match(workflow, /POST_NOTIFICATIONS \|\| true/);
-  assert.match(workflow, /tapra-employee-v1\.2\.3\.apk/);
+  assert.match(workflow, /tapra-employee-ci-debug\.apk/);
+  assert.match(workflow, /contents: read/);
+  assert.doesNotMatch(workflow, /gh release|contents: write/);
 });
 
 test("supports mission brief attachments with picker, drag/drop, clipboard paste and employee access", async () => {
@@ -1082,9 +1084,10 @@ test("supports mission brief attachments with picker, drag/drop, clipboard paste
   assert.match(styles, /\.mission-brief-files/);
 });
 
-test("renders trusted daily GPS routes only for authorized active map users", async () => {
-  const [routes, page, map, styles, schema, runtime, migration] = await Promise.all([
+test("renders trusted daily and historical GPS routes only for authorized map users", async () => {
+  const [routes, historicalRoute, page, map, styles, schema, runtime, migration] = await Promise.all([
     readFile(new URL("../app/api/locations/routes/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/historical-route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/OperationsMap.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -1095,20 +1098,18 @@ test("renders trusted daily GPS routes only for authorized active map users", as
 
   assert.match(routes, /requireRole\(request, \["owner", "admin", "supervisor"\]\)/);
   assert.doesNotMatch(routes, /requireRole\(request, \[[^\]]*"employee"/);
-  assert.match(routes, /WHERE u\.status = 'active'/);
-  assert.match(routes, /u\.id = \? OR \(u\.supervisor_id = \? AND u\.role = 'employee'\)/);
+  assert.match(routes, /u\.id = \? OR \(u\.supervisor_id = \? AND u\.role = 'employee' AND u\.status = 'active'\)/);
   assert.match(routes, /private, no-store, max-age=0/);
   assert.match(routes, /"Vary": "Cookie"/);
   assert.match(routes, /MAX_TRUSTED_LOCATION_ACCURACY_METERS \* 100/);
-  assert.match(routes, /tehranDayBounds\(new Date\(\)\)/);
-  assert.match(routes, /ROUTE_GAP_MS = 2 \* 60_000/);
-  assert.match(routes, /MAX_ROUTE_SPEED_KMH = 160/);
-  assert.match(routes, /current\.workSessionId !== row\.workSessionId/);
-  assert.match(routes, /MAX_POINTS_PER_USER = 900/);
-  assert.match(routes, /MAX_TOTAL_POINTS = 12_000/);
+  assert.match(historicalRoute, /HISTORICAL_ROUTE_GAP_MS = 2 \* 60_000/);
+  assert.match(historicalRoute, /HISTORICAL_ROUTE_MAX_SPEED_KMH = 160/);
+  assert.match(historicalRoute, /previousRow\.workSessionId === row\.workSessionId/);
+  assert.match(historicalRoute, /HISTORICAL_ROUTE_MAX_POINTS_PER_USER = 900/);
+  assert.match(historicalRoute, /HISTORICAL_ROUTE_MAX_TOTAL_POINTS = 12_000/);
   assert.match(routes, /MIN\(CONCAT\(sampled\.recorded_at, '#', sampled\.id\)\)/);
-  assert.match(routes, /simplifyPoints\(segment\.points, budgets\[index\]\)/);
-  assert.match(routes, /\[points\[0\], points\[points\.length - 1\]\]/);
+  assert.match(historicalRoute, /simplifyPoints\(segment\.points, budgets\[index\]\)/);
+  assert.match(historicalRoute, /\[points\[0\], points\[points\.length - 1\]\]/);
   assert.match(page, /api<\{segments:MapRouteSegment\[\]\}>\("\/api\/locations\/routes"\)/);
   assert.match(page, /"\/api\/locations\/routes"\)\.then\(routes=>setRouteSegments\(routes\.segments\)\)\.catch\(\(\)=>undefined\)/);
   assert.match(page, /routeSegments=\{routeSegments\}/);

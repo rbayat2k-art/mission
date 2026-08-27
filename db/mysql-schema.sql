@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS notifications (
   id CHAR(36) PRIMARY KEY,
   user_id CHAR(36) NOT NULL,
+  dedupe_key VARCHAR(190) NULL,
   type VARCHAR(60) NOT NULL,
   title VARCHAR(255) NOT NULL,
   message TEXT NOT NULL,
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS notifications (
   read_at VARCHAR(40) NULL,
   created_at VARCHAR(40) NOT NULL,
   INDEX idx_notifications_user_unread (user_id, read_at, created_at),
+  UNIQUE INDEX idx_notifications_user_dedupe (user_id, dedupe_key),
   CONSTRAINT fk_notifications_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- statement-breakpoint
@@ -82,6 +84,59 @@ CREATE TABLE IF NOT EXISTS work_sessions (
   INDEX idx_work_sessions_user_status (user_id, status),
   INDEX idx_work_sessions_approval (approval_status, started_at),
   CONSTRAINT fk_work_sessions_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- statement-breakpoint
+CREATE TABLE IF NOT EXISTS tracking_presence (
+  work_session_id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  last_contact_at VARCHAR(40) NULL,
+  last_contact_source VARCHAR(24) NULL,
+  last_trusted_gps_at VARCHAR(40) NULL,
+  last_trusted_gps_received_at VARCHAR(40) NULL,
+  created_at VARCHAR(40) NOT NULL,
+  updated_at VARCHAR(40) NOT NULL,
+  INDEX idx_tracking_presence_user_contact (user_id, last_contact_at),
+  INDEX idx_tracking_presence_gps (last_trusted_gps_at),
+  CONSTRAINT fk_tracking_presence_session FOREIGN KEY (work_session_id) REFERENCES work_sessions(id) ON DELETE CASCADE,
+  CONSTRAINT fk_tracking_presence_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- statement-breakpoint
+CREATE TABLE IF NOT EXISTS tracking_alert_states (
+  work_session_id CHAR(36) NOT NULL,
+  alert_type VARCHAR(32) NOT NULL,
+  user_id CHAR(36) NOT NULL,
+  state VARCHAR(16) NOT NULL DEFAULT 'normal',
+  last_observed_at VARCHAR(40) NOT NULL,
+  last_transition_at VARCHAR(40) NOT NULL,
+  last_notification_at VARCHAR(40) NULL,
+  created_at VARCHAR(40) NOT NULL,
+  updated_at VARCHAR(40) NOT NULL,
+  PRIMARY KEY (work_session_id, alert_type),
+  INDEX idx_tracking_alert_states_open (state, updated_at),
+  INDEX idx_tracking_alert_states_user (user_id, state),
+  CONSTRAINT fk_tracking_alert_states_session FOREIGN KEY (work_session_id) REFERENCES work_sessions(id) ON DELETE CASCADE,
+  CONSTRAINT fk_tracking_alert_states_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- statement-breakpoint
+CREATE TABLE IF NOT EXISTS tracking_alert_transitions (
+  id CHAR(36) PRIMARY KEY,
+  dedupe_key VARCHAR(190) NOT NULL UNIQUE,
+  work_session_id CHAR(36) NOT NULL,
+  user_id CHAR(36) NOT NULL,
+  alert_type VARCHAR(32) NOT NULL,
+  from_state VARCHAR(16) NOT NULL,
+  to_state VARCHAR(16) NOT NULL,
+  reason VARCHAR(40) NOT NULL,
+  contact_age_seconds INT NULL,
+  gps_age_seconds INT NULL,
+  score_impact TINYINT(1) NOT NULL DEFAULT 0,
+  notification_sent TINYINT(1) NOT NULL DEFAULT 0,
+  occurred_at VARCHAR(40) NOT NULL,
+  created_at VARCHAR(40) NOT NULL,
+  INDEX idx_tracking_alert_transitions_session (work_session_id, occurred_at),
+  INDEX idx_tracking_alert_transitions_user (user_id, occurred_at),
+  CONSTRAINT fk_tracking_alert_transitions_session FOREIGN KEY (work_session_id) REFERENCES work_sessions(id) ON DELETE CASCADE,
+  CONSTRAINT fk_tracking_alert_transitions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- statement-breakpoint
 CREATE TABLE IF NOT EXISTS missions (
@@ -405,4 +460,41 @@ CREATE TABLE IF NOT EXISTS attachments (
   INDEX idx_attachments_follow_up_message (follow_up_message_id, created_at),
   CONSTRAINT fk_attachments_mission FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE,
   CONSTRAINT fk_attachments_uploader FOREIGN KEY (uploaded_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- statement-breakpoint
+CREATE TABLE IF NOT EXISTS score_ledger_entries (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  mission_id CHAR(36) NULL,
+  attempt_id CHAR(36) NULL,
+  work_session_id CHAR(36) NULL,
+  points_delta INT NOT NULL,
+  bucket VARCHAR(24) NOT NULL,
+  reason_code VARCHAR(100) NOT NULL,
+  source VARCHAR(80) NOT NULL,
+  source_event_id VARCHAR(190) NOT NULL,
+  idempotency_key CHAR(64) NOT NULL UNIQUE,
+  actor_id CHAR(36) NULL,
+  reversal_of CHAR(36) NULL,
+  occurred_at VARCHAR(40) NOT NULL,
+  created_at VARCHAR(40) NOT NULL,
+  metadata LONGTEXT NOT NULL,
+  INDEX idx_score_ledger_user_occurred (user_id, occurred_at),
+  INDEX idx_score_ledger_mission_occurred (mission_id, occurred_at),
+  INDEX idx_score_ledger_session_occurred (work_session_id, occurred_at),
+  INDEX idx_score_ledger_bucket_occurred (bucket, occurred_at),
+  CONSTRAINT fk_score_ledger_user FOREIGN KEY (user_id) REFERENCES users(id),
+  CONSTRAINT fk_score_ledger_mission FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE SET NULL,
+  CONSTRAINT fk_score_ledger_attempt FOREIGN KEY (attempt_id) REFERENCES mission_attempts(id) ON DELETE SET NULL,
+  CONSTRAINT fk_score_ledger_session FOREIGN KEY (work_session_id) REFERENCES work_sessions(id) ON DELETE SET NULL,
+  CONSTRAINT fk_score_ledger_actor FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL,
+  CONSTRAINT fk_score_ledger_reversal FOREIGN KEY (reversal_of) REFERENCES score_ledger_entries(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- statement-breakpoint
+CREATE TABLE IF NOT EXISTS score_ledger_backfill_state (
+  id VARCHAR(40) PRIMARY KEY,
+  cutoff_at VARCHAR(40) NOT NULL,
+  mission_high_watermark CHAR(36) NOT NULL,
+  session_high_watermark CHAR(36) NOT NULL,
+  completed_at VARCHAR(40) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

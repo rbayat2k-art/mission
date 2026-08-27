@@ -21,6 +21,12 @@ gradlew.bat clean lintDebug testDebugUnitTest assembleDebug
 خروجی در `app/build/outputs/apk/debug/app-debug.apk` قرار می‌گیرد. نسخه ۱.۲.۰ در صورت
 خرابی WebView، کش قدیمی یا قطع اینترنت دیگر صفحه سفید نشان نمی‌دهد و امکان تلاش مجدد دارد.
 
+آدرس Backend در BuildConfig قرار دارد. نسخه Release بدون پارامتر فقط از
+`https://taprasystem.ir` استفاده می‌کند. برای تست محلی شبیه‌ساز می‌توان Debug را با
+`-PtapraDebugBackendUrl=http://10.0.2.2:3000` ساخت؛ مجوز cleartext فقط در منبع Debug
+فعال است و وارد Release نمی‌شود. APK گردش‌کار CI یک خروجی Debug آزمایشی است، نه
+نسخه قابل انتشار. امضای پایدار Release باید در فرایند جداگانه و با کلید امن انجام شود.
+
 ## مجوزهای لازم روی گوشی
 
 در اولین اجرا، Location دقیق و اعلان‌ها را مجاز کنید. هنگام فعالیت، اعلان دائمی

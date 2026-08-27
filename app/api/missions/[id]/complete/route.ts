@@ -3,7 +3,10 @@ import { requireRole } from "../../../../../lib/auth";
 import { locationSqlValues, parseMissionLocation } from "../../../../../lib/mission-location";
 import { normalizeFollowUpCategory } from "../../../../../lib/follow-up";
 import { createUserNotification } from "../../../../../lib/push-notifications";
+import { pushScoreLedgerEntry, scoreDelta } from "../../../../../lib/score-ledger";
 import { enrichMissionStatusEventLocation, prepareMissionStatusEvent } from "../../../../../lib/mission-status-events";
+
+class TransitionConflict extends Error {}
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const auth = await requireRole(request, ["owner", "admin", "supervisor", "employee"]);
@@ -12,11 +15,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const db = await ensureDatabase();
   const mission = await db.prepare(`SELECT m.id, m.source, m.assigned_to AS assignedTo, m.status, m.started_at AS startedAt,
     m.workflow_type AS workflowType, m.current_step_no AS currentStepNo,
-    m.score_penalty AS scorePenalty, m.start_latitude_e6 AS startLatitudeE6, m.start_longitude_e6 AS startLongitudeE6,
+    m.score_pending AS scorePending, m.score_confirmed AS scoreConfirmed, m.score_penalty AS scorePenalty,
+    m.start_latitude_e6 AS startLatitudeE6, m.start_longitude_e6 AS startLongitudeE6,
     m.start_accuracy_cm AS startAccuracyCm, m.start_location_recorded_at AS startLocationRecordedAt,
     u.supervisor_id AS supervisorId, s.status AS supervisorStatus, m.title
     FROM missions m JOIN users u ON u.id = m.assigned_to LEFT JOIN users s ON s.id = u.supervisor_id WHERE m.id = ?`).bind(id).first<{
-      id: string; source: string; assignedTo: string; status: string; startedAt: string | null; scorePenalty: number; workflowType:string; currentStepNo:number;
+      id: string; source: string; assignedTo: string; status: string; startedAt: string | null; scorePending:number; scoreConfirmed:number; scorePenalty: number; workflowType:string; currentStepNo:number;
       startLatitudeE6: number | null; startLongitudeE6: number | null; startAccuracyCm: number | null; startLocationRecordedAt: string | null;
       supervisorId: string | null; supervisorStatus: string | null; title: string;
     }>();
@@ -66,27 +70,28 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const nextStepNo = hasNextStep ? step.stepNo + 1 : step.stepNo;
     const followUpRequestId = requestSupervisorAction ? crypto.randomUUID() : null;
     const followUpMessageId = requestSupervisorAction ? crypto.randomUUID() : null;
+    const attemptId = crypto.randomUUID();
     const statusEvent = prepareMissionStatusEvent(db, { missionId:id, attemptNo, actorId:auth.user.id, actorRole:auth.user.role,
       eventType:"status_set", fromStatus:mission.status, toStatus:finalStatus, result:workResult, serverRecordedAt:now, location:endLocation,
       metadata:{ stepNo:step.stepNo, stepId:step.id, stepTitle:step.title, report:body.report.trim(), hasNextStep, requestSupervisorAction } });
     const statements = [
       db.prepare(`UPDATE mission_steps SET status=?, result=?, report=?, expense_amount=?, completed_at=?, end_latitude_e6=?,
-        end_longitude_e6=?, end_accuracy_cm=?, end_location_recorded_at=?, updated_at=? WHERE id=?`)
-        .bind(needsFollowUp ? "follow_up" : "completed", workResult, body.report.trim(), expenseAmount, now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, now, step.id),
+        end_longitude_e6=?, end_accuracy_cm=?, end_location_recorded_at=?, updated_at=? WHERE id=? AND status=?`)
+        .bind(needsFollowUp ? "follow_up" : "completed", workResult, body.report.trim(), expenseAmount, now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, now, step.id, step.status),
       db.prepare(`UPDATE mission_step_segments SET ended_at=COALESCE(ended_at, ?), end_reason=COALESCE(end_reason, ?),
         end_latitude_e6=COALESCE(end_latitude_e6, ?), end_longitude_e6=COALESCE(end_longitude_e6, ?),
         end_accuracy_cm=COALESCE(end_accuracy_cm, ?), end_location_recorded_at=COALESCE(end_location_recorded_at, ?) WHERE mission_step_id=? AND ended_at IS NULL`)
         .bind(now, needsFollowUp ? "follow_up" : "completed", endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, step.id),
       db.prepare(`UPDATE missions SET status=?, current_step_no=?, result=?, report=?, expense_amount=expense_amount+?,
-        score_pending=?, score_confirmed=?, completed_at=?, end_latitude_e6=?, end_longitude_e6=?, end_accuracy_cm=?, end_location_recorded_at=? WHERE id=?`)
+        score_pending=?, score_confirmed=?, completed_at=?, end_latitude_e6=?, end_longitude_e6=?, end_accuracy_cm=?, end_location_recorded_at=? WHERE id=? AND status=? AND current_step_no=?`)
         .bind(finalStatus, nextStepNo, hasNextStep ? null : workResult, hasNextStep ? null : body.report.trim(), expenseAmount,
-          pendingScore, confirmedScore, hasNextStep || needsFollowUp ? null : now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, id),
+          pendingScore, confirmedScore, hasNextStep || needsFollowUp ? null : now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, id, mission.status, mission.currentStepNo),
       db.prepare(`INSERT INTO mission_attempts (id, mission_id, mission_step_id, attempt_no, result, report, destination_name,
         expense_amount, score_awarded, score_penalty, started_at, completed_at, start_latitude_e6, start_longitude_e6,
         start_accuracy_cm, start_location_recorded_at, destination_latitude_e6, destination_longitude_e6,
         destination_accuracy_cm, destination_recorded_at, end_latitude_e6, end_longitude_e6, end_accuracy_cm,
         end_location_recorded_at, approval_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(crypto.randomUUID(), id, step.id, attemptNo, workResult, body.report.trim(), step.destinationName, expenseAmount,
+        .bind(attemptId, id, step.id, attemptNo, workResult, body.report.trim(), step.destinationName, expenseAmount,
           baseScore, step.startedAt, now, step.startLatitudeE6, step.startLongitudeE6, step.startAccuracyCm, step.startLocationRecordedAt,
           step.destinationLatitudeE6, step.destinationLongitudeE6, step.destinationAccuracyCm, step.destinationRecordedAt,
           endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, needsFinalApproval ? "pending" : "not_required", now),
@@ -94,6 +99,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.step_completed', 'mission', ?, ?, ?)")
         .bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ stepNo:step.stepNo, stepTitle:step.title, result:workResult, hasNextStep, nextStepNo, finalStatus }), now),
     ];
+    pushScoreLedgerEntry(statements, db, { userId:mission.assignedTo, missionId:id, attemptId, actorId:auth.user.id,
+      pointsDelta:scoreDelta(Number(mission.scorePending ?? 0), pendingScore), bucket:"pending", reasonCode:"mission_step_completed",
+      source:"mission_complete", sourceEventId:statusEvent.id, occurredAt:now, metadata:{ attemptNo, stepNo:step.stepNo } });
+    pushScoreLedgerEntry(statements, db, { userId:mission.assignedTo, missionId:id, attemptId, actorId:auth.user.id,
+      pointsDelta:scoreDelta(Number(mission.scoreConfirmed ?? 0), confirmedScore), bucket:"confirmed", reasonCode:"mission_step_completed",
+      source:"mission_complete", sourceEventId:statusEvent.id, occurredAt:now, metadata:{ attemptNo, stepNo:step.stepNo } });
     if (needsFinalApproval) statements.push(db.prepare("INSERT INTO approvals (id, mission_id, status, created_at) VALUES (?, ?, 'pending', ?) ON DUPLICATE KEY UPDATE status='pending', reason=NULL, decided_at=NULL").bind(crypto.randomUUID(), id, now));
     if (followUpRequestId && followUpMessageId && mission.supervisorId) {
       const category = normalizeFollowUpCategory(body.followUpCategory);
@@ -102,7 +113,20 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         db.prepare("INSERT INTO mission_follow_up_messages (id, request_id, sender_id, message_type, body, created_at) VALUES (?, ?, ?, 'text', ?, ?)").bind(followUpMessageId, followUpRequestId, auth.user.id, body.report.trim(), now),
       );
     }
-    await db.batch(statements);
+    try {
+      await db.transaction(async transaction=>{
+        const lockedMission=await transaction.prepare("SELECT status, current_step_no AS currentStepNo, score_pending AS scorePending, score_confirmed AS scoreConfirmed FROM missions WHERE id=? FOR UPDATE")
+          .bind(id).first<{status:string;currentStepNo:number;scorePending:number;scoreConfirmed:number}>();
+        const lockedStep=await transaction.prepare("SELECT status FROM mission_steps WHERE id=? FOR UPDATE").bind(step.id).first<{status:string}>();
+        if(!lockedMission||!lockedStep||lockedMission.status!==mission.status||Number(lockedMission.currentStepNo)!==Number(mission.currentStepNo)||
+          lockedStep.status!==step.status||Number(lockedMission.scorePending)!==Number(mission.scorePending)||Number(lockedMission.scoreConfirmed)!==Number(mission.scoreConfirmed))throw new TransitionConflict();
+        const results=await transaction.batch(statements);
+        if((results[0]?.meta.changes??0)!==1||(results[2]?.meta.changes??0)!==1)throw new TransitionConflict();
+      });
+    } catch(error) {
+      if(error instanceof TransitionConflict)return Response.json({error:"وضعیت مأموریت یا مرحله هم‌زمان تغییر کرده است؛ صفحه را تازه کنید."},{status:409});
+      throw error;
+    }
     void enrichMissionStatusEventLocation(statusEvent.id, endLocation);
     if (followUpRequestId && mission.supervisorId) await createUserNotification(mission.supervisorId, { type:"follow_up_created", title:"درخواست اقدام جدید", message:`برای مأموریت «${mission.title}» درخواست پیگیری ثبت شد.`, entityType:"follow_up_request", entityId:followUpRequestId, url:"/?panel=admin&screen=actions" });
     return Response.json({ mission:{ id, status:finalStatus, attemptNo, workflowType:"multi_stage", completedStepNo:step.stepNo, currentStepNo:nextStepNo, hasNextStep, needsFollowUp, requestSupervisorAction, followUpRequestId, scorePending:pendingScore, scoreConfirmed:confirmedScore, endLocation } });
@@ -135,11 +159,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const attemptNo = Number(attempt?.attemptNo ?? 1);
   const followUpRequestId = requestSupervisorAction ? crypto.randomUUID() : null;
   const followUpMessageId = requestSupervisorAction ? crypto.randomUUID() : null;
+  const attemptId = crypto.randomUUID();
   const statusEvent = prepareMissionStatusEvent(db, { missionId:id, attemptNo, actorId:auth.user.id, actorRole:auth.user.role,
     eventType:"status_set", fromStatus:mission.status, toStatus:status, result:workResult, serverRecordedAt:now,
     location:endLocation, metadata:{ report:body.report.trim(), requestSupervisorAction, destinationName:registeredDestination.destinationName } });
   const statements = [
-    db.prepare("UPDATE missions SET status = ?, destination_name = ?, result = ?, report = ?, expense_amount = ?, score_pending = ?, score_confirmed = ?, score_penalty = ?, score_note = ?, completed_at = ?, end_latitude_e6 = ?, end_longitude_e6 = ?, end_accuracy_cm = ?, end_location_recorded_at = ? WHERE id = ?").bind(status, registeredDestination.destinationName, workResult, body.report.trim(), expenseAmount, pendingScore, confirmedScore, scorePenalty, scoreNote, now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, id),
+    db.prepare("UPDATE missions SET status = ?, destination_name = ?, result = ?, report = ?, expense_amount = ?, score_pending = ?, score_confirmed = ?, score_penalty = ?, score_note = ?, completed_at = ?, end_latitude_e6 = ?, end_longitude_e6 = ?, end_accuracy_cm = ?, end_location_recorded_at = ? WHERE id = ? AND status = ?").bind(status, registeredDestination.destinationName, workResult, body.report.trim(), expenseAmount, pendingScore, confirmedScore, scorePenalty, scoreNote, now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, id, mission.status),
     db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.completed', 'mission', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ status, baseScore, awardedScore, scorePenalty, scoreNote, completedWithoutStart, result: workResult, expenseAmount, requestSupervisorAction, endLocationRecordedAt, endAccuracy: Math.round(endLocation.accuracy) }), now),
     db.prepare(`INSERT INTO mission_attempts (
       id, mission_id, attempt_no, result, report, destination_name, expense_amount, score_awarded, score_penalty,
@@ -147,7 +172,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       destination_latitude_e6, destination_longitude_e6, destination_accuracy_cm, destination_recorded_at,
       end_latitude_e6, end_longitude_e6, end_accuracy_cm, end_location_recorded_at, approval_status, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
-      crypto.randomUUID(), id, attemptNo, workResult, body.report.trim(), registeredDestination.destinationName, expenseAmount,
+      attemptId, id, attemptNo, workResult, body.report.trim(), registeredDestination.destinationName, expenseAmount,
       awardedScore, scorePenalty, mission.startedAt, now, mission.startLatitudeE6, mission.startLongitudeE6,
       mission.startAccuracyCm, mission.startLocationRecordedAt, registeredDestination.latitudeE6,
       registeredDestination.longitudeE6, registeredDestination.accuracyCm, registeredDestination.recordedAt,
@@ -155,6 +180,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     ),
     statusEvent.statement,
   ];
+  pushScoreLedgerEntry(statements, db, { userId:mission.assignedTo, missionId:id, attemptId, actorId:auth.user.id,
+    pointsDelta:scoreDelta(Number(mission.scorePending ?? 0), pendingScore), bucket:"pending", reasonCode:"mission_completed",
+    source:"mission_complete", sourceEventId:statusEvent.id, occurredAt:now, metadata:{ attemptNo } });
+  pushScoreLedgerEntry(statements, db, { userId:mission.assignedTo, missionId:id, attemptId, actorId:auth.user.id,
+    pointsDelta:scoreDelta(Number(mission.scoreConfirmed ?? 0), confirmedScore), bucket:"confirmed", reasonCode:"mission_completed",
+    source:"mission_complete", sourceEventId:statusEvent.id, occurredAt:now, metadata:{ attemptNo } });
+  pushScoreLedgerEntry(statements, db, { userId:mission.assignedTo, missionId:id, attemptId, actorId:auth.user.id,
+    pointsDelta:-scoreDelta(Number(mission.scorePenalty ?? 0), scorePenalty), bucket:"penalty", reasonCode:"mission_completed",
+    source:"mission_complete", sourceEventId:statusEvent.id, occurredAt:now, metadata:{ attemptNo, completedWithoutStart } });
   if (completedWithoutStart && Number(mission.scorePenalty ?? 0) === 0) {
     statements.push(db.prepare("INSERT INTO integrity_events (id, user_id, work_session_id, type, severity, status, details, occurred_at, created_at) VALUES (?, ?, ?, 'mission_completed_without_start', 'medium', 'open', ?, ?, ?)").bind(
       crypto.randomUUID(), auth.user.id, activeSession?.id ?? null, JSON.stringify({ missionId: id, baseScore, awardedScore, scorePenalty, reason: scoreNote }), now, now,
@@ -169,7 +203,21 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'follow_up.created', 'follow_up_request', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, followUpRequestId, JSON.stringify({ missionId:id, attemptNo, category }), now),
     );
   }
-  await db.batch(statements);
+  try {
+    await db.transaction(async transaction=>{
+      const lockedMission=await transaction.prepare("SELECT status, score_pending AS scorePending, score_confirmed AS scoreConfirmed, score_penalty AS scorePenalty FROM missions WHERE id=? FOR UPDATE")
+        .bind(id).first<{status:string;scorePending:number;scoreConfirmed:number;scorePenalty:number}>();
+      const lockedDestination=await transaction.prepare("SELECT recorded_at AS recordedAt FROM mission_destinations WHERE mission_id=? AND user_id=? FOR UPDATE")
+        .bind(id,auth.user.id).first<{recordedAt:string}>();
+      if(!lockedMission||!lockedDestination||lockedMission.status!==mission.status||lockedDestination.recordedAt!==registeredDestination.recordedAt||
+        Number(lockedMission.scorePending)!==Number(mission.scorePending)||Number(lockedMission.scoreConfirmed)!==Number(mission.scoreConfirmed)||Number(lockedMission.scorePenalty)!==Number(mission.scorePenalty))throw new TransitionConflict();
+      const results=await transaction.batch(statements);
+      if((results[0]?.meta.changes??0)!==1)throw new TransitionConflict();
+    });
+  } catch(error) {
+    if(error instanceof TransitionConflict)return Response.json({error:"وضعیت مأموریت هم‌زمان تغییر کرده است؛ صفحه را تازه کنید."},{status:409});
+    throw error;
+  }
   void enrichMissionStatusEventLocation(statusEvent.id, endLocation);
   if (followUpRequestId && mission.supervisorId) await createUserNotification(mission.supervisorId, { type:"follow_up_created", title:"درخواست اقدام جدید", message:`برای مأموریت «${mission.title}» درخواست پیگیری ثبت شد.`, entityType:"follow_up_request", entityId:followUpRequestId, url:"/?panel=admin&screen=actions" });
   return Response.json({ mission: { id, status, attemptNo, needsFollowUp, requestSupervisorAction, followUpRequestId, scorePending: pendingScore, scoreConfirmed: confirmedScore, scorePenalty, scoreNote, completedWithoutStart, endLocation } });

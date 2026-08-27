@@ -38,6 +38,31 @@ export type MapRouteSegment = {
   }>;
 };
 
+export type MapRouteStop = {
+  id: string;
+  userId: string;
+  fullName: string;
+  workSessionId: string;
+  latitude: number;
+  longitude: number;
+  startedAt: string;
+  endedAt: string;
+  durationMinutes: number;
+  pointCount: number;
+};
+
+export type MapGpsGap = {
+  id: string;
+  userId: string;
+  fullName: string;
+  workSessionId: string;
+  from: MapRouteSegment["points"][number];
+  to: MapRouteSegment["points"][number];
+  startedAt: string;
+  endedAt: string;
+  durationMinutes: number;
+};
+
 function popupContent(title: string, rows: Array<[string, string]>) {
   const root = document.createElement("div");
   root.className = "operations-map-popup";
@@ -77,7 +102,7 @@ function relativeLocationTime(recordedAt: string) {
   return `${Math.floor(hours / 24).toLocaleString("fa-IR")} روز قبل`;
 }
 
-export default function OperationsMap({ currentLocations, destinations, routeSegments = [], tracePoints = [], large = false }: { currentLocations: MapCurrentLocation[]; destinations: MapDestination[]; routeSegments?: MapRouteSegment[]; tracePoints?: MapTracePoint[]; large?: boolean }) {
+export default function OperationsMap({ currentLocations, destinations, routeSegments = [], routeStops = [], gpsGaps = [], tracePoints = [], large = false }: { currentLocations: MapCurrentLocation[]; destinations: MapDestination[]; routeSegments?: MapRouteSegment[]; routeStops?: MapRouteStop[]; gpsGaps?: MapGpsGap[]; tracePoints?: MapTracePoint[]; large?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LeafletMap | null>(null);
   const savedViewRef = useRef<{ latitude: number; longitude: number; zoom: number } | null>(null);
@@ -141,6 +166,33 @@ export default function OperationsMap({ currentLocations, destinations, routeSeg
         ])).addTo(map);
       }
 
+      for (const stop of routeStops) {
+        const point: [number, number] = [stop.latitude, stop.longitude];
+        bounds.push(point);
+        L.circleMarker(point, { radius: 8, color: "#ffffff", weight: 3, fillColor: "#e38b2c", fillOpacity: 0.95 })
+          .bindPopup(popupContent(`توقف ${stop.fullName}`, [
+            ["شروع توقف", new Date(stop.startedAt).toLocaleString("fa-IR")],
+            ["پایان توقف", new Date(stop.endedAt).toLocaleString("fa-IR")],
+            ["مدت", `${stop.durationMinutes.toLocaleString("fa-IR")} دقیقه`],
+            ["نقاط معتبر", stop.pointCount.toLocaleString("fa-IR")],
+          ])).addTo(map);
+      }
+
+      for (const gap of gpsGaps) {
+        // Deliberately render only the two ends. A line across a GPS gap would
+        // falsely imply that the employee travelled along that connection.
+        const before: [number, number] = [gap.from.latitude, gap.from.longitude];
+        const resumed: [number, number] = [gap.to.latitude, gap.to.longitude];
+        bounds.push(before, resumed);
+        L.circleMarker(before, { radius: 5, color: "#d65353", weight: 2, fillColor: "#ffffff", fillOpacity: 1 }).addTo(map);
+        L.circleMarker(resumed, { radius: 7, color: "#ffffff", weight: 2, fillColor: "#d65353", fillOpacity: 1 })
+          .bindPopup(popupContent(`وقفه GPS ${gap.fullName}`, [
+            ["قطع از", new Date(gap.startedAt).toLocaleString("fa-IR")],
+            ["دریافت مجدد", new Date(gap.endedAt).toLocaleString("fa-IR")],
+            ["مدت وقفه", `${gap.durationMinutes.toLocaleString("fa-IR")} دقیقه`],
+          ])).addTo(map);
+      }
+
       for (const tracePoint of tracePoints) {
         const point: [number, number] = [tracePoint.latitude, tracePoint.longitude];
         bounds.push(point);
@@ -170,10 +222,10 @@ export default function OperationsMap({ currentLocations, destinations, routeSeg
       mapRef.current?.remove();
       mapRef.current = null;
     };
-  }, [currentLocations, destinations, routeSegments, tracePoints]);
+  }, [currentLocations, destinations, routeSegments, routeStops, gpsGaps, tracePoints]);
 
   return <div className={`operations-map ${large ? "large" : ""}`}>
     <div ref={containerRef} className="operations-map-canvas" aria-label="نقشه موقعیت فعلی، مسیر واقعی حرکت و مقصدهای ثبت‌شده" />
-    <div className="operations-map-legend">{tracePoints.length ? <><span><i className="trace-start" />شروع</span><span><i className="trace-destination" />مقصد</span><span><i className="trace-end" />پایان</span></> : <><span><i className="live" />زنده</span>{routeSegments.some(segment=>segment.points.length>1)&&<span><i className="route" />مسیر واقعی امروز</span>}{currentLocations.some(location=>!location.isLive)&&<><span><i className="recent" />تا ۳۰ دقیقه</span><span><i className="stale" />قدیمی</span></>}<span><i className="pin" />مقصدهای شماره‌دار</span></>}</div>
+    <div className="operations-map-legend">{tracePoints.length ? <><span><i className="trace-start" />شروع</span><span><i className="trace-destination" />مقصد</span><span><i className="trace-end" />پایان</span></> : <><span><i className="live" />زنده</span>{routeSegments.some(segment=>segment.points.length>1)&&<span><i className="route" />مسیر واقعی روز</span>}{routeStops.length>0&&<span><i className="route-stop" />توقف</span>}{gpsGaps.length>0&&<span><i className="route-gap" />وقفه GPS</span>}{currentLocations.some(location=>!location.isLive)&&<><span><i className="recent" />تا ۳۰ دقیقه</span><span><i className="stale" />قدیمی</span></>}<span><i className="pin" />مقصدهای شماره‌دار</span></>}</div>
   </div>;
 }

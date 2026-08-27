@@ -1,6 +1,9 @@
 import { ensureDatabase } from "../../../../../db/runtime";
 import { requireRole } from "../../../../../lib/auth";
 import { distanceMeters } from "../../../../../lib/mission-location";
+import { pushScoreLedgerEntry, scoreDelta } from "../../../../../lib/score-ledger";
+
+class TransitionConflict extends Error {}
 
 type MissionRow = {
   id: string; title: string; description: string; status: string; result: string | null; report: string | null;
@@ -125,7 +128,13 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   if (!Number.isInteger(score) || score < 0 || score > 12) return Response.json({ error: "امتیاز ارزیابی باید عدد صحیح بین صفر تا ۱۲ باشد." }, { status: 400 });
   if (note.length < 3 || note.length > 500) return Response.json({ error: "دلیل ارزیابی را بین ۳ تا ۵۰۰ نویسه وارد کنید." }, { status: 400 });
   const db = await ensureDatabase();
-  const mission = await db.prepare("SELECT m.id, m.status, m.completed_at AS completedAt, m.created_by AS createdBy, u.supervisor_id AS supervisorId FROM missions m JOIN users u ON u.id = m.assigned_to WHERE m.id = ?").bind(id).first<{ id:string; status:string; completedAt:string|null; createdBy:string; supervisorId:string|null }>();
+  const mission = await db.prepare(`SELECT m.id, m.status, m.completed_at AS completedAt, m.created_by AS createdBy,
+    m.assigned_to AS assignedTo, m.score_pending AS scorePending, m.score_confirmed AS scoreConfirmed,
+    u.supervisor_id AS supervisorId,
+    (SELECT ma.id FROM mission_attempts ma WHERE ma.mission_id=m.id ORDER BY ma.attempt_no DESC LIMIT 1) AS attemptId
+    FROM missions m JOIN users u ON u.id = m.assigned_to WHERE m.id = ?`).bind(id)
+    .first<{id:string;status:string;completedAt:string|null;createdBy:string;assignedTo:string;scorePending:number;
+      scoreConfirmed:number;supervisorId:string|null;attemptId:string|null}>();
   if (!mission) return Response.json({ error: "مأموریت پیدا نشد." }, { status: 404 });
   if (auth.user.role === "supervisor" && mission.supervisorId !== auth.user.id && mission.createdBy !== auth.user.id) return Response.json({ error: "شما اجازه ارزیابی این مأموریت را ندارید." }, { status: 403 });
   if (!mission.completedAt) return Response.json({ error: "فقط مأموریت پایان‌یافته قابل ارزیابی است." }, { status: 409 });
@@ -133,10 +142,27 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const pending = ["pending", "pending_approval", "follow_up_pending"].includes(mission.status);
   const now = new Date().toISOString();
   const field = pending ? "score_pending" : "score_confirmed";
-  await db.batch([
-    db.prepare(`UPDATE missions SET ${field} = ?, score_note = ? WHERE id = ?`).bind(score, note, id),
+  const reviewEventId = crypto.randomUUID();
+  const statements = [
+    db.prepare(`UPDATE missions SET ${field} = ?, score_note = ? WHERE id = ? AND status = ?`).bind(score, note, id, mission.status),
     db.prepare("UPDATE mission_attempts SET score_awarded = ? WHERE mission_id = ? ORDER BY attempt_no DESC LIMIT 1").bind(score, id),
-    db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.location_score_reviewed', 'mission', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ score, note, scoreState:pending ? "pending" : "confirmed" }), now),
-  ]);
+    db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.location_score_reviewed', 'mission', ?, ?, ?)").bind(reviewEventId, auth.user.id, id, JSON.stringify({ score, note, scoreState:pending ? "pending" : "confirmed" }), now),
+  ];
+  pushScoreLedgerEntry(statements,db,{userId:mission.assignedTo,missionId:id,attemptId:mission.attemptId,actorId:auth.user.id,
+    pointsDelta:scoreDelta(pending?Number(mission.scorePending??0):Number(mission.scoreConfirmed??0),score),
+    bucket:pending?"pending":"confirmed",reasonCode:"location_score_reviewed",source:"mission_trace_review",
+    sourceEventId:reviewEventId,occurredAt:now,metadata:{note}});
+  try {
+    await db.transaction(async transaction=>{
+      const locked=await transaction.prepare("SELECT status, score_pending AS scorePending, score_confirmed AS scoreConfirmed FROM missions WHERE id=? FOR UPDATE")
+        .bind(id).first<{status:string;scorePending:number;scoreConfirmed:number}>();
+      if(!locked||locked.status!==mission.status||Number(locked.scorePending)!==Number(mission.scorePending)||Number(locked.scoreConfirmed)!==Number(mission.scoreConfirmed))throw new TransitionConflict();
+      const results=await transaction.batch(statements);
+      if((results[0]?.meta.changes??0)!==1)throw new TransitionConflict();
+    });
+  } catch(error) {
+    if(error instanceof TransitionConflict)return Response.json({error:"امتیاز یا وضعیت مأموریت هم‌زمان تغییر کرده است؛ صفحه را تازه کنید."},{status:409});
+    throw error;
+  }
   return Response.json({ score, note, scoreState:pending ? "pending" : "confirmed", reviewedAt:now });
 }

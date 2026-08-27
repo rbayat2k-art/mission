@@ -64,6 +64,19 @@ export async function POST(request: Request) {
     const sessionPoints = acceptedPoints.filter((point) => point.workSessionId === sessionId).sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt));
     const trusted = sessionPoints.filter((point) => point.accuracy <= MAX_TRUSTED_LOCATION_ACCURACY_METERS);
     const firstRecorded = trusted[0]?.recordedAt;
+    const latestTrusted = trusted[trusted.length - 1];
+    if (activeSession?.id === sessionId) {
+      await db.prepare(`INSERT INTO tracking_presence
+        (work_session_id, user_id, last_contact_at, last_contact_source, last_trusted_gps_at, last_trusted_gps_received_at, created_at, updated_at)
+        VALUES (?, ?, ?, 'gps', ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), last_contact_at = VALUES(last_contact_at),
+          last_contact_source = 'gps',
+          last_trusted_gps_at = IF(VALUES(last_trusted_gps_at) IS NULL, last_trusted_gps_at,
+            IF(last_trusted_gps_at IS NULL OR last_trusted_gps_at < VALUES(last_trusted_gps_at), VALUES(last_trusted_gps_at), last_trusted_gps_at)),
+          last_trusted_gps_received_at = IF(VALUES(last_trusted_gps_at) IS NULL, last_trusted_gps_received_at, VALUES(last_trusted_gps_received_at)),
+          updated_at = VALUES(updated_at)`)
+        .bind(sessionId, auth.user.id, receivedAt, latestTrusted?.recordedAt ?? null, latestTrusted ? receivedAt : null, receivedAt, receivedAt).run();
+    }
     if (firstRecorded) {
       const previous = await db.prepare("SELECT recorded_at AS recordedAt FROM location_points WHERE user_id = ? AND work_session_id = ? AND accuracy_cm <= ? AND recorded_at < ? ORDER BY recorded_at DESC LIMIT 1")
         .bind(auth.user.id, sessionId, MAX_TRUSTED_LOCATION_ACCURACY_METERS * 100, firstRecorded).first<{ recordedAt:string }>();

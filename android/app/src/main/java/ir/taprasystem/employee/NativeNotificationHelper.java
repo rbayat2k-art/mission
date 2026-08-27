@@ -23,8 +23,8 @@ final class NativeNotificationHelper {
     private static final String POSTED_SYSTEM_IDS = "posted_system_notification_ids";
     private static final String ACTIVE_USER_ID = "active_user_id";
     private static final int MAX_DISPLAYED_IDS = 200;
-    private static final String DEFAULT_TARGET =
-        "https://taprasystem.ir/?panel=employee&screen=notifications";
+    private static final String BASE_URL = BuildConfig.BASE_URL.replaceAll("/+$", "");
+    private static final String DEFAULT_TARGET = BASE_URL + "/?panel=employee&screen=notifications";
 
     private NativeNotificationHelper() { }
 
@@ -126,10 +126,10 @@ final class NativeNotificationHelper {
         if (value == null || value.trim().isEmpty()) return DEFAULT_TARGET;
         try {
             Uri uri = Uri.parse(value);
-            String host = uri.getHost();
-            if ("https".equalsIgnoreCase(uri.getScheme()) &&
-                ("taprasystem.ir".equalsIgnoreCase(host) ||
-                    "www.taprasystem.ir".equalsIgnoreCase(host))) return uri.toString();
+            Uri backend = Uri.parse(BASE_URL);
+            if (backend.getScheme() != null && backend.getScheme().equalsIgnoreCase(uri.getScheme()) &&
+                backend.getHost() != null && backend.getHost().equalsIgnoreCase(uri.getHost()) &&
+                backend.getPort() == uri.getPort()) return uri.toString();
         } catch (Exception ignored) { }
         return DEFAULT_TARGET;
     }

@@ -8,6 +8,7 @@ type NotificationInput = {
   entityType?: string;
   entityId?: string;
   url?: string;
+  dedupeKey?: string;
 };
 
 type StoredSubscription = { id: string; endpoint: string; p256dh: string; auth: string };
@@ -30,9 +31,10 @@ export async function createUserNotification(userId: string, input: Notification
   const db = await ensureDatabase();
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
-  await db.prepare("INSERT INTO notifications (id, user_id, type, title, message, entity_type, entity_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .bind(id, userId, input.type, input.title, input.message, input.entityType ?? null, input.entityId ?? null, now)
+  const inserted = await db.prepare("INSERT IGNORE INTO notifications (id, user_id, dedupe_key, type, title, message, entity_type, entity_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(id, userId, input.dedupeKey ?? null, input.type, input.title, input.message, input.entityType ?? null, input.entityId ?? null, now)
     .run();
+  if ((inserted.meta.changes ?? 0) === 0) return { id: "", delivered: 0, duplicate: true };
 
   const preference = await db.prepare("SELECT notification_enabled AS enabled FROM users WHERE id = ?").bind(userId).first<{ enabled: number }>();
   if (!preference?.enabled || !configureVapid()) return { id, delivered: 0 };

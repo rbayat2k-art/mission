@@ -29,6 +29,10 @@ try {
     const [rows] = await connection.execute("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = ?", [name]);
     if (!rows.length) await connection.execute(`ALTER TABLE users ADD COLUMN ${name} ${definition}`);
   }
+  const [notificationDedupeColumns] = await connection.execute("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notifications' AND COLUMN_NAME = 'dedupe_key'");
+  if (!notificationDedupeColumns.length) await connection.execute("ALTER TABLE notifications ADD COLUMN dedupe_key VARCHAR(190) NULL AFTER user_id");
+  const [notificationDedupeIndexes] = await connection.execute("SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notifications' AND INDEX_NAME = 'idx_notifications_user_dedupe'");
+  if (!notificationDedupeIndexes.length) await connection.execute("ALTER TABLE notifications ADD UNIQUE INDEX idx_notifications_user_dedupe (user_id, dedupe_key)");
   const scoringColumns = [
     ["workflow_type", "VARCHAR(24) NOT NULL DEFAULT 'single' AFTER assigned_to"],
     ["current_step_no", "INT NOT NULL DEFAULT 1 AFTER workflow_type"],
@@ -50,6 +54,12 @@ try {
   for (const [name, definition] of scoringColumns) {
     const [rows] = await connection.execute("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'missions' AND COLUMN_NAME = ?", [name]);
     if (!rows.length) await connection.execute(`ALTER TABLE missions ADD COLUMN ${name} ${definition}`);
+  }
+  const [missionCancelForeignKeys] = await connection.execute(`SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'missions' AND COLUMN_NAME = 'cancelled_by'
+      AND REFERENCED_TABLE_NAME = 'users' AND REFERENCED_COLUMN_NAME = 'id'`);
+  if (!missionCancelForeignKeys.length) {
+    await connection.execute("ALTER TABLE missions ADD CONSTRAINT fk_missions_cancelled_by FOREIGN KEY (cancelled_by) REFERENCES users(id) ON DELETE SET NULL");
   }
   const [attemptStepColumns] = await connection.execute("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mission_attempts' AND COLUMN_NAME = 'mission_step_id'");
   if (!attemptStepColumns.length) await connection.execute("ALTER TABLE mission_attempts ADD COLUMN mission_step_id CHAR(36) NULL AFTER mission_id");

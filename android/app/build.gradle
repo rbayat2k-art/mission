@@ -2,6 +2,16 @@ plugins {
     id 'com.android.application'
 }
 
+def productionBackendUrl = providers.gradleProperty('tapraBackendUrl')
+    .orElse(providers.environmentVariable('TAPRA_BACKEND_URL'))
+    .orElse('https://taprasystem.ir')
+    .get()
+def debugBackendUrl = providers.gradleProperty('tapraDebugBackendUrl')
+    .orElse(providers.environmentVariable('TAPRA_DEBUG_BACKEND_URL'))
+    .orElse(productionBackendUrl)
+    .get()
+def javaString = { value -> '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"' }
+
 android {
     namespace 'ir.taprasystem.employee'
     compileSdk 35
@@ -16,9 +26,15 @@ android {
         targetSdk 35
         versionCode 7
         versionName '1.2.3'
+        buildConfigField 'String', 'BASE_URL', javaString(productionBackendUrl)
+        manifestPlaceholders = [usesCleartextTraffic: 'false']
     }
 
     buildTypes {
+        debug {
+            buildConfigField 'String', 'BASE_URL', javaString(debugBackendUrl)
+            manifestPlaceholders = [usesCleartextTraffic: debugBackendUrl.startsWith('http://') ? 'true' : 'false']
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'

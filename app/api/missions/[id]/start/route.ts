@@ -3,6 +3,9 @@ import { requireRole } from "../../../../../lib/auth";
 import { MAX_CONCURRENT_MISSIONS, missionStartCancellationState } from "../../../../../lib/mission-start-policy";
 import { locationSqlValues, parseMissionLocation } from "../../../../../lib/mission-location";
 import { enrichMissionStatusEventLocation, prepareMissionStatusEvent } from "../../../../../lib/mission-status-events";
+import { prepareScoreLedgerEntry, scoreDelta } from "../../../../../lib/score-ledger";
+
+class TransitionConflict extends Error {}
 
 type MissionRow = {
   id: string;
@@ -13,6 +16,9 @@ type MissionRow = {
   destinationName: string | null;
   workflowType: string;
   currentStepNo: number;
+  scorePending:number;
+  scoreConfirmed:number;
+  scorePenalty:number;
 };
 
 type StartOutcome =
@@ -29,7 +35,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if ("error" in auth) return auth.error;
   const { id } = await context.params;
   const db = await ensureDatabase();
-  const existingMission = await db.prepare("SELECT id, source, assigned_to AS assignedTo, status, started_at AS startedAt, destination_name AS destinationName, workflow_type AS workflowType, current_step_no AS currentStepNo FROM missions WHERE id = ?")
+  const existingMission = await db.prepare("SELECT id, source, assigned_to AS assignedTo, status, started_at AS startedAt, destination_name AS destinationName, workflow_type AS workflowType, current_step_no AS currentStepNo, score_pending AS scorePending, score_confirmed AS scoreConfirmed, score_penalty AS scorePenalty FROM missions WHERE id = ?")
     .bind(id).first<MissionRow>();
   if (!existingMission) return Response.json({ error: "مأموریت پیدا نشد." }, { status: 404 });
   if (existingMission.assignedTo !== auth.user.id) return Response.json({ error: "فقط مسئول مأموریت می‌تواند آن را شروع کند." }, { status: 403 });
@@ -44,9 +50,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if ((!existingStep || Boolean(existingStep.requiresLocation)) && !startLocation) return Response.json({ error: "برای شروع این مرحله، موقعیت GPS معتبر لازم است." }, { status: 400 });
   const [latitudeE6, longitudeE6, accuracyCm, locationRecordedAt] = startLocation ? locationSqlValues(startLocation) : [null, null, null, null];
 
-  const outcome = await db.transaction<StartOutcome>(async (transaction) => {
+  let outcome:StartOutcome;
+  try {
+    outcome = await db.transaction<StartOutcome>(async (transaction) => {
     await transaction.prepare("SELECT id FROM users WHERE id = ? FOR UPDATE").bind(auth.user.id).first();
-    const mission = await transaction.prepare("SELECT id, source, assigned_to AS assignedTo, status, started_at AS startedAt, destination_name AS destinationName, workflow_type AS workflowType, current_step_no AS currentStepNo FROM missions WHERE id = ? FOR UPDATE")
+    const mission = await transaction.prepare("SELECT id, source, assigned_to AS assignedTo, status, started_at AS startedAt, destination_name AS destinationName, workflow_type AS workflowType, current_step_no AS currentStepNo, score_pending AS scorePending, score_confirmed AS scoreConfirmed, score_penalty AS scorePenalty FROM missions WHERE id = ? FOR UPDATE")
       .bind(id).first<MissionRow>();
     if (!mission) return errorOutcome(404, "مأموریت پیدا نشد.");
     if (mission.assignedTo !== auth.user.id) return errorOutcome(403, "فقط مسئول مأموریت می‌تواند آن را شروع کند.");
@@ -82,14 +90,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         .bind(id, mission.currentStepNo).first<{ id:string; stepNo:number; title:string; requiresLocation:number; status:string }>();
       if (!step) return errorOutcome(409, "مرحله فعال مأموریت پیدا نشد.");
       if (!["open", "waiting", "follow_up"].includes(step.status)) return errorOutcome(409, "این مرحله اکنون قابل شروع نیست.");
-      await transaction.prepare(`UPDATE missions SET status='in_progress', started_at=COALESCE(started_at, ?),
+      const missionUpdate=await transaction.prepare(`UPDATE missions SET status='in_progress', started_at=COALESCE(started_at, ?),
         start_latitude_e6=COALESCE(start_latitude_e6, ?), start_longitude_e6=COALESCE(start_longitude_e6, ?),
-        start_accuracy_cm=COALESCE(start_accuracy_cm, ?), start_location_recorded_at=COALESCE(start_location_recorded_at, ?), completed_at=NULL WHERE id=?`)
-        .bind(now, latitudeE6, longitudeE6, accuracyCm, locationRecordedAt, id).run();
-      await transaction.prepare(`UPDATE mission_steps SET status='in_progress', started_at=COALESCE(started_at, ?),
+        start_accuracy_cm=COALESCE(start_accuracy_cm, ?), start_location_recorded_at=COALESCE(start_location_recorded_at, ?), completed_at=NULL WHERE id=? AND status=?`)
+        .bind(now, latitudeE6, longitudeE6, accuracyCm, locationRecordedAt, id,mission.status).run();
+      const stepUpdate=await transaction.prepare(`UPDATE mission_steps SET status='in_progress', started_at=COALESCE(started_at, ?),
         start_latitude_e6=COALESCE(start_latitude_e6, ?), start_longitude_e6=COALESCE(start_longitude_e6, ?),
-        start_accuracy_cm=COALESCE(start_accuracy_cm, ?), start_location_recorded_at=COALESCE(start_location_recorded_at, ?), updated_at=? WHERE id=?`)
-        .bind(now, latitudeE6, longitudeE6, accuracyCm, locationRecordedAt, now, step.id).run();
+        start_accuracy_cm=COALESCE(start_accuracy_cm, ?), start_location_recorded_at=COALESCE(start_location_recorded_at, ?), updated_at=? WHERE id=? AND status=?`)
+        .bind(now, latitudeE6, longitudeE6, accuracyCm, locationRecordedAt, now, step.id,step.status).run();
+      if((missionUpdate.meta.changes??0)!==1||(stepUpdate.meta.changes??0)!==1)throw new TransitionConflict();
       await transaction.prepare(`INSERT INTO mission_step_segments (id, mission_id, mission_step_id, user_id, work_session_id, started_at,
         start_latitude_e6, start_longitude_e6, start_accuracy_cm, start_location_recorded_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .bind(crypto.randomUUID(), id, step.id, auth.user.id, activeSession.id, now, latitudeE6, longitudeE6, accuracyCm, locationRecordedAt, now).run();
@@ -101,12 +110,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       await statusEvent.statement.run();
       return { kind:"started", startedAt:now, activeCount:activeCount + 1, eventId:statusEvent.id };
     }
-    await transaction.prepare(`UPDATE missions SET status = 'in_progress', destination_name = NULL, expense_amount = 0,
+    const missionUpdate=await transaction.prepare(`UPDATE missions SET status = 'in_progress', destination_name = NULL, expense_amount = 0,
       score_pending = 0, score_confirmed = 0, score_penalty = 0, score_note = NULL, completed_at = NULL,
       end_latitude_e6 = NULL, end_longitude_e6 = NULL, end_accuracy_cm = NULL, end_location_recorded_at = NULL,
       started_at = ?, start_latitude_e6 = ?, start_longitude_e6 = ?, start_accuracy_cm = ?, start_location_recorded_at = ?
       WHERE id = ? AND status IN ('open', 'follow_up', 'revision')`)
       .bind(now, latitudeE6, longitudeE6, accuracyCm, locationRecordedAt, id).run();
+    if((missionUpdate.meta.changes??0)!==1)throw new TransitionConflict();
     await transaction.prepare("DELETE FROM mission_destinations WHERE mission_id = ?").bind(id).run();
     await transaction.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, ?, 'mission', ?, ?, ?)")
       .bind(crypto.randomUUID(), auth.user.id, mission.status === "follow_up" ? "mission.follow_up_started" : "mission.started", id,
@@ -114,12 +124,25 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const statusEvent = prepareMissionStatusEvent(transaction, { missionId:id, actorId:auth.user.id, actorRole:auth.user.role,
       eventType:"started", fromStatus:mission.status, toStatus:"in_progress", serverRecordedAt:now, location:startLocation! });
     await statusEvent.statement.run();
+    for (const ledgerInput of [
+      { pointsDelta:scoreDelta(Number(mission.scorePending??0),0), bucket:"pending" as const, reasonCode:"mission_restarted" },
+      { pointsDelta:scoreDelta(Number(mission.scoreConfirmed??0),0), bucket:"confirmed" as const, reasonCode:"mission_restarted" },
+      { pointsDelta:-scoreDelta(Number(mission.scorePenalty??0),0), bucket:"penalty" as const, reasonCode:"mission_restarted" },
+    ]) {
+      const ledger = prepareScoreLedgerEntry(transaction,{...ledgerInput,userId:mission.assignedTo,missionId:id,actorId:auth.user.id,
+        source:"mission_start_reset",sourceEventId:statusEvent.id,occurredAt:now,metadata:{previousStatus:mission.status}});
+      if (ledger) await ledger.run();
+    }
     if (followUpRequest?.status === "ready_for_employee") {
       await transaction.prepare("UPDATE mission_follow_up_requests SET status='resolved', resolution_note='پیگیری مجدد توسط کارمند آغاز شد', resolved_at=?, updated_at=? WHERE id=?")
         .bind(now, now, followUpRequest.id).run();
     }
     return { kind: "started", startedAt: now, activeCount: activeCount + 1, eventId:statusEvent.id };
-  });
+    });
+  } catch(error) {
+    if(error instanceof TransitionConflict)return Response.json({error:"وضعیت مأموریت هم‌زمان تغییر کرده است؛ دوباره تلاش کنید."},{status:409});
+    throw error;
+  }
 
   if (outcome.kind === "error") return Response.json({ error: outcome.error }, { status: outcome.status });
   if (outcome.kind === "existing") return Response.json({ mission: { id, status: "in_progress", startedAt: outcome.startedAt } });
@@ -147,7 +170,9 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
   }
 
   const db = await ensureDatabase();
-  const outcome = await db.transaction<CancelOutcome>(async (transaction) => {
+  let outcome:CancelOutcome;
+  try {
+    outcome = await db.transaction<CancelOutcome>(async (transaction) => {
     await transaction.prepare("SELECT id FROM users WHERE id = ? FOR UPDATE").bind(auth.user.id).first();
     const mission = await transaction.prepare("SELECT id, assigned_to AS assignedTo, status, started_at AS startedAt, workflow_type AS workflowType, current_step_no AS currentStepNo FROM missions WHERE id = ? FOR UPDATE")
       .bind(id).first<{ id: string; assignedTo: string; status: string; startedAt: string | null; workflowType:string; currentStepNo:number }>();
@@ -168,8 +193,9 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
       const cancelledAt = new Date().toISOString();
       const restoredStatus = step.stepNo === 1 ? "open" : "stage_waiting";
       await transaction.prepare("DELETE FROM mission_step_segments WHERE id=?").bind(segment.id).run();
-      await transaction.prepare("UPDATE mission_steps SET status=?, updated_at=? WHERE id=?").bind(step.stepNo === 1 ? "open" : "waiting", cancelledAt, step.id).run();
-      await transaction.prepare("UPDATE missions SET status=? WHERE id=?").bind(restoredStatus, id).run();
+      const stepUpdate=await transaction.prepare("UPDATE mission_steps SET status=?, updated_at=? WHERE id=? AND status='in_progress'").bind(step.stepNo === 1 ? "open" : "waiting", cancelledAt, step.id).run();
+      const missionUpdate=await transaction.prepare("UPDATE missions SET status=? WHERE id=? AND status='in_progress'").bind(restoredStatus, id).run();
+      if((stepUpdate.meta.changes??0)!==1||(missionUpdate.meta.changes??0)!==1)throw new TransitionConflict();
       await transaction.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.start_cancelled', 'mission', ?, ?, ?)")
         .bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ reason, stepNo:step.stepNo, segmentStartedAt:segment.startedAt, elapsedSeconds:Math.round(stepCancellation.elapsedMs/1000) }), cancelledAt).run();
       const statusEvent = prepareMissionStatusEvent(transaction, { missionId:id, actorId:auth.user.id, actorRole:auth.user.role,
@@ -198,9 +224,10 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     } catch { /* Audit data is best-effort; open is the safe fallback. */ }
     const restoredStatus = previousStatus as "open" | "follow_up" | "revision";
     const cancelledAt = new Date().toISOString();
-    await transaction.prepare(`UPDATE missions SET status = ?, destination_name = ?, started_at = NULL, start_latitude_e6 = NULL,
-      start_longitude_e6 = NULL, start_accuracy_cm = NULL, start_location_recorded_at = NULL WHERE id = ?`)
+    const missionUpdate=await transaction.prepare(`UPDATE missions SET status = ?, destination_name = ?, started_at = NULL, start_latitude_e6 = NULL,
+      start_longitude_e6 = NULL, start_accuracy_cm = NULL, start_location_recorded_at = NULL WHERE id = ? AND status='in_progress'`)
       .bind(restoredStatus, previousDestinationName, id).run();
+    if((missionUpdate.meta.changes??0)!==1)throw new TransitionConflict();
     await transaction.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.start_cancelled', 'mission', ?, ?, ?)")
       .bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ reason, startedAt: mission.startedAt, elapsedSeconds: Math.round(cancellation.elapsedMs / 1000), restoredStatus }), cancelledAt).run();
     const statusEvent = prepareMissionStatusEvent(transaction, { missionId:id, actorId:auth.user.id, actorRole:auth.user.role,
@@ -208,7 +235,11 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
       location:cancellationLocation, metadata:{ reason } });
     await statusEvent.statement.run();
     return { kind: "cancelled", restoredStatus, cancelledAt, eventId:statusEvent.id };
-  });
+    });
+  } catch(error) {
+    if(error instanceof TransitionConflict)return Response.json({error:"وضعیت مأموریت هم‌زمان تغییر کرده است؛ دوباره تلاش کنید."},{status:409});
+    throw error;
+  }
 
   if (outcome.kind === "error") return Response.json({ error: outcome.error }, { status: outcome.status });
   if (outcome.eventId && cancellationLocation) void enrichMissionStatusEventLocation(outcome.eventId, cancellationLocation);

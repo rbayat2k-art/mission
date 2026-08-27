@@ -2,7 +2,7 @@ name: Verify Rahkar
 
 on:
   push:
-    branches: [main]
+    branches: [main, "codex/**"]
   pull_request:
 
 permissions:
@@ -20,3 +20,57 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify
+
+  mariadb-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: tapra_ci_root
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: tapra_ci_root
+      TAPRA_CI_DB_PREFIX: tapra_mariadb
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node tests/integration/mysql-schema.mjs
+
+  mysql-84-compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: tapra_ci_root
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -ptapra_ci_root"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: tapra_ci_root
+      TAPRA_CI_DB_PREFIX: tapra_mysql84
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node tests/integration/mysql-schema.mjs

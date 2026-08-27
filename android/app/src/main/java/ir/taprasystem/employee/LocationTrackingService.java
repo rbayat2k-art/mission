@@ -42,9 +42,11 @@ public class LocationTrackingService extends Service implements LocationListener
     public static final String ACTION_STOP = "ir.taprasystem.employee.action.STOP_TRACKING";
     public static final String ACTION_SESSION_ENDED = "ir.taprasystem.employee.action.SESSION_ENDED";
     public static final String EXTRA_USER_ID = "ir.taprasystem.employee.extra.USER_ID";
+    public static final String EXTRA_WORK_SESSION_ID = "ir.taprasystem.employee.extra.WORK_SESSION_ID";
 
-    private static final String BASE_URL = "https://taprasystem.ir";
+    private static final String BASE_URL = BuildConfig.BASE_URL.replaceAll("/+$", "");
     private static final String LOCATION_ENDPOINT = BASE_URL + "/api/locations";
+    private static final String HEARTBEAT_ENDPOINT = BASE_URL + "/api/tracking/heartbeat";
     private static final String NOTIFICATION_SETTINGS_ENDPOINT =
         BASE_URL + "/api/notifications/settings";
     private static final String NOTIFICATIONS_ENDPOINT = BASE_URL + "/api/notifications";
@@ -62,12 +64,15 @@ public class LocationTrackingService extends Service implements LocationListener
     private SharedPreferences preferences;
     private PowerManager.WakeLock wakeLock;
     private String trackingUserId = "";
+    private String trackingWorkSessionId = "";
     private volatile boolean flushInProgress;
+    private volatile boolean heartbeatInProgress;
     private volatile boolean notificationPollInProgress;
 
     private final Runnable periodicFlush = new Runnable() {
         @Override
         public void run() {
+            sendHeartbeat();
             flushQueue();
             pollNotifications();
             mainHandler.postDelayed(this, 30_000L);
@@ -89,15 +94,20 @@ public class LocationTrackingService extends Service implements LocationListener
             stopTracking(true);
             return START_NOT_STICKY;
         }
-        String requestedUserId = intent == null ? "" : intent.getStringExtra(EXTRA_USER_ID);
+        String requestedUserId = intent == null ? preferences.getString("tracking_user_id", "") : intent.getStringExtra(EXTRA_USER_ID);
         requestedUserId = requestedUserId == null ? "" : requestedUserId.trim();
+        String requestedSessionId = intent == null ? preferences.getString("tracking_work_session_id", "") : intent.getStringExtra(EXTRA_WORK_SESSION_ID);
+        requestedSessionId = requestedSessionId == null ? "" : requestedSessionId.trim();
         String activeUserId = NativeNotificationHelper.activeUserId(this);
-        if (requestedUserId.isEmpty() || !requestedUserId.equals(activeUserId)) {
+        if (requestedUserId.isEmpty() || requestedSessionId.isEmpty() || !requestedUserId.equals(activeUserId)) {
             stopTracking(false);
             return START_NOT_STICKY;
         }
         trackingUserId = requestedUserId;
-        preferences.edit().putBoolean("tracking_requested", true).apply();
+        trackingWorkSessionId = requestedSessionId;
+        preferences.edit().putBoolean("tracking_requested", true)
+            .putString("tracking_user_id", trackingUserId)
+            .putString("tracking_work_session_id", trackingWorkSessionId).apply();
         startForeground(NOTIFICATION_ID, buildNotification("در انتظار دریافت موقعیت دقیق…"));
         startTracking();
         return START_STICKY;
@@ -135,6 +145,7 @@ public class LocationTrackingService extends Service implements LocationListener
             boolean mocked = isMockLocation(location);
             JSONObject point = new JSONObject();
             point.put("clientEventId", UUID.randomUUID().toString());
+            point.put("workSessionId", trackingWorkSessionId);
             point.put("latitude", location.getLatitude());
             point.put("longitude", location.getLongitude());
             point.put("accuracy", Math.max(0, location.getAccuracy()));
@@ -206,8 +217,8 @@ public class LocationTrackingService extends Service implements LocationListener
                 JSONObject requestBody = new JSONObject().put("points", batch);
                 HttpResult result = postJson(LOCATION_ENDPOINT, requestBody.toString(), cookies);
                 if (result.status >= 200 && result.status < 300) {
-                    removeAccepted(batch);
                     JSONObject response = new JSONObject(result.body.isEmpty() ? "{}" : result.body);
+                    removeTerminal(response);
                     if (response.optBoolean("autoEnded", false)) {
                         mainHandler.post(() -> stopTrackingForServerEnd());
                     }
@@ -275,12 +286,58 @@ public class LocationTrackingService extends Service implements LocationListener
         return batch;
     }
 
-    private synchronized void removeAccepted(JSONArray accepted) {
-        Set<String> ids = new HashSet<>();
-        for (int index = 0; index < accepted.length(); index++) {
-            JSONObject item = accepted.optJSONObject(index);
-            if (item != null) ids.add(item.optString("clientEventId"));
+    private void addStringIds(Set<String> ids, JSONArray values) {
+        if (values == null) return;
+        for (int index = 0; index < values.length(); index++) {
+            String id = values.optString(index, "");
+            if (!id.isEmpty()) ids.add(id);
         }
+    }
+
+    private void sendHeartbeat() {
+        if (heartbeatInProgress || trackingUserId.isEmpty() || trackingWorkSessionId.isEmpty() ||
+            !trackingUserId.equals(NativeNotificationHelper.activeUserId(this))) return;
+        final String cookies = CookieManager.getInstance().getCookie(BASE_URL);
+        if (cookies == null || cookies.trim().isEmpty()) return;
+        heartbeatInProgress = true;
+        networkExecutor.execute(() -> {
+            try {
+                JSONObject requestBody = new JSONObject().put("workSessionId", trackingWorkSessionId);
+                HttpResult result = postJson(HEARTBEAT_ENDPOINT, requestBody.toString(), cookies);
+                if (result.status == 409) mainHandler.post(() -> stopTracking(false));
+                else if (result.status == 401 || result.status == 403) {
+                    updateNotification("ورود منقضی شده؛ برنامه را باز و دوباره وارد شوید");
+                }
+            } catch (Exception ignored) {
+                // A failed heartbeat is itself observed by the server-side presence checker.
+            } finally {
+                heartbeatInProgress = false;
+            }
+        });
+    }
+
+    private void addRejectedIds(Set<String> ids, JSONArray values) {
+        if (values == null) return;
+        for (int index = 0; index < values.length(); index++) {
+            JSONObject item = values.optJSONObject(index);
+            if (item == null) continue;
+            String id = item.optString("clientEventId", "");
+            if (!id.isEmpty()) ids.add(id);
+        }
+    }
+
+    private synchronized void removeTerminal(JSONObject acknowledgement) {
+        Set<String> ids = new HashSet<>();
+        addStringIds(ids, acknowledgement.optJSONArray("acceptedIds"));
+        addStringIds(ids, acknowledgement.optJSONArray("duplicateIds"));
+        addRejectedIds(ids, acknowledgement.optJSONArray("permanentRejected"));
+        // A retryable acknowledgement always wins if a malformed or racing
+        // response mentions the same client event in more than one bucket.
+        // Keeping that point is safer than silently losing an offline sample.
+        Set<String> retryableIds = new HashSet<>();
+        addRejectedIds(retryableIds, acknowledgement.optJSONArray("retryableRejected"));
+        ids.removeAll(retryableIds);
+        if (ids.isEmpty()) return;
         JSONArray current = readQueue();
         JSONArray remaining = new JSONArray();
         for (int index = 0; index < current.length(); index++) {
@@ -416,7 +473,8 @@ public class LocationTrackingService extends Service implements LocationListener
     }
 
     private void stopTracking(boolean requestedByUser) {
-        preferences.edit().putBoolean("tracking_requested", false).apply();
+        preferences.edit().putBoolean("tracking_requested", false)
+            .remove("tracking_user_id").remove("tracking_work_session_id").apply();
         mainHandler.removeCallbacks(periodicFlush);
         try {
             locationManager.removeUpdates(this);
