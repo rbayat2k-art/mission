@@ -50,7 +50,11 @@ export class PreparedStatement {
   }
 
   private async execute(executor?: QueryExecutor) {
-    return (executor ?? this.executor ?? getMySqlPool()).execute(this.sql, this.values);
+    const selectedExecutor = executor ?? this.executor;
+    if (selectedExecutor) {
+      return selectedExecutor.execute(this.sql, this.values);
+    }
+    return getMySqlPool().execute(this.sql, this.values);
   }
 
   async first<T = Record<string, unknown>>() {
