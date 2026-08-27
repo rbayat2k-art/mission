@@ -37,4 +37,6 @@ test("Android CI is read-only, branch-complete, local-backend-only and never pub
 
 test("automatic runtime migration is disabled in deployment examples",async()=>{
   for(const source of [await read("../.env.example"),await read("../deploy/CPANEL_DEPLOYMENT.md")])assert.match(source,/AUTO_MIGRATE=false/);
+  const runtime=await read("../db/runtime.ts");
+  assert.match(runtime,/process\.env\.NODE_ENV !== "production" && process\.env\.AUTO_MIGRATE === "true"/);
 });

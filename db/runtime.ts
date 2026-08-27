@@ -82,7 +82,10 @@ async function seedDatabase() {
 export async function ensureDatabase() {
   initialization ??= (async () => {
     await database.ping();
-    if (process.env.AUTO_MIGRATE !== "false") await applySchema();
+    // Production schema changes are applied once by deploy.sh after a backup.
+    // Ignore stale AUTO_MIGRATE=true values in production so parallel app
+    // processes cannot race an additive migration during startup.
+    if (process.env.NODE_ENV !== "production" && process.env.AUTO_MIGRATE === "true") await applySchema();
     await seedDatabase();
   })().catch((error) => {
     initialization = null;
