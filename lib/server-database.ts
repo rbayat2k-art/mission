@@ -6,7 +6,10 @@ export type DatabaseResult<T = Record<string, unknown>> = {
   meta: { changes?: number; lastRowId?: number | string };
 };
 
-type QueryExecutor = Pool | PoolConnection;
+// Pool and PoolConnection expose compatible execute methods, but keeping them
+// as a union makes TypeScript intersect their overloaded signatures. mysql2
+// 3.23 tightened those overloads, so describe only the shared capability.
+type QueryExecutor = Pick<Pool, "execute">;
 
 let pool: Pool | null = null;
 
