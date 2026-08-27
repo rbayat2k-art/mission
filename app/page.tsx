@@ -1,7 +1,8 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { flushOutbox, getOutboxCount, removeQueuedItem, sendFileOrQueue, sendJsonOrQueue } from "../lib/offline-client";
+import { flushOutbox, getOutboxCount, removeQueuedItem, sendFileOrQueue, sendJsonOrQueue, type OutboxConflict } from "../lib/offline-client";
+import { ACTIONABLE_EXECUTION_RANK_STATUSES, executionRankSortValue } from "../lib/mission-execution-rank";
 import OperationsMap, { type MapGpsGap, type MapRouteSegment, type MapRouteStop, type MapTracePoint } from "./components/OperationsMap";
 import AccountSettings from "./components/AccountSettings";
 import NotificationCenter from "./components/NotificationCenter";
@@ -109,7 +110,8 @@ function persistNavigation(panel: PanelMode, screen?: EmployeeScreen | AdminScre
 }
 
 type ApiMissionStep = { id:string;missionId?:string;stepNo:number;title:string;actionType:string;description:string;requiresLocation:boolean|number;destinationName:string|null;evidenceRequirement:string;deadline:string|null;deadlineAt:string|null;status:string;result?:string|null;report?:string|null;expenseAmount?:number;startedAt?:string|null;arrivedAt?:string|null;completedAt?:string|null;destinationRecordedAt?:string|null };
-type ApiMission = { id: string; title: string; description: string; source: "manager" | "employee"; status: string; priority: string; assignedTo?: string; workflowType?:"single"|"multi_stage";currentStepNo?:number;steps?:ApiMissionStep[]; referrerName?: string | null; destinationName?: string | null; result?: string | null; report?: string | null; expenseAmount?: number; deadline?: string | null; deadlineAt?: string | null; scorePending: number; scoreConfirmed: number; scorePenalty?: number; scoreNote?: string | null; startedAt?: string | null; employeeName?: string; completedAt?: string | null; cancelledAt?:string|null;cancelledBy?:string|null;cancellationReason?:string|null;cancelledByName?:string|null; createdAt?: string; attemptCount?: number; followUpRequestStatus?:string|null; startCancellationCount?:number; lastStartCancellationReason?:string|null; lastStartCancelledAt?:string|null; latestStatusEventType?:string|null; latestStatusResult?:string|null; latestStatusChangedAt?:string|null; latestStatusLocationLabel?:string|null; latestStatusAccuracyCm?:number|null };
+type ApiMissionTask = {id:string;missionId?:string;taskNo:number;title:string;description:string;status:string;result?:string|null;report?:string|null;version:number;completedAt?:string|null;updatedAt?:string;createdAt?:string};
+type ApiMission = { id: string; title: string; description: string; source: "manager" | "employee"; status: string; priority: string; executionRank?:number|null;executionRankVersion?:number; assignedTo?: string; workflowType?:"single"|"multi_stage"|"task_list";currentStepNo?:number;steps?:ApiMissionStep[];tasks?:ApiMissionTask[]; referrerName?: string | null; destinationName?: string | null; result?: string | null; report?: string | null; expenseAmount?: number; deadline?: string | null; deadlineAt?: string | null; scorePending: number; scoreConfirmed: number; scorePenalty?: number; scoreNote?: string | null; startedAt?: string | null; employeeName?: string; completedAt?: string | null; cancelledAt?:string|null;cancelledBy?:string|null;cancellationReason?:string|null;cancelledByName?:string|null; createdAt?: string; attemptCount?: number; followUpRequestStatus?:string|null; startCancellationCount?:number; lastStartCancellationReason?:string|null; lastStartCancelledAt?:string|null; latestStatusEventType?:string|null; latestStatusResult?:string|null; latestStatusChangedAt?:string|null; latestStatusLocationLabel?:string|null; latestStatusAccuracyCm?:number|null };
 type ApiMissionEvent = { id:string;attemptNo:number|null;actorId:string;actorName:string;actorRole:string;eventType:string;fromStatus:string|null;toStatus:string|null;result:string|null;serverRecordedAt:string;deviceRecordedAt:string|null;latitude:number|null;longitude:number|null;accuracy:number|null;locationLabel:string|null;street:string|null;neighborhood:string|null;district:string|null;city:string|null;province:string|null;geocodeProvider:string|null;geocodeStatus:string;metadata:Record<string,unknown>|null };
 type ApiUser = { id: string; fullName: string; mobile: string; username: string; role: string; status: string; supervisorId?: string | null; supervisorName?: string | null; lastLoginAt?: string | null };
 type ApiApproval = { id: string; missionId: string; title: string; employeeName: string; referrerName?: string | null; result: string; report: string; destinationName: string; expenseAmount: number; scorePending: number };
@@ -129,13 +131,14 @@ type ApiMissionTrace = {
   points:{start:(Omit<MapTracePoint,"kind"|"title">)|null;destination:(Omit<MapTracePoint,"kind"|"title">&{destinationName:string})|null;end:(Omit<MapTracePoint,"kind"|"title">)|null};
   metrics:{startToDestinationMeters:number|null;destinationToEndMeters:number|null;totalElapsedMinutes:number|null;totalValidDistanceMeters?:number};
   steps?:Array<ApiMissionStep&{start:(Omit<MapTracePoint,"kind"|"title">)|null;destination:(Omit<MapTracePoint,"kind"|"title">)|null;end:(Omit<MapTracePoint,"kind"|"title">)|null;validDistanceMeters:number;onSiteMinutes:number|null;gapToNextMinutes:number|null;segments:Array<{id:string;startedAt:string;endedAt:string;endReason:string}>}>;
+  tasks?:ApiMissionTask[];
   evaluation:{confidence:"high"|"medium"|"low";flags:Record<string,boolean>;scoreHints:string[]};
 };
 type ApiIntegrityEvent = { id: string; type: string; severity: string; status: string; employeeName: string; occurredAt: string; details: Record<string, unknown>; reviewNote?: string | null };
 type ApiReportRow = {
   id:string; fullName:string; username:string; supervisorName:string|null;
   attendance:{activeMinutes:number;attendanceDays:number;targetMinutes:number;overtimeMinutes:number;shortfallMinutes:number;lateMinutes:number;unverifiedGpsMinutes:number;pendingCorrectionMinutes:number;selfReportedStartCount:number;firstStartAt:string|null;lastEndAt:string|null;endNotes:{at:string;note:string}[]};
-  missions:{assignedCount:number;completedCount:number;successfulCount:number;firstVisitSuccessfulCount:number;followUpCount:number;openCount:number;pendingCount:number;approvedCount:number;rejectedCount:number;overdueCount:number;selfCreatedCount:number;completionRate:number;successRate:number;firstVisitSuccessRate:number;followUpRate:number;onTimeRate:number;timedMissionCount:number;averageMissionMinutes:number;missionDetails:{id:string;title:string;source:string;status:string;result:string|null;destinationName:string|null;createdAt:string;startedAt:string|null;destinationRecordedAt:string|null;completedAt:string|null;deadlineAt:string|null;attemptCount:number;totalMinutes:number;serviceMinutes:number;travelMinutes:number;distanceKm:number;coverageStatus:"complete"|"partial"|"missing";expenseAmount:number;confirmedScore:number;pendingScore:number}[]};
+  missions:{assignedCount:number;completedCount:number;successfulCount:number;firstVisitSuccessfulCount:number;followUpCount:number;openCount:number;pendingCount:number;approvedCount:number;rejectedCount:number;overdueCount:number;selfCreatedCount:number;completionRate:number;successRate:number;firstVisitSuccessRate:number;followUpRate:number;onTimeRate:number;timedMissionCount:number;averageMissionMinutes:number;missionDetails:{id:string;title:string;source:string;status:string;result:string|null;destinationName:string|null;createdAt:string;startedAt:string|null;destinationRecordedAt:string|null;completedAt:string|null;deadlineAt:string|null;attemptCount:number;totalMinutes:number;serviceMinutes:number;travelMinutes:number;distanceKm:number;coverageStatus:"complete"|"partial"|"missing";expenseAmount:number;confirmedScore:number;pendingScore:number;taskTotal:number;taskCompleted:number;taskFollowUp:number}[]};
   movement:{distanceKm:number;missionDistanceKm:number;travelMinutes:number;movingMinutes:number;stoppedMinutes:number;onSiteMinutes:number;unclassifiedMinutes:number;destinationCount:number;firstDestinationAt:string|null;lastDestinationAt:string|null;destinations:string[];locationPointCount:number;averageTravelMinutes:number;averageOnSiteMinutes:number;averageMissionDistanceKm:number;missionTrips:{missionId:string;title:string;status:string;destinationName:string|null;startedAt:string|null;destinationRecordedAt:string|null;travelMinutes:number;movingMinutes:number;stoppedMinutes:number;distanceKm:number;averageMovingSpeedKmh:number;maxSpeedKmh:number;pointCount:number;coverageStatus:"complete"|"partial"|"missing"}[]};
   integrity:{eventCount:number;openCount:number;gpsGapMinutes:number;internetGapMinutes:number;gpsCoverageRate:number};
   quality:{attachmentCount:number;approvalCount:number;rejectedOrRevisionCount:number;firstPassApprovalRate:number;confirmedScore:number;pendingScore:number;deductedScore:number;missedMissionStarts:number};
@@ -153,9 +156,14 @@ type ApiAdvisoryResponse = {period:"daily"|"weekly"|"monthly";user:{id:string;fu
 type UiAttachment = { localId: string; name: string; state: "uploading" | "uploaded" | "queued" | "error"; serverId?: string; queueId?: number };
 type ApiAttachment = { id:string;missionId:string;messageId:string|null;fileName:string;contentType:string;sizeBytes:number;createdAt:string;uploadedByName?:string;uploadedByRole?:string };
 type MissionStepDraft = { localId:string;title:string;actionType:string;description:string;requiresLocation:boolean;destinationName:string;evidenceRequirement:string;deadlineDate:string;deadlineTime:string };
+type MissionTaskDraft = {localId:string;title:string;description:string};
 
 function emptyMissionStepDraft(index = 0): MissionStepDraft {
   return { localId:`step-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`, title:"", actionType:"visit", description:"", requiresLocation:true, destinationName:"", evidenceRequirement:"none", deadlineDate:"", deadlineTime:"" };
+}
+
+function emptyMissionTaskDraft(index = 0): MissionTaskDraft {
+  return {localId:`task-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,title:"",description:""};
 }
 
 function currentMissionStep(mission: Pick<ApiMission,"steps"|"currentStepNo">) {
@@ -394,6 +402,50 @@ function EmployeeDailySummaryView({ summary, onOpenMission, showAdvisory = false
   </div>;
 }
 
+function MissionTaskChecklist({mission,location,onUpdate,onContinue,onMessage,onQueued}:{mission:UiMission;location:{latitude:number;longitude:number;accuracy:number;recordedAt:string}|null;onUpdate:(task:ApiMissionTask)=>void;onContinue:(result:string,report:string)=>void;onMessage:(message:string)=>void;onQueued:()=>void|Promise<void>}) {
+  const tasks=[...(mission.tasks??[])].sort((a,b)=>a.taskNo-b.taskNo);
+  const [activeId,setActiveId]=useState<string|null>(tasks.find(task=>task.status==="open")?.id??tasks[0]?.id??null);
+  const activeTask=tasks.find(task=>task.id===activeId)??null;
+  const [result,setResult]=useState(activeTask?.result??"انجام شد");
+  const [report,setReport]=useState(activeTask?.report??"");
+  const [saving,setSaving]=useState(false);
+  const determined=tasks.filter(task=>task.status!=="open").length;
+  const selectTask=(task:ApiMissionTask)=>{setActiveId(task.id);setResult(task.result??"انجام شد");setReport(task.report??"")};
+  const save=async()=>{
+    if(!activeTask)return;
+    if(!location)return onMessage("برای ثبت نتیجه این کار، منتظر GPS تازه بمانید");
+    if(result!=="انجام شد"&&report.trim().length<3)return onMessage("برای این نتیجه، توضیح حداقل ۳ کاراکتری بنویسید");
+    setSaving(true);
+    try{
+      const response=await sendJsonOrQueue<{task:ApiMissionTask}>(`/api/missions/${mission.id}/tasks/${activeTask.id}`,"PATCH",{result,report,location,expectedVersion:activeTask.version,clientEventId:crypto.randomUUID()});
+      if(response.queued)await onQueued();
+      const optimisticTask:ApiMissionTask=response.data?.task??{...activeTask,status:result==="انجام شد"?"completed":"follow_up",result,report:report.trim(),version:activeTask.version+1,completedAt:result==="انجام شد"?new Date().toISOString():null,updatedAt:new Date().toISOString()};
+      onUpdate(optimisticTask);
+      const nextTasks=tasks.map(task=>task.id===optimisticTask.id?optimisticTask:task);
+      const nextOpen=nextTasks.find(task=>task.status==="open");
+      if(nextOpen)selectTask(nextOpen);else setActiveId(null);
+      onMessage(response.queued?"نتیجه این کار روی گوشی ذخیره شد و پس از اتصال همگام می‌شود":activeTask.result?"نتیجه این کار با حفظ سابقه اصلاح شد":"نتیجه این کار ثبت شد");
+    }catch(error){onMessage(error instanceof Error?error.message:"ثبت نتیجه کار ناموفق بود")}finally{setSaving(false)}
+  };
+  const finishList=()=>{
+    const remaining=tasks.filter(task=>task.status==="open").length;
+    if(remaining)return onMessage(`وضعیت ${remaining.toLocaleString("fa-IR")} کار هنوز مشخص نشده است`);
+    const overall=tasks.every(task=>task.status==="completed")?"انجام شد":tasks.some(task=>task.result==="نیاز به پیگیری")?"نیاز به پیگیری":"انجام نشد";
+    const summary=tasks.map(task=>`${task.taskNo.toLocaleString("fa-IR")}. ${task.title}: ${task.result}${task.report?` — ${task.report}`:""}`).join("\n");
+    onContinue(overall,summary);
+  };
+  return <section className="flow-panel mission-task-checklist">
+    <span className="flow-icon">☑</span><h2>کارهای این مقصد</h2><p>{determined.toLocaleString("fa-IR")} از {tasks.length.toLocaleString("fa-IR")} کار تعیین وضعیت شده است.</p>
+    <div className="task-progress" aria-label={`پیشرفت ${determined} از ${tasks.length}`}><i style={{width:`${tasks.length?determined/tasks.length*100:0}%`}}/></div>
+    <div className="task-checklist-items">{tasks.map(task=><article key={task.id} className={`${task.status!=="open"?"determined":""} ${task.id===activeId?"active":""}`}>
+      <button type="button" onClick={()=>selectTask(task)}><i>{task.status==="completed"?"✓":task.status==="follow_up"?"↻":task.taskNo.toLocaleString("fa-IR")}</i><span><b>{task.title}</b><small>{task.result??(task.description||"هنوز تعیین وضعیت نشده")}</small></span><em>{task.id===activeId?"−":"＋"}</em></button>
+      {task.id===activeId&&<div className="task-result-editor"><div>{["انجام شد","انجام نشد","نیاز به پیگیری"].map(option=><button type="button" key={option} className={result===option?"selected":""} onClick={()=>setResult(option)}>{option}</button>)}</div><label>توضیح {result!=="انجام شد"&&<b>*</b>}<textarea value={report} onChange={event=>setReport(event.target.value)} placeholder={result==="انجام شد"?"توضیح اختیاری":"دلیل و اقدام بعدی را بنویسید"}/></label><button type="button" className="save-task-result" disabled={saving} onClick={save}>{saving?"در حال ثبت...":activeTask?.result?"ذخیره اصلاح نتیجه":"ثبت نتیجه این کار"}</button></div>}
+    </article>)}</div>
+    <button className="primary-wide" type="button" disabled={tasks.some(task=>task.status==="open")} onClick={finishList}>ادامه و مرور نهایی مأموریت</button>
+    {tasks.some(task=>task.status==="open")&&<small className="task-list-help">برای ادامه، وضعیت همه کارها را مشخص کنید. تا ثبت نهایی مأموریت می‌توانید نتیجه هر کار را اصلاح کنید.</small>}
+  </section>;
+}
+
 function EmployeeApp() {
   const [signedIn, setSignedIn] = useState(false);
   const [employeeUserId, setEmployeeUserId] = useState("");
@@ -424,10 +476,12 @@ function EmployeeApp() {
   const [clockTick, setClockTick] = useState(() => Date.now());
   const [displayDayKey, setDisplayDayKey] = useState(() => currentTehranDayKey());
   const [missionTab, setMissionTab] = useState("open");
+  const [employeeMissionSort,setEmployeeMissionSort]=useState<"rank"|"newest"|"deadline">("rank");
   const [workStep, setWorkStep] = useState(0);
   const [toast, setToast] = useState("");
   const [offline, setOffline] = useState(false);
   const [pendingSync, setPendingSync] = useState(0);
+  const [syncConflicts, setSyncConflicts] = useState<OutboxConflict[]>([]);
   const [gpsStatus, setGpsStatus] = useState<"idle" | "requesting" | "active" | "denied" | "error">("idle");
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
   const [latestGps, setLatestGps] = useState<{ latitude:number; longitude:number; accuracy:number; recordedAt:string } | null>(null);
@@ -476,10 +530,16 @@ function EmployeeApp() {
   const syncQueued = useCallback(async () => {
     const result = await flushOutbox();
     setPendingSync(result.remaining);
+    setSyncConflicts(result.conflicts);
+    if (result.conflicts.length > 0) {
+      setToast("یک تغییر آفلاین با اطلاعات جدید سرور تداخل دارد؛ اطلاعات حذف نشد. صفحه را تازه‌سازی کنید.");
+      return result;
+    }
     if (result.sent > 0) {
       setToast(`${result.sent.toLocaleString("fa-IR")} مورد با سرور همگام شد`);
       window.setTimeout(() => setToast(""), 2600);
     }
+    return result;
   }, []);
 
   const loadEmployeeData = useCallback(async () => {
@@ -502,13 +562,29 @@ function EmployeeApp() {
     if (workData.autoEnded) notify("۹ ساعت کار دارای GPS تکمیل شد و فعالیت به‌صورت سیستمی پایان یافت؛ برای اضافه‌کاری دوباره شروع فعالیت را بزنید");
     setMissions(missionData.missions.map((mission) => ({
       ...mission,
-      meta: `${currentMissionStep(mission)?.destinationName ?? mission.destinationName ?? (mission.workflowType === "multi_stage" ? `مرحله ${Number(mission.currentStepNo ?? 1).toLocaleString("fa-IR")} از ${Number(mission.steps?.length ?? 0).toLocaleString("fa-IR")}` : "مقصد هنگام انجام ثبت می‌شود")} · ${mission.deadline ?? "بدون مهلت"} · ثبت ${formatPersianDateTime(mission.createdAt)}`,
+      meta: `${mission.workflowType==="task_list"?`${Number(mission.tasks?.filter(task=>task.status!=="open").length??0).toLocaleString("fa-IR")} از ${Number(mission.tasks?.length??0).toLocaleString("fa-IR")} کار · ${mission.destinationName??"مقصد هنگام انجام ثبت می‌شود"}`:currentMissionStep(mission)?.destinationName ?? mission.destinationName ?? (mission.workflowType === "multi_stage" ? `مرحله ${Number(mission.currentStepNo ?? 1).toLocaleString("fa-IR")} از ${Number(mission.steps?.length ?? 0).toLocaleString("fa-IR")}` : "مقصد هنگام انجام ثبت می‌شود")} · ${mission.deadline ?? "بدون مهلت"} · ثبت ${formatPersianDateTime(mission.createdAt)}`,
       type: mission.source === "employee" ? "خودم" : "مدیر",
       priority: mission.priority === "urgent" ? "فوری" : "عادی",
       backendStatus: mission.status,
       status: ["follow_up", "follow_up_pending"].includes(mission.status) ? "follow_up" : ["approved", "completed", "rejected", "cancelled"].includes(mission.status) ? "done" : ["revision","stage_waiting"].includes(mission.status) ? "open" : mission.status,
     })));
   }, [notify]);
+
+  const discardSyncConflict = useCallback(async () => {
+    const conflict = syncConflicts[0];
+    if (!conflict) return;
+    const confirmed = window.confirm("این تغییر محلی با اطلاعات جدید سرور تداخل دارد. فقط همین تغییر محلی حذف شود و اطلاعات تازه سرور دریافت شود؟");
+    if (!confirmed) return;
+    try {
+      await removeQueuedItem(conflict.queueId);
+      setSyncConflicts(current => current.filter(item => item.queueId !== conflict.queueId));
+      await loadEmployeeData();
+      const continued = await syncQueued();
+      if (continued.conflicts.length === 0) notify("تغییر محلی ناسازگار حذف شد و همگام‌سازی ادامه یافت");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "حذف تغییر محلی یا ادامه همگام‌سازی ناموفق بود");
+    }
+  }, [loadEmployeeData, notify, syncConflicts, syncQueued]);
 
   const loadDailySummary = async (period: "daily" | "weekly" | "monthly" = reportPeriod) => {
     setSummaryLoading(true);
@@ -690,6 +766,12 @@ function EmployeeApp() {
     setWorkStep(step && !step.requiresLocation ? 1 : 0);
   };
 
+  const updateMissionTask = (updatedTask:ApiMissionTask) => {
+    const update=(mission:UiMission):UiMission=>({...mission,tasks:mission.tasks?.map(task=>task.id===updatedTask.id?updatedTask:task)});
+    setSelectedMission(current=>update(current));
+    setMissions(current=>current.map(mission=>mission.id===selectedMission.id?update(mission):mission));
+  };
+
   const registerDestination = async () => {
     if (!working) return notify("برای ثبت مقصد، ابتدا فعالیت روزانه را شروع کنید");
     if (!latestGps || Date.now() - Date.parse(latestGps.recordedAt) > 2 * 60_000) return notify("موقعیت GPS تازه دریافت نشده؛ چند لحظه در فضای باز منتظر بمانید و دوباره بزنید");
@@ -715,10 +797,11 @@ function EmployeeApp() {
     if (mission.backendStatus !== "in_progress" && (!step || Boolean(step.requiresLocation)) && (!latestGps || Date.now() - Date.parse(latestGps.recordedAt) > 2 * 60_000)) return notify("برای ثبت نقطه شروع، منتظر موقعیت تازه GPS بمانید و دوباره بزنید");
     try {
       const result = mission.backendStatus !== "in_progress"
-        ? await api<{mission:{startedAt:string}}> (`/api/missions/${mission.id}/start`, { method:"POST", body:JSON.stringify({location:latestGps}) })
+        ? await api<{mission:{id:string;status:string;startedAt:string;tasks?:ApiMissionTask[]}}> (`/api/missions/${mission.id}/start`, { method:"POST", body:JSON.stringify({location:latestGps}) })
         : null;
       const startedMission = { ...mission, backendStatus:"in_progress", status:"in_progress", startedAt: result?.mission.startedAt ?? mission.startedAt ?? new Date().toISOString(), completedAt:null,
-        steps:mission.steps?.map(item=>item.stepNo===Number(mission.currentStepNo??1)?{...item,status:"in_progress",startedAt:item.startedAt??result?.mission.startedAt??new Date().toISOString()}:item) };
+        steps:mission.steps?.map(item=>item.stepNo===Number(mission.currentStepNo??1)?{...item,status:"in_progress",startedAt:item.startedAt??result?.mission.startedAt??new Date().toISOString()}:item),
+        tasks:result?.mission.tasks ?? mission.tasks?.map(task=>mission.backendStatus==="follow_up"&&task.status==="follow_up"?{...task,status:"open",result:null,report:null,completedAt:null}:task) };
       setMissions(current => current.map(item => item.id === mission.id ? startedMission : item));
       prepareMissionWork(startedMission);
       notify(mission.backendStatus === "in_progress" ? "ادامه مأموریت" : "مأموریت شروع شد و ویرایش آن قفل شد");
@@ -976,6 +1059,16 @@ function EmployeeApp() {
   };
 
   const activeMissionCount = missions.filter(mission => mission.backendStatus === "in_progress").length;
+  const employeeSortedMissions=[...missions].sort((a,b)=>{
+    if(employeeMissionSort==="newest")return Date.parse(b.createdAt??"")-Date.parse(a.createdAt??"");
+    if(employeeMissionSort==="deadline"){
+      const aDeadline=a.deadlineAt?Date.parse(a.deadlineAt):Number.POSITIVE_INFINITY;
+      const bDeadline=b.deadlineAt?Date.parse(b.deadlineAt):Number.POSITIVE_INFINITY;
+      return aDeadline-bDeadline||Date.parse(b.createdAt??"")-Date.parse(a.createdAt??"");
+    }
+    return executionRankSortValue(a.executionRank)-executionRankSortValue(b.executionRank)||Date.parse(b.createdAt??"")-Date.parse(a.createdAt??"");
+  });
+  const nextMission=employeeSortedMissions.find(m=>["open","follow_up"].includes(m.status)&&m.backendStatus!=="follow_up_pending")??employeeSortedMissions[0];
   const selectedStartCancellation = missionStartCancellationState(selectedMission.startedAt, clockTick);
   const cancellationRemainingSeconds = Math.ceil(selectedStartCancellation.remainingMs / 1000);
 
@@ -1030,7 +1123,7 @@ function EmployeeApp() {
         <div className="app-content">
           {screen === "home" && (
             <>
-              {(offline || pendingSync > 0) && <div className="offline-banner"><Icon>⌁</Icon><span><b>{offline ? "اتصال اینترنت قطع است" : "در حال همگام‌سازی"}</b><small>{pendingSync.toLocaleString("fa-IR")} تغییر روی دستگاه در انتظار ارسال است</small></span><button onClick={() => syncQueued().catch(() => notify("همگام‌سازی هنوز ممکن نیست"))}>تلاش مجدد</button></div>}
+              {(offline || pendingSync > 0 || syncConflicts.length > 0) && <div className="offline-banner"><Icon>⌁</Icon><span><b>{syncConflicts.length > 0 ? "تعارض در همگام‌سازی" : offline ? "اتصال اینترنت قطع است" : "در حال همگام‌سازی"}</b><small>{syncConflicts.length > 0 ? "اطلاعات آفلاین حذف نشده است؛ ابتدا صفحه را تازه‌سازی کنید یا با تأیید خودتان فقط تغییر محلی ناسازگار را کنار بگذارید." : `${pendingSync.toLocaleString("fa-IR")} تغییر روی دستگاه در انتظار ارسال است`}</small></span>{syncConflicts.length > 0 ? <><button onClick={() => window.location.reload()}>تازه‌سازی صفحه</button><button onClick={() => void discardSyncConflict()}>حذف تغییر محلی</button></> : <button onClick={() => syncQueued().catch(() => notify("همگام‌سازی هنوز ممکن نیست"))}>تلاش مجدد</button>}</div>}
               <div className="connection-row">
                 <span className={gpsStatus === "active" ? "good" : gpsStatus === "denied" || gpsStatus === "error" ? "bad" : "soft"}><Icon>⌖</Icon>{gpsStatus === "active" ? `GPS · دقت ${gpsAccuracy ?? "—"} متر` : gpsStatus === "requesting" ? "در حال دریافت GPS" : gpsStatus === "denied" ? "GPS مسدود" : gpsStatus === "error" ? "خطای GPS" : "GPS آماده"}</span>
                 <span className={offline ? "bad" : "good"}><Icon>{offline ? "○" : "●"}</Icon>{offline ? "آفلاین" : "آنلاین"}</span>
@@ -1055,12 +1148,13 @@ function EmployeeApp() {
               <div className="pending-score"><Icon>◈</Icon><div><b>{missions.reduce((sum,m)=>sum+Number(m.scorePending??0),0).toLocaleString("fa-IR")} امتیاز در انتظار تأیید</b><small>پس از تأیید سرپرست به امتیاز قطعی افزوده می‌شود</small></div><span>Pending</span></div>
 
               <div className="section-title spaced"><div><h3>مأموریت بعدی</h3><p>اولویت امروز</p></div><button onClick={() => {setScreen("missions"); setMissionTab("open");}}>همه مأموریت‌ها ←</button></div>
-              <div className="next-mission" role="button" onClick={() => {const mission=missions.find(m => ["open","follow_up"].includes(m.status) && m.backendStatus!=="follow_up_pending") ?? missions[0];if(mission)openMissionDetail(mission)}} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const mission=missions.find(m => ["open","follow_up"].includes(m.status) && m.backendStatus!=="follow_up_pending") ?? missions[0];if(mission)openMissionDetail(mission); } }} tabIndex={0}>
+              <div className="next-mission" role="button" onClick={() => {if(nextMission)openMissionDetail(nextMission)}} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ")&&nextMission) { event.preventDefault();openMissionDetail(nextMission); } }} tabIndex={0}>
                 <div className="mission-accent" />
-                <div className="mission-head"><span className="priority">{missions.find(m=>["open","follow_up"].includes(m.status) && m.backendStatus!=="follow_up_pending")?.priority ?? "عادی"}</span><span className="source">{missions.find(m=>["open","follow_up"].includes(m.status) && m.backendStatus!=="follow_up_pending")?.type === "خودم" ? "ایجادشده توسط من" : "توسط مدیر"}</span></div>
-                <h3>{missions.find(m=>["open","follow_up"].includes(m.status) && m.backendStatus!=="follow_up_pending")?.title ?? "مأموریت بازی وجود ندارد"}</h3>
-                <p><Icon>⌖</Icon> {missions.find(m=>["open","follow_up"].includes(m.status) && m.backendStatus!=="follow_up_pending")?.destinationName ?? "مقصد هنگام انجام ثبت می‌شود"}</p>
-                <div className="mission-foot"><span><Icon>◷</Icon> {missions.find(m=>["open","follow_up"].includes(m.status) && m.backendStatus!=="follow_up_pending")?.deadline ?? "بدون مهلت"}</span><button onClick={(event)=>{event.stopPropagation();setScreen("missions")}}>ثبت مقصد</button></div>
+                {nextMission?.executionRank!=null&&<span className="execution-rank-tag">اولویت انجام {nextMission.executionRank.toLocaleString("fa-IR")}</span>}
+                <div className="mission-head"><span className="priority">{nextMission?.priority ?? "عادی"}</span><span className="source">{nextMission?.type === "خودم" ? "ایجادشده توسط من" : "توسط مدیر"}</span></div>
+                <h3>{nextMission?.title ?? "مأموریت بازی وجود ندارد"}</h3>
+                <p><Icon>⌖</Icon> {nextMission?.destinationName ?? "مقصد هنگام انجام ثبت می‌شود"}</p>
+                <div className="mission-foot"><span><Icon>◷</Icon> {nextMission?.deadline ?? "بدون مهلت"}</span><button onClick={(event)=>{event.stopPropagation();setScreen("missions")}}>ثبت مقصد</button></div>
               </div>
             </>
           )}
@@ -1070,11 +1164,13 @@ function EmployeeApp() {
               <div className="mission-tabs">
                 {[{id:"open",label:"باز"},{id:"in_progress",label:"در حال انجام"},{id:"follow_up",label:"پیگیری مجدد"},{id:"pending",label:"منتظر تأیید"},{id:"done",label:"انجام‌شده"}].map(t => <button key={t.id} className={missionTab === t.id ? "active" : ""} onClick={() => setMissionTab(t.id)}>{t.label}<span>{missions.filter(m=>m.status===t.id).length}</span></button>)}
               </div>
+              <label className="employee-mission-sort"><span>مرتب‌سازی مأموریت‌ها</span><select value={employeeMissionSort} onChange={event=>setEmployeeMissionSort(event.target.value as typeof employeeMissionSort)}><option value="rank">اولویت انجام</option><option value="newest">جدیدترین ثبت</option><option value="deadline">مهلت نزدیک‌تر</option></select></label>
               <div className={`active-mission-capacity ${activeMissionCount >= MAX_CONCURRENT_MISSIONS ? "full" : ""}`}><Icon>▣</Icon><span><b>{activeMissionCount.toLocaleString("fa-IR")} از {MAX_CONCURRENT_MISSIONS.toLocaleString("fa-IR")} مأموریت هم‌زمان</b><small>{activeMissionCount >= MAX_CONCURRENT_MISSIONS ? "برای شروع مأموریت جدید، ابتدا یکی از کارهای در حال انجام را تعیین‌تکلیف کنید." : "می‌توانید مأموریت دیگری را نیز شروع کنید."}</small></span></div>
               <div className="mission-list">
-                {missions.filter(m => m.status === missionTab).map(m => (
+                {employeeSortedMissions.filter(m => m.status === missionTab).map(m => (
                   <div className="mission-list-card" role="button" key={m.id} onClick={() => openMissionDetail(m)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openMissionDetail(m); } }} tabIndex={0}>
                     <div className="list-card-top"><span className={m.priority === "فوری" ? "priority" : "normal"}>{m.priority}</span><span className="source">{m.type === "خودم" ? "ایجادشده توسط من" : "توسط مدیر"}</span></div>
+                    {m.executionRank!=null&&<span className="execution-rank-tag">اولویت انجام {m.executionRank.toLocaleString("fa-IR")}</span>}
                     <h3>{m.title}</h3>{m.referrerName && <p className="mission-referrer">ارجاع‌دهنده کار: <b>{m.referrerName}</b></p>}<p><Icon>◷</Icon>{m.meta}{Number(m.attemptCount ?? 0) > 0 ? ` · مراجعه ${Number(m.attemptCount).toLocaleString("fa-IR")}` : ""}</p>{m.latestStatusChangedAt&&<div className="mission-latest-status"><Icon>⌖</Icon><span><b>{m.latestStatusResult ? `آخرین وضعیت: ${m.latestStatusResult}` : m.latestStatusEventType === "started" ? "شروع کار ثبت شد" : m.latestStatusEventType === "destination_registered" ? "مقصد ثبت شد" : "آخرین تغییر وضعیت"}</b><small>{formatPersianDateTime(m.latestStatusChangedAt)}{m.latestStatusLocationLabel ? ` · ${m.latestStatusLocationLabel}` : ""}</small></span></div>}{["open","in_progress","follow_up"].includes(m.status) && <small className="mission-description-preview">{m.description?.trim() || "برای دیدن شرح کامل این مأموریت روی کارت بزنید."}</small>}
                     {m.status === "pending" ? <div className="approval-strip"><Icon>◌</Icon><span><b>{m.result ?? "در انتظار بررسی سرپرست"}</b><small>مشاهده گزارش ثبت‌شده ←</small></span></div> : m.status === "follow_up" ? <div className="follow-up-strip"><Icon>↻</Icon><span><b>{m.result ?? "نیازمند مراجعه و پیگیری دوباره"}</b><small>{m.backendStatus === "follow_up_pending" ? "گزارش قبلی در انتظار بررسی سرپرست است" : "مشاهده سابقه و شروع پیگیری بعدی ←"}</small></span></div> : m.status === "done" ? m.backendStatus === "cancelled" ? <div className="cancelled-strip"><Icon>×</Icon><span><b>لغو توسط مدیریت</b><small>این مأموریت دیگر نیاز به پیگیری ندارد · مشاهده دلیل ←</small></span></div> : <div className={`done-strip ${m.result && m.result !== "انجام شد" ? "not-completed" : ""}`}>{m.result === "انجام شد" ? "✓" : "◷"} {m.result ?? "گزارش ثبت‌شده"} <b>مشاهده جزئیات ←</b></div> : <button className="card-arrow" aria-label="مشاهده شرح وظیفه">{m.backendStatus === "in_progress" ? "مشاهده و ادامه" : "مشاهده شرح وظیفه"} ←</button>}
                   </div>
@@ -1113,13 +1209,13 @@ function EmployeeApp() {
                 <div className="employee-map-privacy"><Icon>▣</Icon><span><b>نقشه فقط در پنل مدیر نمایش داده می‌شود</b><small>با ثبت این مقصد، یک پین شماره‌دار برای مأموریت امروز ساخته می‌شود.</small></span></div>
                 <button className="primary-wide" disabled={!working || destinationSaving} onClick={registerDestination}>{destinationSaving ? "در حال ثبت مقصد..." : "ثبت مقصد و ادامه"}</button>
               </section>}
-              {workStep === 1 && <section className="flow-panel">
+              {workStep === 1 && (selectedMission.workflowType==="task_list" ? <MissionTaskChecklist mission={selectedMission} location={latestGps} onUpdate={updateMissionTask} onMessage={notify} onQueued={async()=>setPendingSync(await getOutboxCount().catch(()=>1))} onContinue={(overall,summary)=>{setWorkResult(overall);setWorkReport(summary);setRequestSupervisorAction(false);setWorkStep(2)}}/> : <section className="flow-panel">
                 <span className="flow-icon">✓</span><h2>نتیجه کار چه بود؟</h2><p>یکی از گزینه‌ها را برای ثبت گزارش انتخاب کنید.</p>
                 <div className="result-grid">{workResultOptions.map((option) => <button type="button" aria-pressed={workResult === option.label} className={workResult === option.label ? "selected" : ""} key={option.label} onClick={()=>{setWorkResult(option.label);setWorkReport(option.defaultReport);if(option.label === "انجام شد")setRequestSupervisorAction(false)}}><Icon>{option.icon}</Icon>{option.label}</button>)}</div>
                 <label>توضیح نتیجه <b>*</b><textarea value={workReport} onChange={event=>setWorkReport(event.target.value)} placeholder={workResult === "سایر" ? "نتیجه کار را کامل توضیح دهید..." : "جزئیات نتیجه را بنویسید..."} required /></label>
                 {workResult !== "انجام شد" && <><div className="toggle-label supervisor-action-toggle"><span><b>این پیگیری نیاز به اقدام سرپرست دارد</b><small>پیش‌فرض خاموش است؛ اگر خودتان باید دوباره مراجعه کنید، فعالش نکنید.</small></span><input aria-label="ارجاع پیگیری به سرپرست" type="checkbox" checked={requestSupervisorAction} onChange={event=>setRequestSupervisorAction(event.target.checked)} /></div>{requestSupervisorAction && <div className="compact-follow-up-field"><label htmlFor="follow-up-category"><b>نوع اقدام سرپرست</b><small>توضیحات نتیجه و مدارک این مأموریت برای سرپرست ارسال می‌شود.</small></label><select id="follow-up-category" value={followUpCategory} onChange={event=>setFollowUpCategory(event.target.value)}><option value="missing_documents">آماده‌کردن یا تکمیل مدارک</option><option value="coordination">تأیید یا هماهنگی</option><option value="payment">پرداخت</option><option value="administrative">اقدام اداری</option><option value="other">سایر</option></select></div>}</>}
                 <button className="primary-wide" onClick={() => workReport.trim() ? setWorkStep(2) : notify("توضیح نتیجه را وارد کنید")}>ادامه</button>
-              </section>}
+              </section>)}
               {workStep === 2 && <section className="flow-panel">
                 <span className="flow-icon">⊕</span><h2>مدارک و هزینه</h2><p>افزودن ضمیمه اختیاری است اما به اعتبار گزارش کمک می‌کند.</p>
                 <label className="upload-box" htmlFor="mission-attachment"><Icon>＋</Icon><b>{attachments.some(item=>item.state==="uploading") ? "در حال بارگذاری مدارک..." : "افزودن چند عکس، رسید یا فایل"}</b><small>انتخاب هم‌زمان چند فایل · JPG، PNG یا PDF تا ۱۰ مگابایت برای هر فایل</small><input id="mission-attachment" className="file-input-hidden" type="file" multiple accept="image/jpeg,image/png,application/pdf" onChange={uploadAttachments} /></label>
@@ -1148,9 +1244,11 @@ function EmployeeApp() {
           {screen === "mission-detail" && <div className="mission-detail-screen">
             <button className="back-link" onClick={()=>setScreen(detailReturnScreen)}>→ بازگشت</button>
             <div className="mission-detail-hero"><span className={selectedMission.result === "انجام شد" ? "success" : "warning"}>{selectedMission.result === "انجام شد" ? "✓" : selectedMission.result ? "◷" : "▣"}</span><div><small>{selectedMission.type === "خودم" || selectedMission.source === "employee" ? "مأموریت خودساخته" : "مأموریت مدیر"}</small><h2>{selectedMission.title}</h2><p>{selectedMission.status === "follow_up" ? `نتیجه مراجعه قبلی: ${selectedMission.result ?? "نیازمند پیگیری"}` : selectedMission.completedAt ? `ثبت نتیجه در ${formatPersianDateTime(selectedMission.completedAt)}` : selectedMission.backendStatus === "in_progress" ? "شروع کار ثبت شده و مأموریت در حال انجام است" : "شرح وظیفه را بخوانید و سپس روش ادامه را انتخاب کنید"}</p></div></div>
+            {selectedMission.executionRank!=null&&<span className="execution-rank-tag detail-rank">اولویت انجام {selectedMission.executionRank.toLocaleString("fa-IR")}</span>}
             {selectedMission.backendStatus === "cancelled" && <section className="employee-cancelled-mission"><Icon>×</Icon><div><b>این مأموریت توسط مدیریت لغو شده است</b><p>{selectedMission.cancellationReason || "دلیل جداگانه‌ای ثبت نشده است."}</p><small>{selectedMission.cancelledByName || "مدیریت"} · {formatPersianDateTime(selectedMission.cancelledAt ?? undefined)} · دیگر نیاز به پیگیری ندارد</small></div></section>}
             {(!selectedMission.completedAt || selectedMission.status === "follow_up") && <section className="mission-task-description"><span>شرح وظیفه</span><p>{selectedMission.description?.trim() || "برای این مأموریت توضیح جداگانه‌ای ثبت نشده است؛ در صورت ابهام با مدیر یا سرپرست هماهنگ کنید."}</p><div><small>تاریخ ثبت</small><b>{formatPersianDateTime(selectedMission.createdAt)}</b><small>مهلت</small><b>{selectedMission.deadline ?? "بدون مهلت"}</b><small>اولویت</small><b>{selectedMission.priority ?? "عادی"}</b>{Number(selectedMission.attemptCount ?? 0) > 0 && <><small>تعداد مراجعات ثبت‌شده</small><b>{Number(selectedMission.attemptCount).toLocaleString("fa-IR")}</b></>}</div></section>}
             {selectedMission.workflowType === "multi_stage" && <section className="mission-stage-progress">{selectedMission.steps?.map(step=><article key={step.id} className={`${step.status==="completed"?"done":""} ${Number(step.stepNo)===Number(selectedMission.currentStepNo??1)?"current":""}`}><i>{step.status==="completed"?"✓":step.stepNo.toLocaleString("fa-IR")}</i><span><b>{step.title}</b><small>{step.description||step.destinationName||(!step.requiresLocation?"این مرحله بدون مسیر و مقصد انجام می‌شود":"مقصد هنگام مراجعه ثبت می‌شود")}</small><small>{step.status==="completed"?`انجام‌شده · ${formatPersianDateTime(step.completedAt??undefined)}`:Number(step.stepNo)===Number(selectedMission.currentStepNo??1)?"مرحله جاری":"در انتظار مرحله قبلی"}</small></span></article>)}</section>}
+            {selectedMission.workflowType === "task_list" && <section className="mission-stage-progress mission-task-summary"><header><b>کارهای این مقصد</b><small>{(selectedMission.tasks?.filter(task=>task.status!=="open").length??0).toLocaleString("fa-IR")} از {(selectedMission.tasks?.length??0).toLocaleString("fa-IR")} تعیین وضعیت شده</small></header>{selectedMission.tasks?.map(task=><article key={task.id} className={task.status!=="open"?"done":""}><i>{task.status==="completed"?"✓":task.status==="follow_up"?"↻":task.taskNo.toLocaleString("fa-IR")}</i><span><b>{task.title}</b><small>{task.description||"بدون توضیح جداگانه"}</small><small>{task.result?`${task.result}${task.completedAt?` · ${formatPersianDateTime(task.completedAt)}`:""}`:"هنوز تعیین وضعیت نشده"}</small>{task.report&&<em>{task.report}</em>}</span></article>)}</section>}
             {missionBriefAttachmentsLoading ? <section className="mission-brief-files loading">در حال دریافت فایل‌های راهنمای مأموریت...</section> : missionBriefAttachments.length > 0 && <section className="mission-brief-files"><header><span>▤</span><div><b>فایل‌های ارسالی همراه مأموریت</b><small>قبل از شروع کار، تصاویر و اسناد زیر را بررسی کنید.</small></div></header><div>{missionBriefAttachments.map(attachment=><a key={attachment.id} href={`/api/attachments/${attachment.id}`} target="_blank" rel="noreferrer">{attachment.contentType.startsWith("image/") ? <Image unoptimized width={92} height={68} src={`/api/attachments/${attachment.id}`} alt={attachment.fileName} /> : <span>▤</span>}<div><b>{attachment.fileName}</b><small>{attachment.uploadedByName ? `ارسال توسط ${attachment.uploadedByName}` : "فایل راهنمای مأموریت"}</small></div><i>مشاهده</i></a>)}</div></section>}
             <div className="mission-detail-card">{selectedMission.referrerName && <><span>ارجاع‌دهنده کار</span><b>{selectedMission.referrerName}</b></>}<span>نتیجه آخرین مراجعه</span><b className={selectedMission.result === "انجام شد" ? "green" : "amber"}>{selectedMission.result ?? "هنوز نتیجه‌ای ثبت نشده"}</b><span>گزارش من</span><b>{selectedMission.report ?? "هنوز گزارشی ثبت نشده است."}</b><span>مقصد</span><b>{selectedMission.destinationName ?? "مقصد ثبت نشده"}</b>{Number(selectedMission.expenseAmount ?? 0) > 0 && <><span>هزینه انجام‌شده</span><b>{Number(selectedMission.expenseAmount).toLocaleString("fa-IR")} تومان</b></>}{Number(selectedMission.scorePenalty ?? 0) > 0 && <><span>کسر امتیاز</span><b className="score-penalty">−{Number(selectedMission.scorePenalty).toLocaleString("fa-IR")} · {selectedMission.scoreNote}</b></>}<span>وضعیت</span><b>{selectedMission.backendStatus === "cancelled" ? "لغوشده توسط مدیریت" : selectedMission.backendStatus === "follow_up_pending" ? "پیگیری مجدد · منتظر بررسی گزارش قبلی" : selectedMission.backendStatus === "follow_up" ? "آماده پیگیری مجدد" : selectedMission.backendStatus === "pending" || selectedMission.status === "pending" ? "در انتظار تأیید سرپرست" : selectedMission.backendStatus === "rejected" ? "ردشده" : selectedMission.backendStatus === "revision" ? "نیازمند اصلاح" : selectedMission.backendStatus === "in_progress" ? "در حال انجام" : selectedMission.completedAt ? "ثبت و تکمیل‌شده" : "باز"}</b></div>
             <MissionStatusTimeline events={missionEvents} loading={missionEventsLoading}/>
@@ -1303,7 +1401,7 @@ function AdminPanel() {
   const [adminUsers, setAdminUsers] = useState<ApiUser[]>([]);
   const [adminMissions, setAdminMissions] = useState<ApiMission[]>([]);
   const [adminMissionFilter, setAdminMissionFilter] = useState<"all"|"open"|"in_progress"|"pending"|"follow_up"|"done"|"cancelled">("all");
-  const [adminMissionSort, setAdminMissionSort] = useState<"newest"|"oldest"|"deadline"|"priority"|"employee"|"status">("newest");
+  const [adminMissionSort, setAdminMissionSort] = useState<"newest"|"oldest"|"deadline"|"priority"|"execution_rank"|"employee"|"status">("newest");
   const [adminMissionAssignees, setAdminMissionAssignees] = useState<string[]>([]);
   const [missionFormOpen, setMissionFormOpen] = useState(false);
   const [missionEditingId, setMissionEditingId] = useState<string | null>(null);
@@ -1314,11 +1412,13 @@ function AdminPanel() {
   const [missionDescription, setMissionDescription] = useState("");
   const [missionDestination, setMissionDestination] = useState("");
   const [missionPriority, setMissionPriority] = useState("normal");
+  const [missionExecutionRank,setMissionExecutionRank]=useState("5");
   const [missionDeadlineDate, setMissionDeadlineDate] = useState("");
   const [missionDeadlineTime, setMissionDeadlineTime] = useState("");
   const [missionAssignee, setMissionAssignee] = useState("");
-  const [missionWorkflowType, setMissionWorkflowType] = useState<"single"|"multi_stage">("single");
+  const [missionWorkflowType, setMissionWorkflowType] = useState<"single"|"multi_stage"|"task_list">("single");
   const [missionSteps, setMissionSteps] = useState<MissionStepDraft[]>([emptyMissionStepDraft(0), emptyMissionStepDraft(1)]);
+  const [missionTasks, setMissionTasks] = useState<MissionTaskDraft[]>(()=>[emptyMissionTaskDraft(0), emptyMissionTaskDraft(1)]);
   const [missionDraftAttachments, setMissionDraftAttachments] = useState<File[]>([]);
   const [missionSubmitting, setMissionSubmitting] = useState(false);
   const [missionTrace, setMissionTrace] = useState<ApiMissionTrace | null>(null);
@@ -1511,10 +1611,11 @@ function AdminPanel() {
       setAdminUsers(users);
       setMissionEditingId(mission?.id ?? null);
       setMissionTitle(mission?.title ?? ""); setMissionDescription(mission?.description ?? ""); setMissionDestination(mission?.destinationName ?? "");
-      setMissionPriority(mission?.priority ?? "normal"); setMissionDeadlineDate(parsedDeadline.date); setMissionDeadlineTime(parsedDeadline.time);
-      setMissionWorkflowType(mission?.workflowType === "multi_stage" ? "multi_stage" : "single");
+      setMissionPriority(mission?.priority ?? "normal");setMissionExecutionRank(String(mission?.executionRank??5)); setMissionDeadlineDate(parsedDeadline.date); setMissionDeadlineTime(parsedDeadline.time);
+      setMissionWorkflowType(mission?.workflowType === "multi_stage" ? "multi_stage" : mission?.workflowType === "task_list" ? "task_list" : "single");
       setMissionDraftAttachments([]);
       setMissionSteps(mission?.steps?.length ? mission.steps.map((step,index)=>{const deadline=splitStoredDeadline(step.deadline);return {localId:step.id||`step-${index}`,title:step.title,actionType:step.actionType||"other",description:step.description||"",requiresLocation:Boolean(step.requiresLocation),destinationName:step.destinationName||"",evidenceRequirement:step.evidenceRequirement||"none",deadlineDate:deadline.date,deadlineTime:deadline.time}}) : [emptyMissionStepDraft(0),emptyMissionStepDraft(1)]);
+      setMissionTasks(mission?.tasks?.length ? mission.tasks.map((task,index)=>({localId:task.id||`task-${index}`,title:task.title,description:task.description||""})) : [emptyMissionTaskDraft(0),emptyMissionTaskDraft(1)]);
       setMissionAssignee(mission?.assignedTo && assignable.some(user => user.id === mission.assignedTo) ? mission.assignedTo : assignable[0]?.id ?? "");
       setMissionFormOpen(true);
     } catch (error) { notify(error instanceof Error ? error.message : "دریافت فهرست کاربران ناموفق بود"); }
@@ -1524,13 +1625,16 @@ function AdminPanel() {
     e.preventDefault();
     if (!missionTitle.trim() || !missionAssignee) return notify("عنوان و مسئول مأموریت را انتخاب کنید");
     if (missionWorkflowType === "multi_stage" && (missionSteps.length < 2 || missionSteps.some(step=>step.title.trim().length < 2))) return notify("برای مأموریت چندمرحله‌ای حداقل دو مرحله با عنوان مشخص لازم است");
+    if (missionWorkflowType === "task_list" && (missionTasks.length < 2 || missionTasks.length > 10 || missionTasks.some(task=>task.title.trim().length < 2))) return notify("برای مأموریت چندتسکی بین ۲ تا ۱۰ تسک با عنوان مشخص لازم است");
     setMissionSubmitting(true);
     try {
       const editingId = missionEditingId;
       const result = await api<{mission:ApiMission}>(editingId ? `/api/missions/${editingId}` : "/api/missions", { method:editingId ? "PATCH" : "POST", body:JSON.stringify({
         title:missionTitle, description:missionDescription, destinationName:missionDestination,
-        priority:missionPriority, deadlineDate:missionDeadlineDate || null, deadlineTime:missionDeadlineTime || null, assignedTo:missionAssignee,
-        workflowType:missionWorkflowType, steps:missionWorkflowType === "multi_stage" ? missionSteps.map(step=>({title:step.title,actionType:step.actionType,description:step.description,requiresLocation:step.requiresLocation,destinationName:step.requiresLocation?step.destinationName:null,evidenceRequirement:step.evidenceRequirement,deadlineDate:step.deadlineDate||null,deadlineTime:step.deadlineTime||null})) : undefined,
+        priority:missionPriority, executionRank:Number(missionExecutionRank), deadlineDate:missionDeadlineDate || null, deadlineTime:missionDeadlineTime || null, assignedTo:missionAssignee,
+        workflowType:missionWorkflowType,
+        steps:missionWorkflowType === "multi_stage" ? missionSteps.map(step=>({title:step.title,actionType:step.actionType,description:step.description,requiresLocation:step.requiresLocation,destinationName:step.requiresLocation?step.destinationName:null,evidenceRequirement:step.evidenceRequirement,deadlineDate:step.deadlineDate||null,deadlineTime:step.deadlineTime||null})) : undefined,
+        tasks:missionWorkflowType === "task_list" ? missionTasks.map(task=>({title:task.title,description:task.description})) : undefined,
       }) });
       const uploads = await Promise.allSettled(missionDraftAttachments.map(file=>uploadMissionAttachment(String(result.mission.id), file)));
       const failedFiles = missionDraftAttachments.filter((_,index)=>uploads[index].status === "rejected");
@@ -1541,15 +1645,29 @@ function AdminPanel() {
         notify(`مأموریت ذخیره شد؛ بارگذاری ${failedFiles.length.toLocaleString("fa-IR")} فایل ناموفق بود. فایل‌ها را بررسی و دوباره ذخیره کنید.`);
         return;
       }
-      setMissionTitle(""); setMissionDescription(""); setMissionDestination(""); setMissionPriority("normal"); setMissionDeadlineDate(""); setMissionDeadlineTime("");
+      setMissionTitle(""); setMissionDescription(""); setMissionDestination(""); setMissionPriority("normal");setMissionExecutionRank("5"); setMissionDeadlineDate(""); setMissionDeadlineTime("");
       setMissionDraftAttachments([]);
-      setMissionWorkflowType("single"); setMissionSteps([emptyMissionStepDraft(0),emptyMissionStepDraft(1)]);
+      setMissionWorkflowType("single"); setMissionSteps([emptyMissionStepDraft(0),emptyMissionStepDraft(1)]); setMissionTasks([emptyMissionTaskDraft(0),emptyMissionTaskDraft(1)]);
       setMissionFormOpen(false); setScreen("missions");
       await loadAdminData("missions");
       notify(editingId ? "تغییرات مأموریت و فایل‌ها ذخیره شد" : missionDraftAttachments.length ? "مأموریت همراه فایل‌های راهنما ثبت و تخصیص داده شد" : "مأموریت ثبت و به کاربر انتخاب‌شده تخصیص داده شد");
       setMissionEditingId(null);
     } catch (error) { notify(error instanceof Error ? error.message : "ثبت مأموریت ناموفق بود"); }
     finally { setMissionSubmitting(false); }
+  };
+
+  const updateMissionExecutionRank=async(mission:ApiMission,executionRank:number)=>{
+    if(mission.executionRank===executionRank)return;
+    try{
+      const result=await api<{mission:Pick<ApiMission,"id"|"executionRank"|"executionRankVersion">}>(`/api/missions/${mission.id}/execution-rank`,{
+        method:"PATCH",body:JSON.stringify({executionRank,expectedVersion:Number(mission.executionRankVersion??0)}),
+      });
+      setAdminMissions(current=>current.map(item=>item.id===mission.id?{...item,...result.mission}:item));
+      notify(`رتبه اجرای مأموریت به ${executionRank.toLocaleString("fa-IR")} تغییر کرد`);
+    }catch(error){
+      notify(error instanceof Error?error.message:"تغییر رتبه اجرا ناموفق بود");
+      await loadAdminData("missions").catch(()=>undefined);
+    }
   };
 
   const deleteMission = async (mission: ApiMission) => {
@@ -1676,6 +1794,7 @@ function AdminPanel() {
       return aDeadline-bDeadline || compareMissionFallback(a,b);
     }
     if(adminMissionSort==="priority") return (priorityOrder[a.priority] ?? 9)-(priorityOrder[b.priority] ?? 9) || compareMissionFallback(a,b);
+    if(adminMissionSort==="execution_rank")return executionRankSortValue(a.executionRank)-executionRankSortValue(b.executionRank)||compareMissionFallback(a,b);
     if(adminMissionSort==="employee") return (a.employeeName ?? "").localeCompare(b.employeeName ?? "","fa") || compareMissionFallback(a,b);
     if(adminMissionSort==="status") return (statusOrder[a.status] ?? 9)-(statusOrder[b.status] ?? 9) || compareMissionFallback(a,b);
     return compareMissionFallback(a,b);
@@ -1736,17 +1855,17 @@ function AdminPanel() {
         {screen === "missions" && <section className="panel table-panel">
           <div className="table-toolbar mission-table-toolbar">
             <div className="filter-tabs">{adminMissionFilters.map(filter=><button key={filter.id} className={adminMissionFilter===filter.id?"active":""} onClick={()=>setAdminMissionFilter(filter.id)}>{filter.label} <span>{employeeFilteredAdminMissions.filter(mission=>missionMatchesFilter(mission,filter.id)).length.toLocaleString("fa-IR")}</span></button>)}</div>
-            <div className="mission-list-controls"><label className="mission-sort-control"><span>مرتب‌سازی</span><select aria-label="مرتب‌سازی مأموریت‌ها" value={adminMissionSort} onChange={event=>setAdminMissionSort(event.target.value as typeof adminMissionSort)}><option value="newest">جدیدترین ثبت</option><option value="oldest">قدیمی‌ترین ثبت</option><option value="deadline">مهلت نزدیک‌تر</option><option value="priority">اولویت بالاتر</option><option value="employee">نام کارمند</option><option value="status">وضعیت مأموریت</option></select></label><details className="mission-employee-filter"><summary>♙ {adminMissionAssignees.length ? `${adminMissionAssignees.length.toLocaleString("fa-IR")} کارمند انتخاب‌شده` : "همه کارکنان"}</summary><div className="mission-employee-filter-menu"><button type="button" className={!adminMissionAssignees.length?"active":""} onClick={()=>setAdminMissionAssignees([])}>همه کارکنان <small>{adminMissions.length.toLocaleString("fa-IR")} مأموریت</small></button>{adminMissionEmployeeOptions.map(user=><label key={user.id}><input type="checkbox" checked={adminMissionAssignees.includes(user.id)} onChange={()=>toggleAdminMissionAssignee(user.id)}/><span>{user.name}<small>{adminMissions.filter(mission=>mission.assignedTo===user.id).length.toLocaleString("fa-IR")} مأموریت</small></span></label>)}</div></details><button className="assign-mission-button" onClick={()=>openMissionForm()}>＋ تخصیص مأموریت</button></div>
+            <div className="mission-list-controls"><label className="mission-sort-control"><span>مرتب‌سازی</span><select aria-label="مرتب‌سازی مأموریت‌ها" value={adminMissionSort} onChange={event=>setAdminMissionSort(event.target.value as typeof adminMissionSort)}><option value="newest">جدیدترین ثبت</option><option value="oldest">قدیمی‌ترین ثبت</option><option value="deadline">مهلت نزدیک‌تر</option><option value="priority">اولویت بالاتر</option><option value="execution_rank">رتبه اجرا</option><option value="employee">نام کارمند</option><option value="status">وضعیت مأموریت</option></select></label><details className="mission-employee-filter"><summary>♙ {adminMissionAssignees.length ? `${adminMissionAssignees.length.toLocaleString("fa-IR")} کارمند انتخاب‌شده` : "همه کارکنان"}</summary><div className="mission-employee-filter-menu"><button type="button" className={!adminMissionAssignees.length?"active":""} onClick={()=>setAdminMissionAssignees([])}>همه کارکنان <small>{adminMissions.length.toLocaleString("fa-IR")} مأموریت</small></button>{adminMissionEmployeeOptions.map(user=><label key={user.id}><input type="checkbox" checked={adminMissionAssignees.includes(user.id)} onChange={()=>toggleAdminMissionAssignee(user.id)}/><span>{user.name}<small>{adminMissions.filter(mission=>mission.assignedTo===user.id).length.toLocaleString("fa-IR")} مأموریت</small></span></label>)}</div></details><button className="assign-mission-button" onClick={()=>openMissionForm()}>＋ تخصیص مأموریت</button></div>
           </div>
           {filteredAdminMissions.length ? <table><thead><tr><th>مأموریت</th><th>مسئول</th><th>ایجادکننده</th><th>تاریخ و ساعت ثبت</th><th>مهلت</th><th>وضعیت</th><th>امتیاز</th><th>عملیات</th></tr></thead><tbody>{filteredAdminMissions.map((m)=><tr key={m.id} className={m.completedAt ? "clickable-mission-row" : ""} onClick={()=>m.completedAt&&openMissionTrace(m)}>
-            <td><b>{m.title}</b><small>{m.destinationName || m.description || "مقصد هنگام انجام ثبت می‌شود"}{Number(m.attemptCount ?? 0)>0?` · ${Number(m.attemptCount).toLocaleString("fa-IR")} مراجعه`:""}</small>{Number(m.startCancellationCount ?? 0)>0&&<small className="mission-cancel-audit">انصراف از شروع: {m.lastStartCancellationReason || "بدون توضیح"} · {formatPersianDateTime(m.lastStartCancelledAt ?? undefined)}</small>}{m.status==="cancelled"&&<small className="mission-manager-cancel-audit">لغو توسط {m.cancelledByName || "مدیریت"}: {m.cancellationReason} · {formatPersianDateTime(m.cancelledAt ?? undefined)}</small>}</td>
+            <td><b>{m.title}</b>{m.executionRank!=null&&<span className="execution-rank-tag">رتبه اجرا {m.executionRank.toLocaleString("fa-IR")}</span>}<small>{m.destinationName || m.description || "مقصد هنگام انجام ثبت می‌شود"}{Number(m.attemptCount ?? 0)>0?` · ${Number(m.attemptCount).toLocaleString("fa-IR")} مراجعه`:""}</small>{m.workflowType==="task_list"&&<small className="mission-task-progress-inline">کارها: {(m.tasks??[]).filter(task=>task.status!=="open").length.toLocaleString("fa-IR")} از {(m.tasks??[]).length.toLocaleString("fa-IR")} تعیین وضعیت شده</small>}{Number(m.startCancellationCount ?? 0)>0&&<small className="mission-cancel-audit">انصراف از شروع: {m.lastStartCancellationReason || "بدون توضیح"} · {formatPersianDateTime(m.lastStartCancelledAt ?? undefined)}</small>}{m.status==="cancelled"&&<small className="mission-manager-cancel-audit">لغو توسط {m.cancelledByName || "مدیریت"}: {m.cancellationReason} · {formatPersianDateTime(m.cancelledAt ?? undefined)}</small>}</td>
             <td><span className="mini-user blue">{m.employeeName?.slice(0,2) ?? "—"}</span>{m.employeeName ?? "کاربر"}</td>
             <td>{m.source === "employee" ? "کارمند" : adminRole === "supervisor" ? "سرپرست" : "مدیر"}</td>
             <td className="mission-created-at"><b>{formatPersianDateTime(m.createdAt)}</b><small>ثبت خودکار سرور</small></td>
             <td>{m.deadline || "بدون مهلت"}</td>
             <td><span className={`status ${m.status === "cancelled" ? "cancelled" : m.status === "open" || m.status === "revision" ? "open" : m.status === "in_progress" ? "running" : ["pending","pending_approval"].includes(m.status) ? "pending" : ["follow_up","follow_up_pending"].includes(m.status) ? "follow-up" : "done"}`}>{m.status === "cancelled" ? "لغوشده" : m.status === "open" ? "باز" : m.status === "in_progress" ? "در حال انجام" : ["pending","pending_approval"].includes(m.status) ? "منتظر تأیید" : m.status === "follow_up_pending" ? "پیگیری مجدد · منتظر بررسی" : m.status === "follow_up" ? "پیگیری مجدد" : m.status === "approved" ? "انجام‌شده" : m.status === "revision" ? "نیازمند اصلاح" : m.status === "rejected" ? "ردشده" : "انجام‌شده"}</span></td>
             <td>{m.status === "cancelled" ? "—" : ["pending","pending_approval","follow_up_pending"].includes(m.status) ? <span className="score-pending">Pending</span> : Number(m.scoreConfirmed) > 0 ? `+${Number(m.scoreConfirmed).toLocaleString("fa-IR")}` : "—"}</td>
-            <td><div className="mission-row-actions">{m.status === "open"&&<><button className="edit" onClick={event=>{event.stopPropagation();openMissionForm(m)}}><Icon>✎</Icon> ویرایش</button><button className="delete" onClick={event=>{event.stopPropagation();deleteMission(m)}}><Icon>×</Icon> حذف</button></>}{m.completedAt&&<button className="mission-trace-action" onClick={event=>{event.stopPropagation();openMissionTrace(m)}}><Icon>⌖</Icon> بررسی مراجعه ثبت‌شده</button>}{m.status !== "open"&&ADMIN_CANCELLABLE_MISSION_STATUSES.includes(m.status)&&<span className="mission-locked"><Icon>▣</Icon> قفل‌شده پس از شروع</span>}{ADMIN_CANCELLABLE_MISSION_STATUSES.includes(m.status)&&<button className="cancel" onClick={event=>{event.stopPropagation();setMissionCancelTarget(m);setMissionCancelReason("")}}><Icon>×</Icon> لغو مأموریت</button>}{m.status==="cancelled"&&<span className="mission-locked"><Icon>✓</Icon> تعیین‌تکلیف‌شده</span>}</div></td>
+            <td><div className="mission-row-actions">{ACTIONABLE_EXECUTION_RANK_STATUSES.includes(m.status as typeof ACTIONABLE_EXECUTION_RANK_STATUSES[number])&&<label className="mission-rank-quick"><span>اولویت انجام</span><select aria-label={`اولویت انجام ${m.title}`} onClick={event=>event.stopPropagation()} value={m.executionRank??5} onChange={event=>void updateMissionExecutionRank(m,Number(event.target.value))}>{Array.from({length:9},(_,index)=>index+1).map(rank=><option key={rank} value={rank}>{rank.toLocaleString("fa-IR")}</option>)}</select></label>}{m.status === "open"&&<><button className="edit" onClick={event=>{event.stopPropagation();openMissionForm(m)}}><Icon>✎</Icon> ویرایش</button><button className="delete" onClick={event=>{event.stopPropagation();deleteMission(m)}}><Icon>×</Icon> حذف</button></>}{m.completedAt&&<button className="mission-trace-action" onClick={event=>{event.stopPropagation();openMissionTrace(m)}}><Icon>⌖</Icon> بررسی مراجعه ثبت‌شده</button>}{m.status !== "open"&&ADMIN_CANCELLABLE_MISSION_STATUSES.includes(m.status)&&<span className="mission-locked"><Icon>▣</Icon> قفل‌شده پس از شروع</span>}{ADMIN_CANCELLABLE_MISSION_STATUSES.includes(m.status)&&<button className="cancel" onClick={event=>{event.stopPropagation();setMissionCancelTarget(m);setMissionCancelReason("")}}><Icon>×</Icon> لغو مأموریت</button>}{m.status==="cancelled"&&<span className="mission-locked"><Icon>✓</Icon> تعیین‌تکلیف‌شده</span>}</div></td>
           </tr>)}</tbody></table> : <div className="empty-state"><span>▣</span><h3>موردی با این فیلتر پیدا نشد</h3><p>وضعیت، کارمند انتخاب‌شده یا روش مرتب‌سازی را تغییر دهید.</p></div>}
         </section>}
 
@@ -1798,14 +1917,15 @@ function AdminPanel() {
             <div className="drawer-head"><div><h2 id="new-admin-mission-title">{missionEditingId ? "ویرایش مأموریت" : "مأموریت جدید"}</h2><p>{missionEditingId ? "تا قبل از شروع کارمند می‌توانید جزئیات مأموریت را تغییر دهید." : adminRole === "supervisor" ? "مأموریت را به یکی از کاربران زیرمجموعه خود تخصیص دهید." : "مأموریت را ثبت و به کاربر موردنظر ارجاع دهید."}</p></div><button type="button" aria-label="بستن فرم" onClick={()=>{setMissionFormOpen(false);setMissionEditingId(null)}}>×</button></div>
             <label>عنوان مأموریت <b>*</b><input value={missionTitle} onChange={e=>setMissionTitle(e.target.value)} placeholder="مثلاً: تحویل اسناد قرارداد" required /></label>
             <label>مسئول مأموریت <b>*</b><select value={missionAssignee} onChange={e=>setMissionAssignee(e.target.value)} required disabled={!adminUsers.some(user=>user.status==="active" && (adminRole!=="supervisor" || user.role==="employee"))}><option value="">انتخاب کاربر...</option>{adminUsers.filter(user=>user.status==="active" && (adminRole!=="supervisor" || user.role==="employee")).map(user=><option key={user.id} value={user.id}>{user.fullName} · {user.role === "employee" ? "کارمند" : user.role === "supervisor" ? "سرپرست" : user.role === "admin" ? "مدیر" : "مالک"}</option>)}</select></label>
-            <div className="mission-workflow-selector"><button type="button" className={missionWorkflowType==="single"?"active":""} onClick={()=>setMissionWorkflowType("single")}><b>تک‌مرحله‌ای</b><small>یک مراجعه یا یک کار مشخص</small></button><button type="button" className={missionWorkflowType==="multi_stage"?"active":""} onClick={()=>setMissionWorkflowType("multi_stage")}><b>چندمرحله‌ای</b><small>چند کار یا مقصد پشت سر هم</small></button></div>
+            <div className="mission-workflow-selector"><button type="button" className={missionWorkflowType==="single"?"active":""} onClick={()=>setMissionWorkflowType("single")}><b>تک‌مرحله‌ای</b><small>یک مراجعه یا یک کار مشخص</small></button><button type="button" className={missionWorkflowType==="multi_stage"?"active":""} onClick={()=>setMissionWorkflowType("multi_stage")}><b>چندمرحله‌ای</b><small>چند کار یا مقصد پشت سر هم</small></button><button type="button" className={missionWorkflowType==="task_list"?"active":""} onClick={()=>setMissionWorkflowType("task_list")}><b>یک مقصد + چند کار</b><small>چند کار مستقل در یک مراجعه</small></button></div>
             {adminRole === "supervisor" && <div className="assignment-rule"><Icon>✓</Icon><span><b>محدوده تخصیص سرپرست</b><small>فقط کارکنانی نمایش داده می‌شوند که مستقیماً زیر نظر شما هستند.</small></span></div>}
             {!adminUsers.some(user=>user.status==="active" && (adminRole!=="supervisor" || user.role==="employee")) && <div className="mission-form-error">کاربر فعالی برای تخصیص مأموریت پیدا نشد.</div>}
-            <div className="mission-form-grid"><label>اولویت<select value={missionPriority} onChange={e=>setMissionPriority(e.target.value)}><option value="normal">عادی</option><option value="urgent">فوری</option><option value="low">کم</option></select></label><label>تاریخ شمسی مهلت <small>اختیاری</small><input value={missionDeadlineDate} onChange={e=>setMissionDeadlineDate(e.target.value)} inputMode="numeric" placeholder="مثلاً: ۱۴۰۵/۰۵/۲۷" aria-describedby="jalali-deadline-help" /></label><label>ساعت مهلت <small>اختیاری</small><input value={missionDeadlineTime} onChange={e=>setMissionDeadlineTime(e.target.value)} inputMode="numeric" placeholder="مثلاً: ۱۴:۳۰" aria-describedby="jalali-deadline-help" /></label></div>
+            <div className="mission-form-grid"><label>اولویت<select value={missionPriority} onChange={e=>setMissionPriority(e.target.value)}><option value="normal">عادی</option><option value="urgent">فوری</option><option value="low">کم</option></select></label><label className="mission-execution-rank-field">اولویت انجام <small>۱ بالاترین</small><select value={missionExecutionRank} onChange={event=>setMissionExecutionRank(event.target.value)}>{Array.from({length:9},(_,index)=>index+1).map(rank=><option key={rank} value={rank}>{rank.toLocaleString("fa-IR")}</option>)}</select></label><label>تاریخ شمسی مهلت <small>اختیاری</small><input value={missionDeadlineDate} onChange={e=>setMissionDeadlineDate(e.target.value)} inputMode="numeric" placeholder="مثلاً: ۱۴۰۵/۰۵/۲۷" aria-describedby="jalali-deadline-help" /></label><label>ساعت مهلت <small>اختیاری</small><input value={missionDeadlineTime} onChange={e=>setMissionDeadlineTime(e.target.value)} inputMode="numeric" placeholder="مثلاً: ۱۴:۳۰" aria-describedby="jalali-deadline-help" /></label></div>
             <p id="jalali-deadline-help" className="deadline-help">تاریخ را به‌صورت شمسی وارد کنید؛ اگر مهلت تعیین می‌کنید، تاریخ و ساعت را با هم بنویسید.</p>
             {/* The checkbox label has visible Persian text in its nested span; the accessibility rule cannot resolve it inside this mapped editor. */}
             {/* eslint-disable-next-line jsx-a11y/label-has-associated-control */}
-            {missionWorkflowType === "single" ? <label>نام یا آدرس مقصد <small>اختیاری</small><input value={missionDestination} onChange={e=>setMissionDestination(e.target.value)} placeholder="مثلاً: بانک رفاه، خیابان ولیعصر" /></label> : <section className="mission-steps-editor"><div className="mission-steps-head"><span><b>مراحل مأموریت</b><small>کارمند مراحل را به همین ترتیب انجام می‌دهد؛ فقط مرحله جاری فعال است.</small></span><button type="button" disabled={missionSteps.length>=10} onClick={()=>setMissionSteps(current=>[...current,emptyMissionStepDraft(current.length)])}>＋ افزودن مرحله</button></div>{missionSteps.map((step,index)=><article key={step.localId} className="mission-step-editor"><header><b>مرحله {(index+1).toLocaleString("fa-IR")}</b><div><button type="button" disabled={index===0} onClick={()=>setMissionSteps(current=>{const next=[...current];[next[index-1],next[index]]=[next[index],next[index-1]];return next})}>↑</button><button type="button" disabled={index===missionSteps.length-1} onClick={()=>setMissionSteps(current=>{const next=[...current];[next[index],next[index+1]]=[next[index+1],next[index]];return next})}>↓</button><button type="button" disabled={missionSteps.length<=2} onClick={()=>setMissionSteps(current=>current.filter(item=>item.localId!==step.localId))}>×</button></div></header><label>عنوان مرحله <b>*</b><input value={step.title} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,title:event.target.value}:item))} placeholder="مثلاً: دریافت مدارک از دفتر" required /></label><div className="mission-step-grid"><label>نوع اقدام<select value={step.actionType} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,actionType:event.target.value}:item))}><option value="visit">مراجعه</option><option value="follow_up">پیگیری</option><option value="receive">دریافت</option><option value="deliver">تحویل</option><option value="signature">امضا</option><option value="payment">پرداخت</option><option value="purchase">خرید</option><option value="inspection">بازرسی</option><option value="other">سایر</option></select></label><label>مدرک لازم<select value={step.evidenceRequirement} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,evidenceRequirement:event.target.value}:item))}><option value="none">لازم نیست</option><option value="optional">اختیاری</option><option value="photo">عکس</option><option value="file">فایل</option><option value="receipt">رسید</option><option value="any">هر نوع مدرک</option></select></label></div><label className="mission-step-location"><input type="checkbox" checked={step.requiresLocation} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,requiresLocation:event.target.checked}:item))}/><span><b>این مرحله مقصد و مسیر دارد</b><small>فقط زمان و کیلومتر همین بازه در مأموریت محاسبه می‌شود.</small></span></label>{step.requiresLocation&&<label>نام یا آدرس مقصد مرحله<input value={step.destinationName} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,destinationName:event.target.value}:item))} placeholder="در صورت مشخص‌بودن مقصد وارد کنید" /></label>}<label>شرح مرحله <small>اختیاری</small><textarea value={step.description} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,description:event.target.value}:item))} placeholder="دقیقاً چه کاری باید انجام شود؟" /></label><div className="mission-step-grid"><label>تاریخ شمسی مهلت<input value={step.deadlineDate} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,deadlineDate:event.target.value}:item))} placeholder="۱۴۰۵/۰۶/۰۱" /></label><label>ساعت مهلت<input value={step.deadlineTime} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,deadlineTime:event.target.value}:item))} placeholder="۱۴:۳۰" /></label></div></article>)}</section>}
+            {missionWorkflowType !== "multi_stage" ? <label>نام یا آدرس مقصد <small>اختیاری</small><input value={missionDestination} onChange={e=>setMissionDestination(e.target.value)} placeholder="مثلاً: بانک رفاه، خیابان ولیعصر" /></label> : <section className="mission-steps-editor"><div className="mission-steps-head"><span><b>مراحل مأموریت</b><small>کارمند مراحل را به همین ترتیب انجام می‌دهد؛ فقط مرحله جاری فعال است.</small></span><button type="button" disabled={missionSteps.length>=10} onClick={()=>setMissionSteps(current=>[...current,emptyMissionStepDraft(current.length)])}>＋ افزودن مرحله</button></div>{missionSteps.map((step,index)=><article key={step.localId} className="mission-step-editor"><header><b>مرحله {(index+1).toLocaleString("fa-IR")}</b><div><button type="button" disabled={index===0} onClick={()=>setMissionSteps(current=>{const next=[...current];[next[index-1],next[index]]=[next[index],next[index-1]];return next})}>↑</button><button type="button" disabled={index===missionSteps.length-1} onClick={()=>setMissionSteps(current=>{const next=[...current];[next[index],next[index+1]]=[next[index+1],next[index]];return next})}>↓</button><button type="button" disabled={missionSteps.length<=2} onClick={()=>setMissionSteps(current=>current.filter(item=>item.localId!==step.localId))}>×</button></div></header><label>عنوان مرحله <b>*</b><input value={step.title} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,title:event.target.value}:item))} placeholder="مثلاً: دریافت مدارک از دفتر" required /></label><div className="mission-step-grid"><label>نوع اقدام<select value={step.actionType} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,actionType:event.target.value}:item))}><option value="visit">مراجعه</option><option value="follow_up">پیگیری</option><option value="receive">دریافت</option><option value="deliver">تحویل</option><option value="signature">امضا</option><option value="payment">پرداخت</option><option value="purchase">خرید</option><option value="inspection">بازرسی</option><option value="other">سایر</option></select></label><label>مدرک لازم<select value={step.evidenceRequirement} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,evidenceRequirement:event.target.value}:item))}><option value="none">لازم نیست</option><option value="optional">اختیاری</option><option value="photo">عکس</option><option value="file">فایل</option><option value="receipt">رسید</option><option value="any">هر نوع مدرک</option></select></label></div><label className="mission-step-location"><input type="checkbox" checked={step.requiresLocation} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,requiresLocation:event.target.checked}:item))}/><span><b>این مرحله مقصد و مسیر دارد</b><small>فقط زمان و کیلومتر همین بازه در مأموریت محاسبه می‌شود.</small></span></label>{step.requiresLocation&&<label>نام یا آدرس مقصد مرحله<input value={step.destinationName} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,destinationName:event.target.value}:item))} placeholder="در صورت مشخص‌بودن مقصد وارد کنید" /></label>}<label>شرح مرحله <small>اختیاری</small><textarea value={step.description} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,description:event.target.value}:item))} placeholder="دقیقاً چه کاری باید انجام شود؟" /></label><div className="mission-step-grid"><label>تاریخ شمسی مهلت<input value={step.deadlineDate} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,deadlineDate:event.target.value}:item))} placeholder="۱۴۰۵/۰۶/۰۱" /></label><label>ساعت مهلت<input value={step.deadlineTime} onChange={event=>setMissionSteps(current=>current.map(item=>item.localId===step.localId?{...item,deadlineTime:event.target.value}:item))} placeholder="۱۴:۳۰" /></label></div></article>)}</section>}
+            {missionWorkflowType === "task_list" && <section className="mission-tasks-editor"><div className="mission-steps-head"><span><b>کارهای این مقصد</b><small>بین ۲ تا ۱۰ کار؛ ترتیب فقط برای نمایش کارمند است.</small></span><button type="button" disabled={missionTasks.length>=10} onClick={()=>setMissionTasks(current=>[...current,emptyMissionTaskDraft(current.length)])}>＋ افزودن کار</button></div>{missionTasks.map((task,index)=><article key={task.localId} className="mission-task-editor"><header><b>کار {(index+1).toLocaleString("fa-IR")}</b><div><button type="button" disabled={index===0} onClick={()=>setMissionTasks(current=>{const next=[...current];[next[index-1],next[index]]=[next[index],next[index-1]];return next})}>↑</button><button type="button" disabled={index===missionTasks.length-1} onClick={()=>setMissionTasks(current=>{const next=[...current];[next[index],next[index+1]]=[next[index+1],next[index]];return next})}>↓</button><button type="button" disabled={missionTasks.length<=2} onClick={()=>setMissionTasks(current=>current.filter(item=>item.localId!==task.localId))}>×</button></div></header><label>عنوان کار <b>*</b><input value={task.title} onChange={event=>setMissionTasks(current=>current.map(item=>item.localId===task.localId?{...item,title:event.target.value}:item))} placeholder="مثلاً: تحویل اصل قرارداد" required /></label><label>شرح کوتاه <small>اختیاری</small><textarea value={task.description} onChange={event=>setMissionTasks(current=>current.map(item=>item.localId===task.localId?{...item,description:event.target.value}:item))} placeholder="جزئیات لازم برای همین کار" /></label></article>)}</section>}
             <label>توضیحات مأموریت <small>اختیاری</small><textarea value={missionDescription} onChange={e=>setMissionDescription(e.target.value)} placeholder="توضیحات و جزئیات لازم برای انجام مأموریت را بنویسید..." /></label>
             <MissionAttachmentPicker files={missionDraftAttachments} disabled={missionSubmitting} onChange={setMissionDraftAttachments} onMessage={notify}/>
             <div className="server-time-note"><Icon>◷</Icon><span><b>تاریخ و ساعت ثبت خودکار است</b><small>هم‌زمان با ثبت مأموریت، زمان دقیق سرور ذخیره می‌شود و قابل تغییر نیست.</small></span></div>
@@ -1839,6 +1959,7 @@ function AdminPanel() {
             <div className="trace-evaluation-grid"><section><h3>فاصله و زمان</h3><div><span><small>شروع تا مقصد</small><b>{missionTrace.metrics.startToDestinationMeters == null ? "—" : `${missionTrace.metrics.startToDestinationMeters.toLocaleString("fa-IR")} متر`}</b></span><span><small>مقصد تا پایان</small><b>{missionTrace.metrics.destinationToEndMeters == null ? "—" : `${missionTrace.metrics.destinationToEndMeters.toLocaleString("fa-IR")} متر`}</b></span><span><small>زمان کل مأموریت</small><b>{missionTrace.metrics.totalElapsedMinutes == null ? "بدون شروع" : formatMinutes(missionTrace.metrics.totalElapsedMinutes)}</b></span></div></section><section><h3>وضعیت امتیاز</h3><div><span><small>امتیاز قطعی</small><b>{missionTrace.mission.scoreConfirmed.toLocaleString("fa-IR")}</b></span><span><small>در انتظار تأیید</small><b>{missionTrace.mission.scorePending.toLocaleString("fa-IR")}</b></span><span><small>کسر ثبت‌شده</small><b>{missionTrace.mission.scorePenalty.toLocaleString("fa-IR")}</b></span></div></section></div>
             <MissionStatusTimeline events={missionTraceEvents} compact/>
             {Boolean(missionTrace.steps?.length)&&<section className="trace-multi-steps"><h3>مراحل و مسافت معتبر مأموریت</h3><p>فقط GPS ثبت‌شده داخل بازه فعال هر مرحله محاسبه شده است؛ فاصله بین مراحل وارد کیلومتر مأموریت نمی‌شود.</p>{missionTrace.steps?.map(step=><article key={step.id}><i>{step.stepNo.toLocaleString("fa-IR")}</i><span><b>{step.title}</b><small>{step.result??step.status} · شروع {formatPersianDateTime(step.startedAt??undefined)} · رسیدن {formatPersianDateTime(step.arrivedAt??undefined)} · پایان {formatPersianDateTime(step.completedAt??undefined)}</small><small>مسافت معتبر: {(step.validDistanceMeters/1000).toLocaleString("fa-IR",{maximumFractionDigits:2})} کیلومتر{step.gapToNextMinutes!=null?` · فاصله تا مرحله بعد: ${formatMinutes(step.gapToNextMinutes)}`:""}</small>{step.report&&<em>{step.report}</em>}</span></article>)}<footer><span>جمع مسافت معتبر مأموریت</span><b>{(Number(missionTrace.metrics.totalValidDistanceMeters??0)/1000).toLocaleString("fa-IR",{maximumFractionDigits:2})} کیلومتر</b></footer></section>}
+            {Boolean(missionTrace.tasks?.length)&&<section className="trace-mission-tasks"><h3>نتیجه کارهای این مقصد</h3><p>هر تغییر نتیجه در سابقه ممیزی نگهداری شده است.</p>{missionTrace.tasks?.map(task=><article key={task.id}><i>{task.taskNo.toLocaleString("fa-IR")}</i><span><b>{task.title}</b><small>{task.result??"تعیین‌نشده"} · آخرین ثبت {formatPersianDateTime(task.completedAt??task.updatedAt)}</small>{task.description&&<small>{task.description}</small>}{task.report&&<em>{task.report}</em>}</span></article>)}</section>}
             <section className="trace-score-hints"><h3>موارد مؤثر در ارزیابی و نمره</h3>{missionTrace.evaluation.scoreHints.map((hint,index)=><p key={index}><Icon>{missionTrace.evaluation.confidence === "high" ? "✓" : "!"}</Icon>{hint}</p>)}</section>
             {["pending","pending_approval","approved","completed"].includes(missionTrace.mission.status) ? <section className="trace-score-form"><div><h3>ثبت نمره مدیر یا سرپرست</h3><p>بر اساس سه نقطه، دقت GPS و گزارش کارمند، نمره نهایی را در مقیاس فعلی سامانه ثبت کنید.</p></div><label>نمره از ۱۲<input type="number" min="0" max="12" step="1" inputMode="numeric" value={missionTraceScore} onChange={event=>setMissionTraceScore(event.target.value)} /></label><label>دلیل ارزیابی <b>*</b><textarea value={missionTraceScoreNote} onChange={event=>setMissionTraceScoreNote(event.target.value)} placeholder="مثلاً: هر سه نقطه صحیح است و پایان کار در محدوده مقصد ثبت شده..." /></label><button type="button" onClick={saveMissionTraceScore} disabled={missionTraceScoreSaving}>{missionTraceScoreSaving ? "در حال ثبت..." : "ثبت ارزیابی و نمره"}</button></section> : <div className="trace-score-locked">این مأموریت رد شده یا برای اصلاح برگشته است؛ تا ثبت مجدد نتیجه، امتیاز جدیدی برای آن قطعی نمی‌شود.</div>}
             {missionTrace.mission.report && <section className="trace-report"><h3>گزارش ثبت‌شده کارمند</h3><p>{missionTrace.mission.report}</p></section>}

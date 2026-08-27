@@ -150,15 +150,15 @@ export function buildPerformanceXlsx(report: PerformanceReport, historyReport: P
 
   const missions: XlsxSheet = {
     name: "جزئیات مأموریت‌ها",
-    widths: [22, 30, 16, 16, 20, 22, 22, 22, 22, 18, 18, 18, 18, 16, 16, 18, 18, 18],
-    rows: [["کارمند", "عنوان مأموریت", "منبع", "نتیجه", "مقصد", "تاریخ ثبت", "شروع", "ثبت مقصد", "تعیین وضعیت", "تعداد مراجعه", "زمان کل دقیقه", "زمان مسیر دقیقه", "حضور مقصد دقیقه", "مسافت km", "پوشش GPS", "هزینه", "امتیاز قطعی", "امتیاز در انتظار"]],
+    widths: [22, 30, 16, 16, 20, 22, 22, 22, 22, 18, 18, 18, 18, 16, 16, 18, 18, 18, 16, 16, 16],
+    rows: [["کارمند", "عنوان مأموریت", "منبع", "نتیجه", "مقصد", "تاریخ ثبت", "شروع", "ثبت مقصد", "تعیین وضعیت", "تعداد مراجعه", "زمان کل دقیقه", "زمان مسیر دقیقه", "حضور مقصد دقیقه", "مسافت km", "پوشش GPS", "هزینه", "امتیاز قطعی", "امتیاز در انتظار", "کل تسک", "تسک انجام‌شده", "تسک پیگیری"]],
   };
   for (const row of report.rows) for (const mission of row.missions.missionDetails) missions.rows.push([
     row.fullName, mission.title, mission.source === "employee" ? "خودساخته" : "مدیریت", mission.result ?? "—",
     mission.destinationName ?? "—", dateTime(mission.createdAt), dateTime(mission.startedAt), dateTime(mission.destinationRecordedAt),
     dateTime(mission.completedAt), mission.attemptCount, mission.totalMinutes, mission.travelMinutes, mission.serviceMinutes,
     mission.distanceKm, mission.coverageStatus === "complete" ? "کامل" : mission.coverageStatus === "partial" ? "ناقص" : "بدون داده",
-    mission.expenseAmount, mission.confirmedScore, mission.pendingScore,
+    mission.expenseAmount, mission.confirmedScore, mission.pendingScore, mission.taskTotal, mission.taskCompleted, mission.taskFollowUp,
   ]);
 
   const routes: XlsxSheet = {

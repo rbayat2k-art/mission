@@ -146,6 +146,8 @@ CREATE TABLE IF NOT EXISTS missions (
   source VARCHAR(24) NOT NULL,
   status VARCHAR(24) NOT NULL,
   priority VARCHAR(24) NOT NULL DEFAULT 'normal',
+  execution_rank TINYINT NULL,
+  execution_rank_version INT NOT NULL DEFAULT 0,
   created_by CHAR(36) NOT NULL,
   assigned_to CHAR(36) NOT NULL,
   workflow_type VARCHAR(24) NOT NULL DEFAULT 'single',
@@ -176,6 +178,7 @@ CREATE TABLE IF NOT EXISTS missions (
   cancellation_reason TEXT NULL,
   created_at VARCHAR(40) NOT NULL,
   INDEX idx_missions_assigned_status (assigned_to, status),
+  INDEX idx_missions_execution_rank (execution_rank, created_at),
   INDEX idx_missions_source_status (source, status),
   INDEX idx_missions_assigned_completed (assigned_to, completed_at),
   CONSTRAINT fk_missions_creator FOREIGN KEY (created_by) REFERENCES users(id),
@@ -245,6 +248,51 @@ CREATE TABLE IF NOT EXISTS mission_step_segments (
   CONSTRAINT fk_step_segments_step FOREIGN KEY (mission_step_id) REFERENCES mission_steps(id) ON DELETE CASCADE,
   CONSTRAINT fk_step_segments_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   CONSTRAINT fk_step_segments_session FOREIGN KEY (work_session_id) REFERENCES work_sessions(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- statement-breakpoint
+CREATE TABLE IF NOT EXISTS mission_tasks (
+  id CHAR(36) PRIMARY KEY,
+  mission_id CHAR(36) NOT NULL,
+  task_no INT NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  description TEXT NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'open',
+  result VARCHAR(100) NULL,
+  report TEXT NULL,
+  version INT NOT NULL DEFAULT 0,
+  completed_at VARCHAR(40) NULL,
+  updated_at VARCHAR(40) NOT NULL,
+  created_at VARCHAR(40) NOT NULL,
+  UNIQUE KEY uq_mission_task_no (mission_id, task_no),
+  INDEX idx_mission_tasks_status (mission_id, status, task_no),
+  CONSTRAINT fk_mission_tasks_mission FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- statement-breakpoint
+CREATE TABLE IF NOT EXISTS mission_task_events (
+  id CHAR(36) PRIMARY KEY,
+  mission_id CHAR(36) NOT NULL,
+  mission_task_id CHAR(36) NOT NULL,
+  actor_id CHAR(36) NULL,
+  actor_role VARCHAR(32) NOT NULL,
+  client_event_id CHAR(36) NULL,
+  event_type VARCHAR(40) NOT NULL,
+  from_status VARCHAR(32) NULL,
+  to_status VARCHAR(32) NOT NULL,
+  result VARCHAR(100) NULL,
+  report TEXT NULL,
+  latitude_e6 INT NULL,
+  longitude_e6 INT NULL,
+  accuracy_cm INT NULL,
+  device_recorded_at VARCHAR(40) NULL,
+  server_recorded_at VARCHAR(40) NOT NULL,
+  metadata JSON NULL,
+  created_at VARCHAR(40) NOT NULL,
+  UNIQUE KEY uq_mission_task_event_client (client_event_id),
+  INDEX idx_mission_task_events_task_time (mission_task_id, server_recorded_at, id),
+  INDEX idx_mission_task_events_mission_time (mission_id, server_recorded_at, id),
+  CONSTRAINT fk_mission_task_events_mission FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE,
+  CONSTRAINT fk_mission_task_events_task FOREIGN KEY (mission_task_id) REFERENCES mission_tasks(id) ON DELETE CASCADE,
+  CONSTRAINT fk_mission_task_events_actor FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- statement-breakpoint
 CREATE TABLE IF NOT EXISTS mission_attempts (

@@ -30,7 +30,7 @@ function storedZipEntries(buffer) {
 
 function fixtureReport() {
   const point = { date:"2026-08-22T00:00:00Z", activeMinutes:510, completedCount:1, successfulCount:1, travelMinutes:30, onSiteMinutes:90, missionDistanceKm:12, distanceKm:15, measuredMissionCount:1, firstStartAt:"2026-08-22T05:00:00Z", lastEndAt:"2026-08-22T13:30:00Z", hasActiveSession:false, firstDestinationAt:"2026-08-22T06:00:00Z", lastDestinationAt:"2026-08-22T12:00:00Z", gpsGapMinutes:4, internetGapMinutes:2 };
-  const mission = { id:"mission-1", title:"پیگیری پرونده", source:"manager", status:"approved", result:"انجام شد", destinationName:"اداره", createdAt:point.date, startedAt:point.firstStartAt, destinationRecordedAt:"2026-08-22T06:00:00Z", completedAt:point.lastEndAt, deadlineAt:null, attemptCount:1, totalMinutes:510, serviceMinutes:90, travelMinutes:30, distanceKm:12, coverageStatus:"complete", expenseAmount:0, confirmedScore:12, pendingScore:0 };
+  const mission = { id:"mission-1", title:"پیگیری پرونده", source:"manager", status:"approved", result:"انجام شد", destinationName:"اداره", createdAt:point.date, startedAt:point.firstStartAt, destinationRecordedAt:"2026-08-22T06:00:00Z", completedAt:point.lastEndAt, deadlineAt:null, attemptCount:1, totalMinutes:510, serviceMinutes:90, travelMinutes:30, distanceKm:12, coverageStatus:"complete", expenseAmount:0, confirmedScore:12, pendingScore:0, taskTotal:3, taskCompleted:2, taskFollowUp:1 };
   const row = {
     id:"user-1", fullName:"کارمند تست", username:"test", supervisorName:"مدیر",
     attendance:{ activeMinutes:510, attendanceDays:1, targetMinutes:510, overtimeMinutes:0, shortfallMinutes:0, lateMinutes:0, unverifiedGpsMinutes:0, pendingCorrectionMinutes:0, selfReportedStartCount:0, firstStartAt:point.firstStartAt, lastEndAt:point.lastEndAt, endNotes:[] },
@@ -62,4 +62,5 @@ test("builds one valid management workbook containing personnel daily weekly and
   assert.match(dailySheet, /آخرین ثبت مقصد/);
   assert.match(dailySheet, /کارمند تست/);
   assert.match(dailySheet, /پیگیری پرونده — انجام شد/);
+  assert.match([...entries.values()].join("\n"), /تسک انجام‌شده/);
 });

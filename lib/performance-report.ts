@@ -36,6 +36,7 @@ type MissionRow = {
   startedAt: string | null; completedAt: string | null; createdAt: string;
   attemptCount: number;
   workflowType:string;
+  taskTotal:number;taskCompleted:number;taskFollowUp:number;
   startLatitudeE6: number | null; startLongitudeE6: number | null; startLocationRecordedAt: string | null;
   destinationLatitudeE6: number | null; destinationLongitudeE6: number | null; destinationRecordedAt: string | null;
 };
@@ -241,6 +242,9 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
     db.prepare(`SELECT m.id, m.title, m.status, m.source, m.workflow_type AS workflowType, m.result, COALESCE(md.destination_name, m.destination_name) AS destinationName, m.expense_amount AS expenseAmount,
       m.score_pending AS scorePending, m.score_confirmed AS scoreConfirmed, m.score_penalty AS scorePenalty, m.score_note AS scoreNote, m.deadline_at AS deadlineAt,
       (SELECT COUNT(*) FROM mission_attempts ma WHERE ma.mission_id = m.id) AS attemptCount,
+      (SELECT COUNT(*) FROM mission_tasks mt WHERE mt.mission_id=m.id) AS taskTotal,
+      (SELECT COUNT(*) FROM mission_tasks mt WHERE mt.mission_id=m.id AND mt.status='completed') AS taskCompleted,
+      (SELECT COUNT(*) FROM mission_tasks mt WHERE mt.mission_id=m.id AND mt.status='follow_up') AS taskFollowUp,
       m.started_at AS startedAt, m.start_latitude_e6 AS startLatitudeE6, m.start_longitude_e6 AS startLongitudeE6, m.start_location_recorded_at AS startLocationRecordedAt,
       md.latitude_e6 AS destinationLatitudeE6, md.longitude_e6 AS destinationLongitudeE6, md.recorded_at AS destinationRecordedAt,
       m.completed_at AS completedAt, m.created_at AS createdAt FROM missions m LEFT JOIN mission_destinations md ON md.mission_id = m.id
@@ -343,6 +347,7 @@ async function loadUserReport(user: ReportUser, period: PerformancePeriod, now: 
       travelMinutes: trip?.travelMinutes ?? 0, distanceKm: trip?.distanceKm ?? 0,
       coverageStatus: trip?.coverageStatus ?? "missing", expenseAmount: Number(mission.expenseAmount || 0),
       confirmedScore: Number(mission.scoreConfirmed || 0), pendingScore: Number(mission.scorePending || 0),
+      taskTotal:Number(mission.taskTotal||0),taskCompleted:Number(mission.taskCompleted||0),taskFollowUp:Number(mission.taskFollowUp||0),
     };
   });
 

@@ -1,4 +1,6 @@
 export type OutboxResult<T = unknown> = { queued: boolean; data?: T; queueId?: number };
+export type OutboxConflict = { queueId: number; url: string; status: 409 };
+export type FlushOutboxResult = { sent: number; remaining: number; conflicts: OutboxConflict[] };
 
 type JsonEntry = { id?: number; kind: "json"; url: string; method: string; body: unknown; createdAt: string };
 type FileEntry = { id?: number; kind: "file"; url: string; fields: Record<string, string>; file: File; createdAt: string };
@@ -76,6 +78,13 @@ function isLocationEntry(entry:JsonEntry) {
   return entry.url === "/api/locations" && entry.method.toUpperCase() === "POST";
 }
 
+export function nonLocationOutboxResponseAction(status:number):"sent"|"discard"|"retry"|"conflict" {
+  if (status >= 200 && status < 300) return "sent";
+  if (status === 409) return "conflict";
+  if (status >= 500 || status === 401) return "retry";
+  return "discard";
+}
+
 export function locationBatchHasFinalAck(points:Array<{clientEventId?:string}> | undefined, body:LocationAck) {
   if (!Array.isArray(points)) return false;
   const expected = points.map((point) => point.clientEventId).filter((id):id is string => typeof id === "string" && id.length > 0);
@@ -131,9 +140,10 @@ export async function removeQueuedItem(queueId: number) {
 }
 
 export async function flushOutbox() {
-  if (!navigator.onLine) return { sent: 0, remaining: await getOutboxCount() };
+  if (!navigator.onLine) return { sent: 0, remaining: await getOutboxCount(), conflicts: [] } satisfies FlushOutboxResult;
   const entries = await readAll();
   let sent = 0;
+  const conflicts: OutboxConflict[] = [];
   for (const entry of entries) {
     if (!entry.id) continue;
     try {
@@ -150,12 +160,15 @@ export async function flushOutbox() {
         if (!response.ok) break;
         const body = await response.json().catch(() => null) as LocationAck | null;
         if (!body || !locationEntryHasFinalAck(entry, body)) break;
-      } else if (!response.ok && (response.status >= 500 || response.status === 401)) break;
+      } else if (nonLocationOutboxResponseAction(response.status) === "conflict") {
+        conflicts.push({ queueId: entry.id, url: entry.url, status: 409 });
+        break;
+      } else if (nonLocationOutboxResponseAction(response.status) === "retry") break;
       await remove(entry.id);
       sent += 1;
     } catch {
       break;
     }
   }
-  return { sent, remaining: await getOutboxCount() };
+  return { sent, remaining: await getOutboxCount(), conflicts } satisfies FlushOutboxResult;
 }

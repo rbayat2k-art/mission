@@ -16,13 +16,18 @@ async function verify(database){
   try{
     const [tables]=await db.query("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=?",[database]);
     const names=new Set(tables.map(row=>row.TABLE_NAME));
-    for(const name of ["score_ledger_entries","score_ledger_backfill_state","tracking_presence","tracking_alert_states","tracking_alert_transitions","mission_status_events"])assert(names.has(name),`missing table ${name}`);
+    for(const name of ["score_ledger_entries","score_ledger_backfill_state","tracking_presence","tracking_alert_states","tracking_alert_transitions","mission_status_events","mission_tasks","mission_task_events"])assert(names.has(name),`missing table ${name}`);
     const [indexes]=await db.query("SELECT TABLE_NAME,INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=?",[database]);
     const keys=new Set(indexes.map(row=>`${row.TABLE_NAME}:${row.INDEX_NAME}`));
-    for(const key of ["location_points:idx_location_route_day","notifications:idx_notifications_user_dedupe","attachments:idx_attachments_follow_up_message"])assert(keys.has(key),`missing index ${key}`);
+    for(const key of ["location_points:idx_location_route_day","notifications:idx_notifications_user_dedupe","attachments:idx_attachments_follow_up_message","missions:idx_missions_execution_rank","mission_tasks:uq_mission_task_no","mission_task_events:idx_mission_task_events_task_time"])assert(keys.has(key),`missing index ${key}`);
+    const [missionColumns]=await db.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='missions'",[database]);
+    const missionColumnNames=new Set(missionColumns.map(row=>row.COLUMN_NAME));
+    for(const column of ["execution_rank","execution_rank_version"])assert(missionColumnNames.has(column),`missing missions.${column}`);
     const [fks]=await db.query("SELECT TABLE_NAME,COLUMN_NAME,REFERENCED_TABLE_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND REFERENCED_TABLE_NAME IS NOT NULL",[database]);
     assert(fks.some(row=>row.TABLE_NAME==="missions"&&row.COLUMN_NAME==="cancelled_by"&&row.REFERENCED_TABLE_NAME==="users"),"missing missions.cancelled_by FK");
     assert(fks.some(row=>row.TABLE_NAME==="score_ledger_entries"&&row.COLUMN_NAME==="user_id"&&row.REFERENCED_TABLE_NAME==="users"),"missing ledger user FK");
+    assert(fks.some(row=>row.TABLE_NAME==="mission_tasks"&&row.COLUMN_NAME==="mission_id"&&row.REFERENCED_TABLE_NAME==="missions"),"missing mission task mission FK");
+    assert(fks.some(row=>row.TABLE_NAME==="mission_task_events"&&row.COLUMN_NAME==="mission_task_id"&&row.REFERENCED_TABLE_NAME==="mission_tasks"),"missing task event task FK");
   }finally{await db.end();}
 }
 try{
@@ -47,7 +52,7 @@ try{
   const [before]=await legacy.query("SELECT id,title,description,status,assigned_to FROM missions ORDER BY id"), beforeHash=digest(before);
   const [cancelFks]=await legacy.query("SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND TABLE_NAME='missions' AND COLUMN_NAME='cancelled_by' AND REFERENCED_TABLE_NAME='users'",[legacyDb]);
   for(const row of cancelFks)await legacy.query(`ALTER TABLE missions DROP FOREIGN KEY \`${row.CONSTRAINT_NAME}\``);
-  await legacy.query("DROP TABLE tracking_alert_transitions,tracking_alert_states,tracking_presence,score_ledger_backfill_state,score_ledger_entries");await legacy.end();
+  await legacy.query("DROP TABLE mission_task_events,mission_tasks,tracking_alert_transitions,tracking_alert_states,tracking_presence,score_ledger_backfill_state,score_ledger_entries");await legacy.end();
   migrateTwice(legacyDb);await verify(legacyDb);
   const upgraded=await mysql.createConnection({host,port,user,password,database:legacyDb});const [after]=await upgraded.query("SELECT id,title,description,status,assigned_to FROM missions ORDER BY id");await upgraded.end();
   assert.equal(after.length,before.length);assert.equal(digest(after),beforeHash,"legacy rows changed during upgrade");

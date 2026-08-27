@@ -77,6 +77,12 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     const next=stepRows[index+1];
     stepTraces.push({...step,requiresLocation:Boolean(step.requiresLocation),start:exactPoint(step.startLatitudeE6,step.startLongitudeE6,step.startAccuracyCm,step.startRecordedAt),destination:exactPoint(step.destinationLatitudeE6,step.destinationLongitudeE6,step.destinationAccuracyCm,step.destinationRecordedAt),end:exactPoint(step.endLatitudeE6,step.endLongitudeE6,step.endAccuracyCm,step.endRecordedAt),validDistanceMeters:Math.round(validDistanceMeters),onSiteMinutes:step.arrivedAt&&step.completedAt?Math.max(0,Math.round((Date.parse(step.completedAt)-Date.parse(step.arrivedAt))/60_000)):null,segments,gapToNextMinutes:step.completedAt&&next?.startedAt?Math.max(0,Math.round((Date.parse(next.startedAt)-Date.parse(step.completedAt))/60_000)):null});
   }
+  const taskRows = mission.workflowType === "task_list" ? (await db.prepare(`SELECT id, mission_id AS missionId, task_no AS taskNo,
+    title, description, status, result, report, version, completed_at AS completedAt, updated_at AS updatedAt, created_at AS createdAt
+    FROM mission_tasks WHERE mission_id=? ORDER BY task_no`).bind(id).all<{
+      id:string;missionId:string;taskNo:number;title:string;description:string;status:string;result:string|null;report:string|null;version:number;
+      completedAt:string|null;updatedAt:string;createdAt:string;
+    }>()).results : [];
 
   const destination = await db.prepare("SELECT destination_name AS destinationName, latitude_e6 AS latitudeE6, longitude_e6 AS longitudeE6, accuracy_cm AS accuracyCm, recorded_at AS recordedAt FROM mission_destinations WHERE mission_id = ?").bind(id).first<{ destinationName:string; latitudeE6:number; longitudeE6:number; accuracyCm:number; recordedAt:string }>();
   const exactStart = exactPoint(mission.startLatitudeE6, mission.startLongitudeE6, mission.startAccuracyCm, mission.startLocationRecordedAt);
@@ -114,6 +120,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     points: { start, destination:destinationPoint, end },
     metrics: { startToDestinationMeters, destinationToEndMeters, totalElapsedMinutes:mission.startedAt ? Math.max(0, Math.round((Date.parse(mission.completedAt)-Date.parse(mission.startedAt))/60_000)) : null, totalValidDistanceMeters:Math.round(totalValidDistanceMeters) },
     steps:stepTraces,
+    tasks:taskRows,
     evaluation: { confidence, flags, scoreHints },
   } });
 }

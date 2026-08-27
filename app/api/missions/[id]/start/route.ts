@@ -21,8 +21,21 @@ type MissionRow = {
   scorePenalty:number;
 };
 
+type StartedMissionTask = {
+  id:string;
+  taskNo:number;
+  title:string;
+  description:string;
+  status:string;
+  result:string|null;
+  report:string|null;
+  version:number;
+  completedAt:string|null;
+  updatedAt:string;
+};
+
 type StartOutcome =
-  | { kind: "started"; startedAt: string; activeCount: number; eventId: string }
+  | { kind: "started"; startedAt: string; activeCount: number; eventId: string; tasks?:StartedMissionTask[] }
   | { kind: "existing"; startedAt: string | null }
   | { kind: "error"; status: number; error: string };
 
@@ -110,6 +123,19 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       await statusEvent.statement.run();
       return { kind:"started", startedAt:now, activeCount:activeCount + 1, eventId:statusEvent.id };
     }
+    if (mission.workflowType === "task_list" && mission.status === "follow_up") {
+      const followUpTasks = await transaction.prepare("SELECT id, status, result, report FROM mission_tasks WHERE mission_id=? AND status='follow_up' FOR UPDATE")
+        .bind(id).all<{id:string;status:string;result:string|null;report:string|null}>();
+      for (const task of followUpTasks.results) {
+        const taskUpdate=await transaction.prepare("UPDATE mission_tasks SET status='open', result=NULL, report=NULL, version=version+1, completed_at=NULL, updated_at=? WHERE id=? AND status='follow_up'")
+          .bind(now,task.id).run();
+        if((taskUpdate.meta.changes??0)!==1)throw new TransitionConflict();
+        await transaction.prepare(`INSERT INTO mission_task_events (id, mission_id, mission_task_id, actor_id, actor_role, event_type,
+          from_status, to_status, result, report, server_recorded_at, metadata, created_at) VALUES (?, ?, ?, ?, ?, 'follow_up_reopened',
+          'follow_up', 'open', ?, ?, ?, ?, ?, ?)`)
+          .bind(crypto.randomUUID(),id,task.id,auth.user.id,auth.user.role,task.result,task.report,now,JSON.stringify({previousResult:task.result,previousReport:task.report}),now).run();
+      }
+    }
     const missionUpdate=await transaction.prepare(`UPDATE missions SET status = 'in_progress', destination_name = NULL, expense_amount = 0,
       score_pending = 0, score_confirmed = 0, score_penalty = 0, score_note = NULL, completed_at = NULL,
       end_latitude_e6 = NULL, end_longitude_e6 = NULL, end_accuracy_cm = NULL, end_location_recorded_at = NULL,
@@ -137,7 +163,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       await transaction.prepare("UPDATE mission_follow_up_requests SET status='resolved', resolution_note='پیگیری مجدد توسط کارمند آغاز شد', resolved_at=?, updated_at=? WHERE id=?")
         .bind(now, now, followUpRequest.id).run();
     }
-    return { kind: "started", startedAt: now, activeCount: activeCount + 1, eventId:statusEvent.id };
+    const refreshedTasks = mission.workflowType === "task_list"
+      ? await transaction.prepare(`SELECT id, task_no AS taskNo, title, description, status, result, report, version,
+          completed_at AS completedAt, updated_at AS updatedAt FROM mission_tasks WHERE mission_id=? ORDER BY task_no`)
+        .bind(id).all<StartedMissionTask>()
+      : null;
+    return { kind: "started", startedAt: now, activeCount: activeCount + 1, eventId:statusEvent.id, tasks:refreshedTasks?.results };
     });
   } catch(error) {
     if(error instanceof TransitionConflict)return Response.json({error:"وضعیت مأموریت هم‌زمان تغییر کرده است؛ دوباره تلاش کنید."},{status:409});
@@ -148,7 +179,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (outcome.kind === "existing") return Response.json({ mission: { id, status: "in_progress", startedAt: outcome.startedAt } });
   if (startLocation) void enrichMissionStatusEventLocation(outcome.eventId, startLocation);
   return Response.json({
-    mission: { id, status: "in_progress", startedAt: outcome.startedAt, startLocation },
+    mission: { id, status: "in_progress", startedAt: outcome.startedAt, startLocation, tasks:outcome.tasks },
     activeMissionCount: outcome.activeCount,
     activeMissionLimit: MAX_CONCURRENT_MISSIONS,
   });
@@ -224,6 +255,22 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     } catch { /* Audit data is best-effort; open is the safe fallback. */ }
     const restoredStatus = previousStatus as "open" | "follow_up" | "revision";
     const cancelledAt = new Date().toISOString();
+    if (mission.workflowType === "task_list" && restoredStatus === "follow_up") {
+      const reopenedTasks = await transaction.prepare(`SELECT mt.id, mt.status, mt.version, e.result, e.report
+        FROM mission_tasks mt JOIN mission_task_events e ON e.mission_task_id=mt.id AND e.mission_id=mt.mission_id
+        WHERE mt.mission_id=? AND mt.status='open' AND e.event_type='follow_up_reopened' AND e.server_recorded_at=? FOR UPDATE`)
+        .bind(id,mission.startedAt).all<{id:string;status:string;version:number;result:string|null;report:string|null}>();
+      for (const task of reopenedTasks.results) {
+        const restored=await transaction.prepare(`UPDATE mission_tasks SET status='follow_up', result=?, report=?, version=version+1,
+          completed_at=NULL, updated_at=? WHERE id=? AND status='open' AND version=?`)
+          .bind(task.result,task.report,cancelledAt,task.id,task.version).run();
+        if((restored.meta.changes??0)!==1)throw new TransitionConflict();
+        await transaction.prepare(`INSERT INTO mission_task_events (id, mission_id, mission_task_id, actor_id, actor_role, event_type,
+          from_status, to_status, result, report, server_recorded_at, metadata, created_at) VALUES (?, ?, ?, ?, ?, 'start_cancelled_restore',
+          'open', 'follow_up', ?, ?, ?, ?, ?)`)
+          .bind(crypto.randomUUID(),id,task.id,auth.user.id,auth.user.role,task.result,task.report,cancelledAt,JSON.stringify({reason}),cancelledAt).run();
+      }
+    }
     const missionUpdate=await transaction.prepare(`UPDATE missions SET status = ?, destination_name = ?, started_at = NULL, start_latitude_e6 = NULL,
       start_longitude_e6 = NULL, start_accuracy_cm = NULL, start_location_recorded_at = NULL WHERE id = ? AND status='in_progress'`)
       .bind(restoredStatus, previousDestinationName, id).run();

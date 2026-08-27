@@ -34,6 +34,8 @@ try {
   const [notificationDedupeIndexes] = await connection.execute("SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notifications' AND INDEX_NAME = 'idx_notifications_user_dedupe'");
   if (!notificationDedupeIndexes.length) await connection.execute("ALTER TABLE notifications ADD UNIQUE INDEX idx_notifications_user_dedupe (user_id, dedupe_key)");
   const scoringColumns = [
+    ["execution_rank", "TINYINT NULL AFTER priority"],
+    ["execution_rank_version", "INT NOT NULL DEFAULT 0 AFTER execution_rank"],
     ["workflow_type", "VARCHAR(24) NOT NULL DEFAULT 'single' AFTER assigned_to"],
     ["current_step_no", "INT NOT NULL DEFAULT 1 AFTER workflow_type"],
     ["referrer_name", "VARCHAR(255) NULL AFTER assigned_to"],
@@ -55,6 +57,8 @@ try {
     const [rows] = await connection.execute("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'missions' AND COLUMN_NAME = ?", [name]);
     if (!rows.length) await connection.execute(`ALTER TABLE missions ADD COLUMN ${name} ${definition}`);
   }
+  const [missionExecutionRankIndexes] = await connection.execute("SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'missions' AND INDEX_NAME = 'idx_missions_execution_rank'");
+  if (!missionExecutionRankIndexes.length) await connection.execute("ALTER TABLE missions ADD INDEX idx_missions_execution_rank (execution_rank, created_at)");
   const [missionCancelForeignKeys] = await connection.execute(`SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'missions' AND COLUMN_NAME = 'cancelled_by'
       AND REFERENCED_TABLE_NAME = 'users' AND REFERENCED_COLUMN_NAME = 'id'`);

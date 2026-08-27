@@ -875,7 +875,7 @@ test("stores and displays an optional work referrer for employee-created mission
   assert.match(missions, /source === "employee" \? requestedReferrerName \|\| null : null/);
   assert.match(missions, /assigned_to, referrer_name, destination_name/);
   assert.match(missions, /m\.referrer_name AS referrerName/);
-  assert.match(missions, /JSON\.stringify\(\{ source, assignedTo, referrerName \}\)/);
+  assert.match(missions, /JSON\.stringify\(\{ source, assignedTo, referrerName, executionRank \}\)/);
   assert.match(page, /const \[newReferrerName, setNewReferrerName\] = useState\(""\)/);
   assert.match(page, /ارجاع‌دهنده کار <small>اختیاری<\/small>/);
   assert.match(page, /referrerName: newReferrerName\.trim\(\) \|\| null/);

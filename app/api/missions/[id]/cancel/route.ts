@@ -72,6 +72,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       .bind(now, auth.user.id, reason, mission.id, ...cancellableStatuses),
     db.prepare("UPDATE mission_steps SET status='cancelled', updated_at=? WHERE mission_id=? AND status NOT IN ('completed','approved','cancelled')")
       .bind(now, mission.id),
+    db.prepare(`INSERT INTO mission_task_events (id, mission_id, mission_task_id, actor_id, actor_role, event_type,
+      from_status, to_status, result, report, server_recorded_at, metadata, created_at)
+      SELECT UUID(), mission_id, id, ?, ?, 'manager_cancelled', status, 'cancelled', result, report, ?, ?, ?
+      FROM mission_tasks WHERE mission_id=? AND status NOT IN ('completed','cancelled')`)
+      .bind(auth.user.id,auth.user.role,now,JSON.stringify({reason}),now,mission.id),
+    db.prepare("UPDATE mission_tasks SET status='cancelled', updated_at=? WHERE mission_id=? AND status NOT IN ('completed','cancelled')")
+      .bind(now,mission.id),
     db.prepare("UPDATE mission_step_segments SET ended_at=COALESCE(ended_at, ?), end_reason=COALESCE(end_reason, 'manager_cancelled') WHERE mission_id=? AND ended_at IS NULL")
       .bind(now, mission.id),
     db.prepare(`UPDATE mission_follow_up_requests SET status='cancelled', resolution_note=?, updated_at=?, resolved_at=?

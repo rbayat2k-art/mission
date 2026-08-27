@@ -5,6 +5,7 @@ import { normalizeFollowUpCategory } from "../../../../../lib/follow-up";
 import { createUserNotification } from "../../../../../lib/push-notifications";
 import { pushScoreLedgerEntry, scoreDelta } from "../../../../../lib/score-ledger";
 import { enrichMissionStatusEventLocation, prepareMissionStatusEvent } from "../../../../../lib/mission-status-events";
+import { deriveMissionTaskOutcome } from "../../../../../lib/mission-tasks";
 
 class TransitionConflict extends Error {}
 
@@ -35,8 +36,17 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const endLocation = parseMissionLocation(body.endLocation);
   if (!endLocation) return Response.json({ error: "برای تعیین وضعیت مرحله، موقعیت GPS معتبر لازم است." }, { status: 400 });
   const allowedResults = ["انجام شد", "نیاز به پیگیری", "مسئول نبود", "تعطیل بود", "موکول شد", "سایر"];
-  const workResult = body.result.trim();
-  if (!allowedResults.includes(workResult)) return Response.json({ error: "نتیجه انتخاب‌شده معتبر نیست." }, { status: 400 });
+  let workResult = body.result.trim();
+  if (mission.workflowType !== "task_list" && !allowedResults.includes(workResult)) {
+    return Response.json({ error: "نتیجه انتخاب‌شده معتبر نیست." }, { status: 400 });
+  }
+  if (mission.workflowType === "task_list") {
+    const tasks = await db.prepare("SELECT status, result FROM mission_tasks WHERE mission_id=? ORDER BY task_no")
+      .bind(id).all<{status:string;result:string|null}>();
+    const outcome = deriveMissionTaskOutcome(tasks.results);
+    if ("error" in outcome) return Response.json({ error:outcome.error }, { status:409 });
+    workResult = outcome.result;
+  }
   if (mission.workflowType === "multi_stage") {
     const step = await db.prepare(`SELECT id, step_no AS stepNo, title, requires_location AS requiresLocation, status,
       destination_name AS destinationName, started_at AS startedAt, start_latitude_e6 AS startLatitudeE6,
@@ -211,6 +221,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         .bind(id,auth.user.id).first<{recordedAt:string}>();
       if(!lockedMission||!lockedDestination||lockedMission.status!==mission.status||lockedDestination.recordedAt!==registeredDestination.recordedAt||
         Number(lockedMission.scorePending)!==Number(mission.scorePending)||Number(lockedMission.scoreConfirmed)!==Number(mission.scoreConfirmed)||Number(lockedMission.scorePenalty)!==Number(mission.scorePenalty))throw new TransitionConflict();
+      if(mission.workflowType==="task_list"){
+        const lockedTasks=await transaction.prepare("SELECT status, result FROM mission_tasks WHERE mission_id=? ORDER BY task_no FOR UPDATE")
+          .bind(id).all<{status:string;result:string|null}>();
+        const lockedOutcome=deriveMissionTaskOutcome(lockedTasks.results);
+        if("error" in lockedOutcome||lockedOutcome.result!==workResult)throw new TransitionConflict();
+      }
       const results=await transaction.batch(statements);
       if((results[0]?.meta.changes??0)!==1)throw new TransitionConflict();
     });
