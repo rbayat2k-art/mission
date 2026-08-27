@@ -45,11 +45,11 @@ export function getMySqlPool() {
 }
 
 export class PreparedStatement {
-  private values: ExecuteValues[] = [];
+  private values: unknown[] = [];
 
   constructor(private readonly sql: string, private readonly executor?: QueryExecutor) {}
 
-  bind(...values: ExecuteValues[]) {
+  bind(...values: unknown[]) {
     this.values = values;
     return this;
   }
@@ -57,9 +57,9 @@ export class PreparedStatement {
   private async execute(executor?: QueryExecutor) {
     const selectedExecutor = executor ?? this.executor;
     if (selectedExecutor) {
-      return selectedExecutor.execute(this.sql, this.values);
+      return selectedExecutor.execute(this.sql, this.values as ExecuteValues[]);
     }
-    return getMySqlPool().execute(this.sql, this.values);
+    return getMySqlPool().execute(this.sql, this.values as ExecuteValues[]);
   }
 
   async first<T = Record<string, unknown>>() {
