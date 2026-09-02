@@ -480,7 +480,7 @@ test("stores numbered daily mission destinations and maps them only in managemen
   assert.match(destinations, /u\.supervisor_id = \?/);
   assert.match(completeRoute, /FROM mission_destinations WHERE mission_id = \?/);
   assert.match(page, /setLatestGps\(\{ latitude:position\.coords\.latitude/);
-  assert.match(page, /sendJsonOrQueue\("\/api\/destinations", "POST"/);
+  assert.match(page, /sendJsonOrQueue\(employeeUserId, "\/api\/destinations", "POST"/);
   assert.match(page, /نقشه فقط در پنل مدیر نمایش داده می‌شود/);
   assert.match(page, /موقعیت زنده و مقصدهای امروز/);
   assert.match(page, /نقشه مقصدهای \{selected\.fullName\}/);

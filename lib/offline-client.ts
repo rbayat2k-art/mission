@@ -1,9 +1,63 @@
 export type OutboxResult<T = unknown> = { queued: boolean; data?: T; queueId?: number };
-export type OutboxConflict = { queueId: number; url: string; status: 409 };
-export type FlushOutboxResult = { sent: number; remaining: number; conflicts: OutboxConflict[] };
+export type OutboxOperation =
+  | "mission_task_result"
+  | "mission_destination"
+  | "mission_completion"
+  | "work_start"
+  | "work_end"
+  | "location_batch"
+  | "integrity_event"
+  | "attachment"
+  | "other";
 
-type JsonEntry = { id?: number; kind: "json"; url: string; method: string; body: unknown; createdAt: string };
-type FileEntry = { id?: number; kind: "file"; url: string; fields: Record<string, string>; file: File; createdAt: string };
+export type OutboxConflict = {
+  queueId: number;
+  url: string;
+  method: string;
+  status: 409;
+  operation: OutboxOperation;
+  createdAt: string;
+  serverError: string;
+  serverCode?: string;
+  clientEventId?: string;
+  expectedVersion?: number;
+  reapplyable: boolean;
+  position: number;
+  total: number;
+};
+
+export type OutboxQuarantine = {
+  queueId: number;
+  url: string;
+  method: string;
+  operation: OutboxOperation;
+  createdAt: string;
+  clientEventId?: string;
+  expectedVersion?: number;
+};
+
+export type FlushOutboxResult = {
+  sent: number;
+  remaining: number;
+  conflicts: OutboxConflict[];
+  quarantined: OutboxQuarantine[];
+};
+
+type PersistedConflict = {
+  status: 409;
+  serverError: string;
+  serverCode?: string;
+  detectedAt: string;
+};
+
+type EntryBase = {
+  id?: number;
+  accountId?: string;
+  createdAt: string;
+  conflict?: PersistedConflict;
+};
+type JsonEntry = EntryBase & { kind: "json"; url: string; method: string; body: unknown };
+type FileEntry = EntryBase & { kind: "file"; url: string; fields: Record<string, string>; file: File };
 type OutboxEntry = JsonEntry | FileEntry;
 type LocationAck = {
   acceptedIds?: string[];
@@ -14,6 +68,71 @@ type LocationAck = {
 
 const databaseName = "rahkar-offline-v1";
 const storeName = "outbox";
+
+function validAccountId(accountId: string) {
+  const normalized = accountId.trim();
+  if (!normalized || normalized.length > 64) throw new Error("حساب فعال برای ذخیره اطلاعات آفلاین مشخص نیست");
+  return normalized;
+}
+
+function safeServerCode(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toUpperCase();
+  return /^[A-Z0-9_]{1,64}$/.test(normalized) ? normalized : undefined;
+}
+
+function safeConflictReason(operation: OutboxOperation) {
+  if (operation === "mission_task_result") return "نسخه نتیجه این تسک در سرور تغییر کرده است";
+  if (operation === "mission_destination") return "وضعیت مقصد یا مأموریت در سرور تغییر کرده است";
+  if (operation === "mission_completion") return "وضعیت مأموریت در سرور تغییر کرده است";
+  if (operation === "work_start" || operation === "work_end") return "وضعیت فعالیت روزانه در سرور تغییر کرده است";
+  return "اطلاعات مربوط به این عملیات در سرور تغییر کرده است";
+}
+
+function objectBody(entry: OutboxEntry): Record<string, unknown> | null {
+  return entry.kind === "json" && entry.body && typeof entry.body === "object" && !Array.isArray(entry.body)
+    ? entry.body as Record<string, unknown>
+    : null;
+}
+
+function safeEntryMetadata(entry: OutboxEntry) {
+  const body = objectBody(entry);
+  const clientEventId = typeof body?.clientEventId === "string" && body.clientEventId.length <= 64 ? body.clientEventId : undefined;
+  const expected = Number(body?.expectedVersion);
+  const expectedVersion = Number.isInteger(expected) && expected >= 0 ? expected : undefined;
+  return { clientEventId, expectedVersion };
+}
+
+export function outboxOperation(entry: Pick<OutboxEntry, "kind"|"url"> & { method?: string; body?: unknown }): OutboxOperation {
+  const method = (entry.method ?? "POST").toUpperCase();
+  if (entry.kind === "file" && entry.url === "/api/attachments") return "attachment";
+  if (method === "PATCH" && /^\/api\/missions\/[^/]+\/tasks\/[^/]+$/.test(entry.url)) return "mission_task_result";
+  if (method === "POST" && entry.url === "/api/destinations") return "mission_destination";
+  if (method === "POST" && /^\/api\/missions\/[^/]+\/complete$/.test(entry.url)) return "mission_completion";
+  if (method === "POST" && entry.url === "/api/locations") return "location_batch";
+  if (method === "POST" && entry.url === "/api/integrity") return "integrity_event";
+  if (method === "POST" && entry.url === "/api/work-sessions") {
+    const body = entry.body && typeof entry.body === "object" && !Array.isArray(entry.body) ? entry.body as Record<string, unknown> : null;
+    if (body?.action === "start") return "work_start";
+    if (body?.action === "end") return "work_end";
+  }
+  return "other";
+}
+
+export function outboxOperationLabel(operation: OutboxOperation) {
+  const labels: Record<OutboxOperation, string> = {
+    mission_task_result:"نتیجه یکی از کارهای مأموریت",
+    mission_destination:"ثبت مقصد مأموریت",
+    mission_completion:"ثبت نتیجه نهایی مأموریت",
+    work_start:"شروع فعالیت روزانه",
+    work_end:"پایان فعالیت روزانه",
+    location_batch:"موقعیت‌های GPS",
+    integrity_event:"گزارش وضعیت اتصال یا GPS",
+    attachment:"فایل یا مدرک مأموریت",
+    other:"تغییر آفلاین",
+  };
+  return labels[operation];
+}
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -36,18 +155,11 @@ async function withStore<T>(mode: IDBTransactionMode, action: (store: IDBObjectS
   });
 }
 
-async function enqueue(entry: OutboxEntry) {
+async function enqueue(accountId: string, entry: Omit<JsonEntry, "accountId"> | Omit<FileEntry, "accountId">) {
+  const ownedEntry = { ...entry, accountId: validAccountId(accountId) } as OutboxEntry;
   return withStore<number>("readwrite", (store, resolve, reject) => {
-    const request = store.add(entry);
+    const request = store.add(ownedEntry);
     request.onsuccess = () => resolve(Number(request.result));
-    request.onerror = () => reject(request.error);
-  });
-}
-
-export async function getOutboxCount() {
-  return withStore<number>("readonly", (store, resolve, reject) => {
-    const request = store.count();
-    request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
 }
@@ -60,12 +172,54 @@ async function readAll() {
   });
 }
 
+async function readOne(id: number) {
+  return withStore<OutboxEntry | undefined>("readonly", (store, resolve, reject) => {
+    const request = store.get(id);
+    request.onsuccess = () => resolve(request.result as OutboxEntry | undefined);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function put(entry: OutboxEntry) {
+  return withStore<void>("readwrite", (store, resolve, reject) => {
+    const request = store.put(entry);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
 async function remove(id: number) {
   return withStore<void>("readwrite", (store, resolve, reject) => {
     const request = store.delete(id);
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
   });
+}
+
+function quarantineDescription(entry: OutboxEntry): OutboxQuarantine | null {
+  if (!entry.id || entry.accountId) return null;
+  const metadata = safeEntryMetadata(entry);
+  return {
+    queueId:entry.id,
+    url:entry.url,
+    method:entry.kind === "json" ? entry.method : "POST",
+    operation:outboxOperation(entry),
+    createdAt:entry.createdAt,
+    ...metadata,
+  };
+}
+
+export async function getOutboxState(accountId: string) {
+  const currentAccountId = validAccountId(accountId);
+  const entries = await readAll();
+  return {
+    ownedCount:entries.filter(entry => entry.accountId === currentAccountId).length,
+    quarantined:entries.map(quarantineDescription).filter((entry): entry is OutboxQuarantine => Boolean(entry)),
+  };
+}
+
+export async function getOutboxCount(accountId: string) {
+  return (await getOutboxState(accountId)).ownedCount;
 }
 
 async function responseBody<T>(response: Response): Promise<T> {
@@ -103,26 +257,26 @@ function locationEntryHasFinalAck(entry:JsonEntry, body:LocationAck) {
   return locationBatchHasFinalAck(points, body);
 }
 
-export async function sendJsonOrQueue<T>(url: string, method: string, body: unknown): Promise<OutboxResult<T>> {
-  const entry: JsonEntry = { kind: "json", url, method, body, createdAt: new Date().toISOString() };
-  if (!navigator.onLine) { await enqueue(entry); return { queued: true }; }
+export async function sendJsonOrQueue<T>(accountId: string, url: string, method: string, body: unknown): Promise<OutboxResult<T>> {
+  const entry: Omit<JsonEntry, "accountId"> = { kind: "json", url, method, body, createdAt: new Date().toISOString() };
+  if (!navigator.onLine) { const queueId = await enqueue(accountId, entry); return { queued: true, queueId }; }
   try {
     const response = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await responseBody<T>(response);
     if (isLocationEntry(entry) && !locationEntryHasFinalAck(entry, data as LocationAck)) {
-      await enqueue(entry);
-      return { queued:true, data };
+      const queueId = await enqueue(accountId, entry);
+      return { queued:true, data, queueId };
     }
     return { queued: false, data };
   } catch (error) {
-    if (error instanceof TypeError) { await enqueue(entry); return { queued: true }; }
+    if (error instanceof TypeError) { const queueId = await enqueue(accountId, entry); return { queued: true, queueId }; }
     throw error;
   }
 }
 
-export async function sendFileOrQueue<T>(url: string, fields: Record<string, string>, file: File): Promise<OutboxResult<T>> {
-  const entry: FileEntry = { kind: "file", url, fields, file, createdAt: new Date().toISOString() };
-  if (!navigator.onLine) { const queueId = await enqueue(entry); return { queued: true, queueId }; }
+export async function sendFileOrQueue<T>(accountId: string, url: string, fields: Record<string, string>, file: File): Promise<OutboxResult<T>> {
+  const entry: Omit<FileEntry, "accountId"> = { kind: "file", url, fields, file, createdAt: new Date().toISOString() };
+  if (!navigator.onLine) { const queueId = await enqueue(accountId, entry); return { queued: true, queueId }; }
   try {
     const form = new FormData();
     Object.entries(fields).forEach(([key, value]) => form.set(key, value));
@@ -130,22 +284,70 @@ export async function sendFileOrQueue<T>(url: string, fields: Record<string, str
     const response = await fetch(url, { method: "POST", body: form });
     return { queued: false, data: await responseBody<T>(response) };
   } catch (error) {
-    if (error instanceof TypeError) { const queueId = await enqueue(entry); return { queued: true, queueId }; }
+    if (error instanceof TypeError) { const queueId = await enqueue(accountId, entry); return { queued: true, queueId }; }
     throw error;
   }
 }
 
-export async function removeQueuedItem(queueId: number) {
+export async function removeQueuedItem(queueId: number, accountId: string) {
+  const entry = await readOne(queueId);
+  if (!entry || entry.accountId !== validAccountId(accountId)) throw new Error("این تغییر آفلاین متعلق به حساب جاری نیست");
   await remove(queueId);
 }
 
-export async function flushOutbox() {
-  if (!navigator.onLine) return { sent: 0, remaining: await getOutboxCount(), conflicts: [] } satisfies FlushOutboxResult;
-  const entries = await readAll();
+export async function claimQuarantinedItem(queueId: number, accountId: string) {
+  const entry = await readOne(queueId);
+  if (!entry || entry.accountId) throw new Error("این تغییر قدیمی دیگر قابل انتساب نیست");
+  await put({ ...entry, accountId:validAccountId(accountId) });
+}
+
+export async function removeQuarantinedItem(queueId: number) {
+  const entry = await readOne(queueId);
+  if (!entry || entry.accountId) throw new Error("این تغییر در بخش قرنطینه قرار ندارد");
+  await remove(queueId);
+}
+
+export async function rebaseQueuedTaskResult(queueId: number, accountId: string, expectedVersion: number, clientEventId: string) {
+  const entry = await readOne(queueId);
+  if (!entry || entry.accountId !== validAccountId(accountId)) throw new Error("این تغییر آفلاین متعلق به حساب جاری نیست");
+  if (entry.kind !== "json" || outboxOperation(entry) !== "mission_task_result") throw new Error("اعمال مجدد خودکار برای این نوع عملیات مجاز نیست");
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 0 || !clientEventId.trim()) throw new Error("نسخه جدید تسک یا شناسه ثبت معتبر نیست");
+  const body = objectBody(entry);
+  if (!body) throw new Error("اطلاعات تغییر آفلاین معتبر نیست");
+  await put({ ...entry, body:{ ...body, expectedVersion, clientEventId:clientEventId.trim() }, conflict:undefined });
+}
+
+function conflictDescription(entry: OutboxEntry, position: number, total: number): OutboxConflict | null {
+  if (!entry.id || !entry.conflict) return null;
+  const metadata = safeEntryMetadata(entry);
+  const operation = outboxOperation(entry);
+  return {
+    queueId:entry.id,
+    url:entry.url,
+    method:entry.kind === "json" ? entry.method : "POST",
+    status:409,
+    operation,
+    createdAt:entry.createdAt,
+    serverError:entry.conflict.serverError,
+    serverCode:entry.conflict.serverCode,
+    ...metadata,
+    reapplyable:operation === "mission_task_result" && entry.conflict.serverCode === "TASK_VERSION_CONFLICT",
+    position,
+    total,
+  };
+}
+
+export async function flushOutbox(accountId: string) {
+  const currentAccountId = validAccountId(accountId);
+  const stateBefore = await getOutboxState(currentAccountId);
+  if (!navigator.onLine) return { sent:0, remaining:stateBefore.ownedCount, conflicts:[], quarantined:stateBefore.quarantined } satisfies FlushOutboxResult;
+  const entries = (await readAll()).filter(entry => entry.accountId === currentAccountId);
   let sent = 0;
   const conflicts: OutboxConflict[] = [];
   for (const entry of entries) {
     if (!entry.id) continue;
+    const blocked = conflictDescription(entry, 1, entries.length - sent);
+    if (blocked) { conflicts.push(blocked); break; }
     try {
       let response: Response;
       if (entry.kind === "json") {
@@ -156,13 +358,26 @@ export async function flushOutbox() {
         form.set("file", entry.file);
         response = await fetch(entry.url, { method: "POST", body: form });
       }
-      if (entry.kind === "json" && isLocationEntry(entry)) {
+      if (nonLocationOutboxResponseAction(response.status) === "conflict") {
+        const body = await response.json().catch(() => ({})) as { code?: unknown };
+        const operation = outboxOperation(entry);
+        const persisted:OutboxEntry = {
+          ...entry,
+          conflict:{
+            status:409,
+            serverError:safeConflictReason(operation),
+            serverCode:safeServerCode(body.code),
+            detectedAt:new Date().toISOString(),
+          },
+        };
+        await put(persisted);
+        const conflict = conflictDescription(persisted, 1, entries.length - sent);
+        if (conflict) conflicts.push(conflict);
+        break;
+      } else if (entry.kind === "json" && isLocationEntry(entry)) {
         if (!response.ok) break;
         const body = await response.json().catch(() => null) as LocationAck | null;
         if (!body || !locationEntryHasFinalAck(entry, body)) break;
-      } else if (nonLocationOutboxResponseAction(response.status) === "conflict") {
-        conflicts.push({ queueId: entry.id, url: entry.url, status: 409 });
-        break;
       } else if (nonLocationOutboxResponseAction(response.status) === "retry") break;
       await remove(entry.id);
       sent += 1;
@@ -170,5 +385,6 @@ export async function flushOutbox() {
       break;
     }
   }
-  return { sent, remaining: await getOutboxCount(), conflicts } satisfies FlushOutboxResult;
+  const stateAfter = await getOutboxState(currentAccountId);
+  return { sent, remaining:stateAfter.ownedCount, conflicts, quarantined:stateAfter.quarantined } satisfies FlushOutboxResult;
 }

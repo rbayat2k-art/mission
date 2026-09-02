@@ -111,7 +111,7 @@ test("manager and employee UI expose a compact task-list workflow", async () => 
   assert.match(page, /missionTasks\.length < 2 \|\| missionTasks\.length > 10/);
   assert.match(page, /function MissionTaskChecklist/);
   assert.match(page, /sendJsonOrQueue<\{task:ApiMissionTask\}>/);
-  assert.match(page, /getOutboxCount\(\)/);
+  assert.match(page, /getOutboxCount\(employeeUserId\)/);
   assert.match(page, /disabled=\{tasks\.some\(task=>task\.status==="open"\)\}/);
   assert.match(page, /نتیجه این کار با حفظ سابقه اصلاح شد/);
   assert.match(page, /mission-task-progress-inline/);

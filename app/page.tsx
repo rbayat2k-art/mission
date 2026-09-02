@@ -1,7 +1,20 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { flushOutbox, getOutboxCount, removeQueuedItem, sendFileOrQueue, sendJsonOrQueue, type OutboxConflict } from "../lib/offline-client";
+import {
+  claimQuarantinedItem,
+  flushOutbox,
+  getOutboxCount,
+  getOutboxState,
+  outboxOperationLabel,
+  rebaseQueuedTaskResult,
+  removeQuarantinedItem,
+  removeQueuedItem,
+  sendFileOrQueue,
+  sendJsonOrQueue,
+  type OutboxConflict,
+  type OutboxQuarantine,
+} from "../lib/offline-client";
 import { ACTIONABLE_EXECUTION_RANK_STATUSES, executionRankSortValue } from "../lib/mission-execution-rank";
 import OperationsMap, { type MapGpsGap, type MapRouteSegment, type MapRouteStop, type MapTracePoint } from "./components/OperationsMap";
 import AccountSettings from "./components/AccountSettings";
@@ -402,7 +415,7 @@ function EmployeeDailySummaryView({ summary, onOpenMission, showAdvisory = false
   </div>;
 }
 
-function MissionTaskChecklist({mission,location,onUpdate,onContinue,onMessage,onQueued}:{mission:UiMission;location:{latitude:number;longitude:number;accuracy:number;recordedAt:string}|null;onUpdate:(task:ApiMissionTask)=>void;onContinue:(result:string,report:string)=>void;onMessage:(message:string)=>void;onQueued:()=>void|Promise<void>}) {
+function MissionTaskChecklist({accountId,mission,location,onUpdate,onContinue,onMessage,onQueued}:{accountId:string;mission:UiMission;location:{latitude:number;longitude:number;accuracy:number;recordedAt:string}|null;onUpdate:(task:ApiMissionTask)=>void;onContinue:(result:string,report:string)=>void;onMessage:(message:string)=>void;onQueued:()=>void|Promise<void>}) {
   const tasks=[...(mission.tasks??[])].sort((a,b)=>a.taskNo-b.taskNo);
   const [activeId,setActiveId]=useState<string|null>(tasks.find(task=>task.status==="open")?.id??tasks[0]?.id??null);
   const activeTask=tasks.find(task=>task.id===activeId)??null;
@@ -417,7 +430,7 @@ function MissionTaskChecklist({mission,location,onUpdate,onContinue,onMessage,on
     if(result!=="انجام شد"&&report.trim().length<3)return onMessage("برای این نتیجه، توضیح حداقل ۳ کاراکتری بنویسید");
     setSaving(true);
     try{
-      const response=await sendJsonOrQueue<{task:ApiMissionTask}>(`/api/missions/${mission.id}/tasks/${activeTask.id}`,"PATCH",{result,report,location,expectedVersion:activeTask.version,clientEventId:crypto.randomUUID()});
+      const response=await sendJsonOrQueue<{task:ApiMissionTask}>(accountId,`/api/missions/${mission.id}/tasks/${activeTask.id}`,"PATCH",{result,report,location,expectedVersion:activeTask.version,clientEventId:createClientId()});
       if(response.queued)await onQueued();
       const optimisticTask:ApiMissionTask=response.data?.task??{...activeTask,status:result==="انجام شد"?"completed":"follow_up",result,report:report.trim(),version:activeTask.version+1,completedAt:result==="انجام شد"?new Date().toISOString():null,updatedAt:new Date().toISOString()};
       onUpdate(optimisticTask);
@@ -482,6 +495,7 @@ function EmployeeApp() {
   const [offline, setOffline] = useState(false);
   const [pendingSync, setPendingSync] = useState(0);
   const [syncConflicts, setSyncConflicts] = useState<OutboxConflict[]>([]);
+  const [syncQuarantined, setSyncQuarantined] = useState<OutboxQuarantine[]>([]);
   const [gpsStatus, setGpsStatus] = useState<"idle" | "requesting" | "active" | "denied" | "error">("idle");
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
   const [latestGps, setLatestGps] = useState<{ latitude:number; longitude:number; accuracy:number; recordedAt:string } | null>(null);
@@ -528,11 +542,13 @@ function EmployeeApp() {
   }, [screen]);
 
   const syncQueued = useCallback(async () => {
-    const result = await flushOutbox();
+    if (!employeeUserId) return { sent:0, remaining:0, conflicts:[], quarantined:[] };
+    const result = await flushOutbox(employeeUserId);
     setPendingSync(result.remaining);
     setSyncConflicts(result.conflicts);
+    setSyncQuarantined(result.quarantined);
     if (result.conflicts.length > 0) {
-      setToast("یک تغییر آفلاین با اطلاعات جدید سرور تداخل دارد؛ اطلاعات حذف نشد. صفحه را تازه‌سازی کنید.");
+      setToast("یک تغییر آفلاین با اطلاعات جدید سرور تداخل دارد؛ اطلاعات حذف نشده و تا تصمیم شما دوباره ارسال نمی‌شود.");
       return result;
     }
     if (result.sent > 0) {
@@ -540,7 +556,7 @@ function EmployeeApp() {
       window.setTimeout(() => setToast(""), 2600);
     }
     return result;
-  }, []);
+  }, [employeeUserId]);
 
   const loadEmployeeData = useCallback(async () => {
     const [missionData, workData, notificationData] = await Promise.all([
@@ -572,11 +588,11 @@ function EmployeeApp() {
 
   const discardSyncConflict = useCallback(async () => {
     const conflict = syncConflicts[0];
-    if (!conflict) return;
+    if (!conflict || !employeeUserId) return;
     const confirmed = window.confirm("این تغییر محلی با اطلاعات جدید سرور تداخل دارد. فقط همین تغییر محلی حذف شود و اطلاعات تازه سرور دریافت شود؟");
     if (!confirmed) return;
     try {
-      await removeQueuedItem(conflict.queueId);
+      await removeQueuedItem(conflict.queueId, employeeUserId);
       setSyncConflicts(current => current.filter(item => item.queueId !== conflict.queueId));
       await loadEmployeeData();
       const continued = await syncQueued();
@@ -584,7 +600,66 @@ function EmployeeApp() {
     } catch (error) {
       notify(error instanceof Error ? error.message : "حذف تغییر محلی یا ادامه همگام‌سازی ناموفق بود");
     }
-  }, [loadEmployeeData, notify, syncConflicts, syncQueued]);
+  }, [employeeUserId, loadEmployeeData, notify, syncConflicts, syncQueued]);
+
+  const refreshConflictServerData = useCallback(async () => {
+    try {
+      await loadEmployeeData();
+      notify("اطلاعات جدید سرور دریافت شد؛ تغییر محلی تا تصمیم شما محفوظ و متوقف مانده است");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "دریافت اطلاعات جدید سرور ناموفق بود");
+    }
+  }, [loadEmployeeData, notify]);
+
+  const reapplySyncConflict = useCallback(async () => {
+    const conflict = syncConflicts[0];
+    if (!conflict || !employeeUserId || !conflict.reapplyable) return;
+    if (!window.confirm("نتیجه همین تسک روی آخرین نسخه سرور دوباره ثبت شود؟ نسخه قبلی حذف نمی‌شود و یک شناسه ثبت جدید ساخته خواهد شد.")) return;
+    try {
+      const match = conflict.url.match(/^\/api\/missions\/([^/]+)\/tasks\/([^/]+)$/);
+      if (!match) throw new Error("مسیر تسک برای اعمال مجدد معتبر نیست");
+      const missionData = await api<{missions:ApiMission[]}>("/api/missions");
+      const mission = missionData.missions.find(item => item.id === decodeURIComponent(match[1]));
+      const task = mission?.tasks?.find(item => item.id === decodeURIComponent(match[2]));
+      if (!task) throw new Error("نسخه جدید این تسک در اطلاعات سرور پیدا نشد");
+      await rebaseQueuedTaskResult(conflict.queueId, employeeUserId, task.version, createClientId());
+      const continued = await syncQueued();
+      await loadEmployeeData();
+      if (continued.conflicts.length === 0) notify("نتیجه تسک روی نسخه جدید اعمال و همگام‌سازی ادامه یافت");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "اعمال مجدد نتیجه تسک ناموفق بود");
+    }
+  }, [employeeUserId, loadEmployeeData, notify, syncConflicts, syncQueued]);
+
+  const claimLegacyOutboxItem = useCallback(async () => {
+    const item = syncQuarantined[0];
+    if (!item || !employeeUserId) return;
+    if (!window.confirm("این تغییر از نسخه قدیمی برنامه شناسه حساب ندارد. فقط اگر مطمئن هستید متعلق به همین حساب است، آن را به حساب جاری نسبت دهید.")) return;
+    try {
+      await claimQuarantinedItem(item.queueId, employeeUserId);
+      const result = await syncQueued();
+      if (result.conflicts.length === 0) notify("تغییر قدیمی به حساب جاری نسبت داده شد و برای همگام‌سازی بررسی شد");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "تعیین تکلیف تغییر قدیمی ناموفق بود");
+    }
+  }, [employeeUserId, notify, syncQuarantined, syncQueued]);
+
+  const discardLegacyOutboxItem = useCallback(async () => {
+    const item = syncQuarantined[0];
+    if (!item) return;
+    if (!window.confirm("فقط همین تغییر قدیمی از روی این دستگاه حذف شود؟ اطلاعات موجود سرور تغییر نخواهد کرد.")) return;
+    try {
+      await removeQuarantinedItem(item.queueId);
+      if (employeeUserId) {
+        const state = await getOutboxState(employeeUserId);
+        setPendingSync(state.ownedCount);
+        setSyncQuarantined(state.quarantined);
+      }
+      notify("فقط همان تغییر قدیمی از قرنطینه حذف شد");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "حذف تغییر قدیمی ناموفق بود");
+    }
+  }, [employeeUserId, notify, syncQuarantined]);
 
   const loadDailySummary = async (period: "daily" | "weekly" | "monthly" = reportPeriod) => {
     setSummaryLoading(true);
@@ -654,22 +729,26 @@ function EmployeeApp() {
 
   useEffect(() => {
     api<{user:{id:string;role:string;mustChangePassword:boolean;fullName:string;username:string;notificationEnabled:boolean}}>("/api/auth/me").then(({user})=>{
-      if (user.role === "employee") { setNativeAuthenticatedUser(user.id); setEmployeeUserId(user.id); setSignedIn(true); setNeedsPasswordChange(user.mustChangePassword); setEmployeeDisplayName(user.fullName); setUsername(user.username); setEmployeeNotificationEnabled(user.notificationEnabled); }
+      if (user.role === "employee") {
+        setNativeAuthenticatedUser(user.id); setEmployeeUserId(user.id); setSignedIn(true); setNeedsPasswordChange(user.mustChangePassword); setEmployeeDisplayName(user.fullName); setUsername(user.username); setEmployeeNotificationEnabled(user.notificationEnabled);
+        getOutboxState(user.id).then(state=>{setPendingSync(state.ownedCount);setSyncQuarantined(state.quarantined)}).catch(()=>undefined);
+      }
     }).catch(()=>undefined);
   }, []);
 
   useEffect(() => {
+    if (!signedIn || !employeeUserId) return;
     const updateConnection = () => {
       const isOffline = !navigator.onLine;
       setOffline(isOffline);
-      getOutboxCount().then(setPendingSync).catch(() => undefined);
+      getOutboxState(employeeUserId).then(state=>{setPendingSync(state.ownedCount);setSyncQuarantined(state.quarantined)}).catch(() => undefined);
       if (!isOffline) syncQueued().catch(() => undefined);
     };
     const timer = window.setTimeout(updateConnection, 0);
     window.addEventListener("online", updateConnection);
     window.addEventListener("offline", updateConnection);
     return () => { window.clearTimeout(timer); window.removeEventListener("online", updateConnection); window.removeEventListener("offline", updateConnection); };
-  }, [syncQueued]);
+  }, [employeeUserId, signedIn, syncQueued]);
 
   useEffect(() => {
     if (!signedIn) return;
@@ -684,17 +763,17 @@ function EmployeeApp() {
       const resumedAt = new Date().toISOString();
       const gapMinutes = Math.max(1, Math.round((Date.parse(resumedAt) - Date.parse(offlineAt)) / 60_000));
       try {
-        const result = await sendJsonOrQueue("/api/integrity", "POST", { type:"device_offline", details:{ offlineAt, resumedAt, gapMinutes }, occurredAt:offlineAt });
+        const result = await sendJsonOrQueue(employeeUserId, "/api/integrity", "POST", { type:"device_offline", details:{ offlineAt, resumedAt, gapMinutes }, occurredAt:offlineAt });
         if (!active) return;
         localStorage.removeItem(OFFLINE_START_STORAGE_KEY);
-        if (result.queued) setPendingSync(await getOutboxCount().catch(()=>1));
+        if (result.queued) setPendingSync(await getOutboxCount(employeeUserId).catch(()=>1));
       } catch { /* The timestamp remains stored and will be retried on the next online event. */ }
     };
     const timer = window.setTimeout(()=>recordConnectionState(),0);
     window.addEventListener("online", recordConnectionState);
     window.addEventListener("offline", recordConnectionState);
     return () => { active=false; window.clearTimeout(timer); window.removeEventListener("online",recordConnectionState); window.removeEventListener("offline",recordConnectionState); };
-  }, [signedIn, working]);
+  }, [employeeUserId, signedIn, working]);
 
   useEffect(() => {
     if (!signedIn || !working) { const idleTimer = window.setTimeout(() => setGpsStatus("idle"), 0); return () => window.clearTimeout(idleTimer); }
@@ -714,8 +793,8 @@ function EmployeeApp() {
         accuracy: position.coords.accuracy, altitude: position.coords.altitude, speed: position.coords.speed,
         heading: position.coords.heading, recordedAt,
       };
-      const result = await sendJsonOrQueue<{autoEnded:boolean;endedAt:string|null}>("/api/locations", "POST", { points: [point] }).catch(() => ({ queued: true as const, data: undefined }));
-      if (result.queued) setPendingSync(await getOutboxCount().catch(() => 1));
+      const result = await sendJsonOrQueue<{autoEnded:boolean;endedAt:string|null}>(employeeUserId, "/api/locations", "POST", { points: [point] }).catch(() => ({ queued: true as const, data: undefined }));
+      if (result.queued) setPendingSync(await getOutboxCount(employeeUserId).catch(() => 1));
       if (result.data?.autoEnded) {
         setWorking(false); setWorkSessionStartAt(null); setWorkSessionId(null); setTodayLastEndAt(result.data.endedAt ?? new Date().toISOString());
         syncNativeTracking(false);
@@ -727,12 +806,12 @@ function EmployeeApp() {
       setGpsStatus(denied ? "denied" : "error");
       if (!gpsProblemReported.current) {
         gpsProblemReported.current = true;
-        await sendJsonOrQueue("/api/integrity", "POST", { type: denied ? "gps_permission_denied" : "gps_unavailable", details: { code: error.code, message: error.message }, occurredAt: new Date().toISOString() }).catch(() => undefined);
-        setPendingSync(await getOutboxCount().catch(() => 0));
+        await sendJsonOrQueue(employeeUserId, "/api/integrity", "POST", { type: denied ? "gps_permission_denied" : "gps_unavailable", details: { code: error.code, message: error.message }, occurredAt: new Date().toISOString() }).catch(() => undefined);
+        setPendingSync(await getOutboxCount(employeeUserId).catch(() => 0));
       }
     }, { enableHighAccuracy: true, maximumAge: 10_000, timeout: 20_000 });
     return () => { window.clearTimeout(timer); navigator.geolocation.clearWatch(watchId); };
-  }, [signedIn, working, workSessionId, loadEmployeeData, notify]);
+  }, [employeeUserId, signedIn, working, workSessionId, loadEmployeeData, notify]);
 
   const addMission = async (e: FormEvent) => {
     e.preventDefault();
@@ -778,13 +857,13 @@ function EmployeeApp() {
     if (destinationName.trim().length < 2) return notify("نام یا آدرس مقصد را وارد کنید");
     setDestinationSaving(true);
     try {
-      const result = await sendJsonOrQueue("/api/destinations", "POST", { missionId:String(selectedMission.id), destinationName:destinationName.trim(), ...latestGps });
+      const result = await sendJsonOrQueue(employeeUserId, "/api/destinations", "POST", { missionId:String(selectedMission.id), destinationName:destinationName.trim(), ...latestGps });
       const updatedMission = { ...selectedMission, destinationName:destinationName.trim() };
       setSelectedMission(updatedMission);
       setMissions(current=>current.map(mission=>mission.id===selectedMission.id ? { ...mission, destinationName:destinationName.trim() } : mission));
       setWorkStep(1);
       if (result.queued) {
-        setPendingSync(await getOutboxCount());
+        setPendingSync(await getOutboxCount(employeeUserId));
         notify("مقصد روی گوشی ذخیره شد و پس از اتصال روی نقشه مدیر پین می‌شود");
       } else notify("مقصد ثبت شد و با شماره روزانه روی نقشه مدیر قرار گرفت");
     } catch (error) { notify(error instanceof Error ? error.message : "ثبت مقصد ناموفق بود"); }
@@ -843,7 +922,7 @@ function EmployeeApp() {
     if (!latestGps || Date.now() - Date.parse(latestGps.recordedAt) > 2 * 60_000) return notify("برای ثبت نقطه پایان، منتظر موقعیت تازه GPS بمانید و دوباره بزنید");
     try {
       const predictedPenalty = selectedMission.startedAt || selectedMission.backendStatus === "in_progress" ? 0 : 3;
-      const result = await sendJsonOrQueue<{mission:{status:string;needsFollowUp:boolean;requestSupervisorAction:boolean;followUpRequestId?:string|null;scorePending:number;scoreConfirmed:number;scorePenalty:number;scoreNote:string|null;completedWithoutStart:boolean;hasNextStep?:boolean;currentStepNo?:number}}>(`/api/missions/${selectedMission.id}/complete`, "POST", { destinationName: destinationName.trim() || selectedMission.destinationName || "مقصد ثبت‌شده", result: workResult, report: workReport.trim(), expenseAmount: expenseEnabled ? parseExpenseAmount(expenseAmount) : 0, endLocation:latestGps, requestSupervisorAction:workResult !== "انجام شد" && requestSupervisorAction, followUpCategory });
+      const result = await sendJsonOrQueue<{mission:{status:string;needsFollowUp:boolean;requestSupervisorAction:boolean;followUpRequestId?:string|null;scorePending:number;scoreConfirmed:number;scorePenalty:number;scoreNote:string|null;completedWithoutStart:boolean;hasNextStep?:boolean;currentStepNo?:number}}>(employeeUserId, `/api/missions/${selectedMission.id}/complete`, "POST", { destinationName: destinationName.trim() || selectedMission.destinationName || "مقصد ثبت‌شده", result: workResult, report: workReport.trim(), expenseAmount: expenseEnabled ? parseExpenseAmount(expenseAmount) : 0, endLocation:latestGps, requestSupervisorAction:workResult !== "انجام شد" && requestSupervisorAction, followUpCategory });
       const penalty = Number(result.data?.mission.scorePenalty ?? predictedPenalty);
       const hasNextStep = Boolean(result.data?.mission.hasNextStep);
       const score = hasNextStep ? 0 : Number(result.data?.mission.scorePending || result.data?.mission.scoreConfirmed || Math.max(0, 12 - penalty));
@@ -854,7 +933,7 @@ function EmployeeApp() {
       setCompletionHasNextStep(hasNextStep);
       setWorkStep(4);
       if (result.queued) {
-        setPendingSync(await getOutboxCount());
+        setPendingSync(await getOutboxCount(employeeUserId));
         notify(penalty ? "گزارش ذخیره شد؛ به علت نزدن شروع کار، ۳ امتیاز کسر خواهد شد" : "گزارش روی گوشی ذخیره شد و پس از اتصال ارسال می‌شود");
       } else {
         await loadEmployeeData();
@@ -887,23 +966,23 @@ function EmployeeApp() {
     setAttachments(current => [...current, ...pendingFiles.map(entry => entry.item)]);
     for (const entry of pendingFiles) {
       try {
-        const result = await sendFileOrQueue<{attachment:{id:string}}>("/api/attachments", { missionId: String(selectedMission.id) }, entry.file);
+        const result = await sendFileOrQueue<{attachment:{id:string}}>(employeeUserId, "/api/attachments", { missionId: String(selectedMission.id) }, entry.file);
         setAttachments(current => current.map(item => item.localId === entry.item.localId ? { ...item, state: result.queued ? "queued" : "uploaded", serverId: result.data?.attachment.id, queueId: result.queueId } : item));
       } catch {
         setAttachments(current => current.map(item => item.localId === entry.item.localId ? { ...item, state: "error" } : item));
       }
     }
-    setPendingSync(await getOutboxCount().catch(() => 0));
+    setPendingSync(await getOutboxCount(employeeUserId).catch(() => 0));
     notify(validFiles.length > 1 ? `${validFiles.length.toLocaleString("fa-IR")} مدرک اضافه شد` : validFiles.length === 1 ? "مدرک اضافه شد" : "مدرک معتبری انتخاب نشد");
   };
 
   const removeAttachment = async (attachment: UiAttachment) => {
     if (attachment.state === "uploading") return notify("تا پایان بارگذاری این فایل صبر کنید");
     try {
-      if (attachment.state === "queued" && attachment.queueId) await removeQueuedItem(attachment.queueId);
+      if (attachment.state === "queued" && attachment.queueId) await removeQueuedItem(attachment.queueId, employeeUserId);
       if (attachment.state === "uploaded" && attachment.serverId) await api(`/api/attachments/${attachment.serverId}`, { method:"DELETE" });
       setAttachments(current => current.filter(item => item.localId !== attachment.localId));
-      setPendingSync(await getOutboxCount().catch(() => 0));
+      setPendingSync(await getOutboxCount(employeeUserId).catch(() => 0));
       notify("مدرک حذف شد");
     } catch (error) { notify(error instanceof Error ? error.message : "حذف مدرک ناموفق بود"); }
   };
@@ -920,6 +999,10 @@ function EmployeeApp() {
       setEmployeeDisplayName(result.user.fullName);
       setUsername(result.user.username);
       setEmployeeNotificationEnabled(result.user.notificationEnabled);
+      const outboxState = await getOutboxState(result.user.id).catch(()=>({ownedCount:0,quarantined:[]}));
+      setPendingSync(outboxState.ownedCount);
+      setSyncQuarantined(outboxState.quarantined);
+      setSyncConflicts([]);
       setPassword("");
       setScreen("home");
       setLoginError("");
@@ -999,12 +1082,12 @@ function EmployeeApp() {
     try {
       const location = await captureFreshGps();
       const clientSessionId = createClientId();
-      const result = await sendJsonOrQueue<{session:{id:string;startedAt:string;workType?:string}}>("/api/work-sessions", "POST", { action: "start", clientSessionId, location });
+      const result = await sendJsonOrQueue<{session:{id:string;startedAt:string;workType?:string}}>(employeeUserId, "/api/work-sessions", "POST", { action: "start", clientSessionId, location });
       const startedAt = result.data?.session.startedAt ?? new Date().toISOString();
       const sessionId = result.data?.session.id ?? clientSessionId;
       setWorking(true); setWorkSessionStartAt(startedAt); setWorkSessionId(sessionId); setTodayFirstStartAt(current=>current ?? startedAt); setTodayLastEndAt(null); setClockTick(Date.now()); setWorkMinutesSyncedAt(Date.now());
       syncNativeTracking(true, sessionId);
-      setPendingSync(await getOutboxCount().catch(() => 0));
+      setPendingSync(await getOutboxCount(employeeUserId).catch(() => 0));
       notify(result.queued ? "شروع فعالیت همراه GPS روی گوشی ذخیره شد" : result.data?.session.workType === "overtime" ? "اضافه‌کاری و ثبت GPS آغاز شد" : "فعالیت و ثبت GPS آغاز شد");
     } catch (error) { notify(error instanceof Error ? error.message : "عملیات ناموفق بود"); }
     finally { setWorkToggleBusy(false); }
@@ -1037,10 +1120,10 @@ function EmployeeApp() {
     try {
       const endTime = new Date().toISOString();
       const location = latestGps && Date.now() - Date.parse(latestGps.recordedAt) <= 2 * 60_000 && latestGps.accuracy <= 100 ? latestGps : null;
-      const result = await sendJsonOrQueue<{session:{endedAt:string};today?:{activeSeconds:number;activeMinutes:number;unverifiedGpsMinutes:number};gpsWarning?:boolean;deductedMinutes?:number}>("/api/work-sessions", "POST", { action:"end", endTime, confirmDailySummary:true, confirmedMissionIds:dailySummary.confirmationMissionIds, endNote:endWorkNote.trim(), location });
+      const result = await sendJsonOrQueue<{session:{endedAt:string};today?:{activeSeconds:number;activeMinutes:number;unverifiedGpsMinutes:number};gpsWarning?:boolean;deductedMinutes?:number}>(employeeUserId, "/api/work-sessions", "POST", { action:"end", endTime, confirmDailySummary:true, confirmedMissionIds:dailySummary.confirmationMissionIds, endNote:endWorkNote.trim(), location });
       setWorking(false); setWorkSessionStartAt(null); setWorkSessionId(null); setTodayLastEndAt(result.data?.session.endedAt ?? endTime); setTodayWorkSeconds(result.data?.today?.activeSeconds ?? (result.data?.today?.activeMinutes ?? dailySummary.activeMinutes) * 60); setTodayUnverifiedGpsMinutes(result.data?.today?.unverifiedGpsMinutes ?? dailySummary.unverifiedGpsMinutes); setWorkMinutesSyncedAt(Date.now()); setSummaryConfirmed(false); setEndWorkNote(""); setScreen("home");
       syncNativeTracking(false);
-      setPendingSync(await getOutboxCount());
+      setPendingSync(await getOutboxCount(employeeUserId));
       if (!result.queued) await loadEmployeeData();
       notify(result.queued ? "زمان پایان فعالیت روی گوشی ذخیره شد و پس از اتصال همگام می‌شود" : result.data?.gpsWarning ? "فعالیت پایان یافت؛ موقعیت پایان در دسترس نبود و برای بررسی ثبت شد" : "گزارش امروز تأیید و فعالیت پایان یافت");
     } catch (error) {
@@ -1123,7 +1206,8 @@ function EmployeeApp() {
         <div className="app-content">
           {screen === "home" && (
             <>
-              {(offline || pendingSync > 0 || syncConflicts.length > 0) && <div className="offline-banner"><Icon>⌁</Icon><span><b>{syncConflicts.length > 0 ? "تعارض در همگام‌سازی" : offline ? "اتصال اینترنت قطع است" : "در حال همگام‌سازی"}</b><small>{syncConflicts.length > 0 ? "اطلاعات آفلاین حذف نشده است؛ ابتدا صفحه را تازه‌سازی کنید یا با تأیید خودتان فقط تغییر محلی ناسازگار را کنار بگذارید." : `${pendingSync.toLocaleString("fa-IR")} تغییر روی دستگاه در انتظار ارسال است`}</small></span>{syncConflicts.length > 0 ? <><button onClick={() => window.location.reload()}>تازه‌سازی صفحه</button><button onClick={() => void discardSyncConflict()}>حذف تغییر محلی</button></> : <button onClick={() => syncQueued().catch(() => notify("همگام‌سازی هنوز ممکن نیست"))}>تلاش مجدد</button>}</div>}
+              {(offline || pendingSync > 0 || syncConflicts.length > 0) && <div className="offline-banner"><Icon>⌁</Icon><span><b>{syncConflicts.length > 0 ? `تعارض ${syncConflicts[0].position.toLocaleString("fa-IR")} از ${syncConflicts[0].total.toLocaleString("fa-IR")}` : offline ? "اتصال اینترنت قطع است" : "در حال همگام‌سازی"}</b><small>{syncConflicts.length > 0 ? `${outboxOperationLabel(syncConflicts[0].operation)} · ${syncConflicts[0].serverError} · تغییر محلی محفوظ است و دوباره ارسال نمی‌شود.` : `${pendingSync.toLocaleString("fa-IR")} تغییر متعلق به همین حساب در انتظار ارسال است`}</small></span>{syncConflicts.length > 0 ? <><button onClick={() => void refreshConflictServerData()}>دریافت اطلاعات جدید سرور</button>{syncConflicts[0].reapplyable&&<button onClick={() => void reapplySyncConflict()}>اعمال مجدد تغییر</button>}<button onClick={() => void discardSyncConflict()}>حذف همین تغییر محلی</button></> : <button onClick={() => syncQueued().catch(() => notify("همگام‌سازی هنوز ممکن نیست"))}>تلاش مجدد</button>}</div>}
+              {syncQuarantined.length > 0 && <div className="offline-banner"><Icon>!</Icon><span><b>اطلاعات نسخه قدیمی قرنطینه شده · مورد ۱ از {syncQuarantined.length.toLocaleString("fa-IR")}</b><small>{outboxOperationLabel(syncQuarantined[0].operation)} · این تغییر شناسه حساب ندارد و بدون تصمیم شما ارسال یا حذف نمی‌شود.</small></span><button onClick={() => void claimLegacyOutboxItem()}>این تغییر متعلق به من است</button><button onClick={() => void discardLegacyOutboxItem()}>حذف همین تغییر قدیمی</button></div>}
               <div className="connection-row">
                 <span className={gpsStatus === "active" ? "good" : gpsStatus === "denied" || gpsStatus === "error" ? "bad" : "soft"}><Icon>⌖</Icon>{gpsStatus === "active" ? `GPS · دقت ${gpsAccuracy ?? "—"} متر` : gpsStatus === "requesting" ? "در حال دریافت GPS" : gpsStatus === "denied" ? "GPS مسدود" : gpsStatus === "error" ? "خطای GPS" : "GPS آماده"}</span>
                 <span className={offline ? "bad" : "good"}><Icon>{offline ? "○" : "●"}</Icon>{offline ? "آفلاین" : "آنلاین"}</span>
@@ -1209,7 +1293,7 @@ function EmployeeApp() {
                 <div className="employee-map-privacy"><Icon>▣</Icon><span><b>نقشه فقط در پنل مدیر نمایش داده می‌شود</b><small>با ثبت این مقصد، یک پین شماره‌دار برای مأموریت امروز ساخته می‌شود.</small></span></div>
                 <button className="primary-wide" disabled={!working || destinationSaving} onClick={registerDestination}>{destinationSaving ? "در حال ثبت مقصد..." : "ثبت مقصد و ادامه"}</button>
               </section>}
-              {workStep === 1 && (selectedMission.workflowType==="task_list" ? <MissionTaskChecklist mission={selectedMission} location={latestGps} onUpdate={updateMissionTask} onMessage={notify} onQueued={async()=>setPendingSync(await getOutboxCount().catch(()=>1))} onContinue={(overall,summary)=>{setWorkResult(overall);setWorkReport(summary);setRequestSupervisorAction(false);setWorkStep(2)}}/> : <section className="flow-panel">
+              {workStep === 1 && (selectedMission.workflowType==="task_list" ? <MissionTaskChecklist accountId={employeeUserId} mission={selectedMission} location={latestGps} onUpdate={updateMissionTask} onMessage={notify} onQueued={async()=>setPendingSync(await getOutboxCount(employeeUserId).catch(()=>1))} onContinue={(overall,summary)=>{setWorkResult(overall);setWorkReport(summary);setRequestSupervisorAction(false);setWorkStep(2)}}/> : <section className="flow-panel">
                 <span className="flow-icon">✓</span><h2>نتیجه کار چه بود؟</h2><p>یکی از گزینه‌ها را برای ثبت گزارش انتخاب کنید.</p>
                 <div className="result-grid">{workResultOptions.map((option) => <button type="button" aria-pressed={workResult === option.label} className={workResult === option.label ? "selected" : ""} key={option.label} onClick={()=>{setWorkResult(option.label);setWorkReport(option.defaultReport);if(option.label === "انجام شد")setRequestSupervisorAction(false)}}><Icon>{option.icon}</Icon>{option.label}</button>)}</div>
                 <label>توضیح نتیجه <b>*</b><textarea value={workReport} onChange={event=>setWorkReport(event.target.value)} placeholder={workResult === "سایر" ? "نتیجه کار را کامل توضیح دهید..." : "جزئیات نتیجه را بنویسید..."} required /></label>
@@ -1278,7 +1362,7 @@ function EmployeeApp() {
           {screen === "notifications" && <NotificationCenter onOpenMissions={()=>{loadEmployeeData().catch(()=>undefined);setScreen("missions")}} onOpenFollowUps={()=>{loadEmployeeData().catch(()=>undefined);setMissionTab("follow_up");setScreen("missions")}} onCounts={setNotificationCounts}/>}
           {screen === "notification-settings" && <NotificationSettings onMessage={notify} onEnabledChange={setEmployeeNotificationEnabled}/>}
           {screen === "account-settings" && <AccountSettings initialFullName={employeeDisplayName} initialUsername={username} onSaved={user=>{setEmployeeDisplayName(user.fullName);setUsername(user.username)}} onMessage={notify}/>}
-          {screen === "profile" && <div className="profile-screen"><div className="avatar large">{employeeDisplayName.slice(0,2)}</div><h2>{employeeDisplayName}</h2><p>کارشناس امور اداری</p><div className="profile-list"><button onClick={()=>setScreen("account-settings")}><span>نام کاربری، رمز و اطلاعات حساب</span>←</button><button onClick={()=>setScreen("notification-settings")}><span>تنظیمات اعلان‌ها</span><b>{employeeNotificationEnabled?"فعال":"غیرفعال"}</b></button><button onClick={()=>setScreen("notifications")}><span>درخواست‌های باز</span><b>{notificationCounts.open.toLocaleString("fa-IR")}</b></button><button onClick={() => syncQueued().catch(() => undefined)}><span>همگام‌سازی اطلاعات</span><b>{pendingSync ? `${pendingSync.toLocaleString("fa-IR")} مورد` : "همگام"}</b></button><button><span>راهنمای استفاده</span>←</button><button className="logout" onClick={async () => {syncNativeTracking(false);clearNativeAuthenticatedUser();await detachPushDevice();await api("/api/auth/logout",{method:"POST"});setEmployeeUserId("");setScreen("home");setPassword("");setSignedIn(false);}}><span>خروج از حساب</span>←</button></div></div>}
+          {screen === "profile" && <div className="profile-screen"><div className="avatar large">{employeeDisplayName.slice(0,2)}</div><h2>{employeeDisplayName}</h2><p>کارشناس امور اداری</p><div className="profile-list"><button onClick={()=>setScreen("account-settings")}><span>نام کاربری، رمز و اطلاعات حساب</span>←</button><button onClick={()=>setScreen("notification-settings")}><span>تنظیمات اعلان‌ها</span><b>{employeeNotificationEnabled?"فعال":"غیرفعال"}</b></button><button onClick={()=>setScreen("notifications")}><span>درخواست‌های باز</span><b>{notificationCounts.open.toLocaleString("fa-IR")}</b></button><button onClick={() => syncQueued().catch(() => undefined)}><span>همگام‌سازی اطلاعات</span><b>{pendingSync ? `${pendingSync.toLocaleString("fa-IR")} مورد` : "همگام"}</b></button><button><span>راهنمای استفاده</span>←</button><button className="logout" onClick={async () => {syncNativeTracking(false);clearNativeAuthenticatedUser();await detachPushDevice();await api("/api/auth/logout",{method:"POST"});setEmployeeUserId("");setPendingSync(0);setSyncConflicts([]);setSyncQuarantined([]);setScreen("home");setPassword("");setSignedIn(false);}}><span>خروج از حساب</span>←</button></div></div>}
         </div>
 
         <nav className="bottom-nav" aria-label="ناوبری اپ">

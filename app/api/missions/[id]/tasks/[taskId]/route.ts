@@ -3,7 +3,9 @@ import { requireRole } from "../../../../../../lib/auth";
 import { locationSqlValues, parseMissionLocation } from "../../../../../../lib/mission-location";
 import { normalizeMissionTaskResult } from "../../../../../../lib/mission-tasks";
 
-class TaskTransitionConflict extends Error {}
+class TaskTransitionConflict extends Error {
+  constructor(readonly code:"TASK_VERSION_CONFLICT"|"TASK_CLIENT_EVENT_CONFLICT") { super(code); }
+}
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string; taskId: string }> }) {
   const auth = await requireRole(request, ["owner", "admin", "supervisor", "employee"]);
@@ -14,7 +16,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   if ("error" in normalized) return Response.json({ error: normalized.error }, { status: 400 });
   const expectedVersion = Number(body.expectedVersion);
   if (!Number.isInteger(expectedVersion) || expectedVersion < 0) {
-    return Response.json({ error:"نسخه وضعیت این کار معتبر نیست؛ صفحه را تازه کنید." }, { status:409 });
+    return Response.json({ error:"نسخه وضعیت این کار معتبر نیست؛ صفحه را تازه کنید.", code:"TASK_VERSION_INVALID" }, { status:409 });
   }
   const clientEventId = typeof body.clientEventId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.clientEventId)
     ? body.clientEventId : null;
@@ -40,7 +42,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       const priorEvent = await transaction.prepare(`SELECT id, mission_id AS missionId, mission_task_id AS missionTaskId, actor_id AS actorId
         FROM mission_task_events WHERE client_event_id=? LIMIT 1`).bind(clientEventId).first<{id:string;missionId:string;missionTaskId:string;actorId:string|null}>();
       if (priorEvent) {
-        if (priorEvent.missionId !== id || priorEvent.missionTaskId !== task.id || priorEvent.actorId !== auth.user.id) throw new TaskTransitionConflict();
+        if (priorEvent.missionId !== id || priorEvent.missionTaskId !== task.id || priorEvent.actorId !== auth.user.id) throw new TaskTransitionConflict("TASK_CLIENT_EVENT_CONFLICT");
         return { task, eventId:priorEvent.id, duplicate:true } as const;
       }
       if (!["open","in_progress","revision","follow_up"].includes(mission.status)) {
@@ -59,14 +61,14 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
         AND (ended_at IS NULL OR ended_at>=?) ORDER BY started_at DESC LIMIT 1 FOR UPDATE`)
         .bind(auth.user.id,location.recordedAt,location.recordedAt).first<{ id:string }>();
       if (!session) return { error:Response.json({ error:"نتیجه کار باید در بازه فعالیت روزانه ثبت شده باشد." }, { status:409 }) } as const;
-      if (Number(task.version) !== expectedVersion) throw new TaskTransitionConflict();
+      if (Number(task.version) !== expectedVersion) throw new TaskTransitionConflict("TASK_VERSION_CONFLICT");
       const [latitudeE6,longitudeE6,accuracyCm,recordedAt]=locationSqlValues(location);
       const eventId=crypto.randomUUID();
       const eventType=task.result ? "result_updated" : "result_set";
       const completedAt=taskStatus==="completed"?now:null;
       const result=await transaction.prepare(`UPDATE mission_tasks SET status=?, result=?, report=?, version=version+1, completed_at=?, updated_at=?
         WHERE id=? AND mission_id=? AND status=? AND version=?`).bind(taskStatus,normalized.result,normalized.report,completedAt,now,task.id,id,task.status,expectedVersion).run();
-      if ((result.meta.changes??0)!==1) throw new TaskTransitionConflict();
+      if ((result.meta.changes??0)!==1) throw new TaskTransitionConflict("TASK_VERSION_CONFLICT");
       await transaction.batch([
         transaction.prepare(`INSERT INTO mission_task_events (id, mission_id, mission_task_id, actor_id, actor_role, client_event_id, event_type,
           from_status, to_status, result, report, latitude_e6, longitude_e6, accuracy_cm, device_recorded_at,
@@ -81,7 +83,16 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if ("error" in updatedTask) return updatedTask.error;
     return Response.json(updatedTask, { headers:{"Cache-Control":"no-store"} });
   } catch(error) {
-    if(error instanceof TaskTransitionConflict) return Response.json({error:"وضعیت این کار هم‌زمان تغییر کرده است؛ صفحه را تازه کنید."},{status:409});
+    if(error instanceof TaskTransitionConflict) {
+      const current = error.code === "TASK_VERSION_CONFLICT"
+        ? await db.prepare("SELECT version FROM mission_tasks WHERE id=? AND mission_id=?").bind(taskId,id).first<{version:number}>()
+        : null;
+      return Response.json({
+        error:"وضعیت این کار هم‌زمان تغییر کرده است؛ صفحه را تازه کنید.",
+        code:error.code,
+        ...(current ? { currentVersion:Number(current.version) } : {}),
+      },{status:409,headers:{"Cache-Control":"no-store"}});
+    }
     throw error;
   }
 }
