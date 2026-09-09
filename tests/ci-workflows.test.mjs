@@ -45,7 +45,7 @@ test("Android CI is read-only, branch-complete, local-backend-only and never pub
   assert.match(automatic,/api-level: \[23, 29, 35\]/);
   assert.match(automatic,/tapraDebugBackendUrl=http:\/\/10\.0\.2\.2:3000/);
   assert.match(automatic,/mariadb:10\.11/);
-  assert.equal((automatic.match(/inputs\.signed_release_asset_id == '' && inputs\.signed_release_sha256 == ''/g)||[]).length,2);
+  assert.equal((automatic.match(/inputs\.signed_release_asset_id == '' && inputs\.signed_release_apk_base64 == '' && inputs\.signed_release_sha256 == ''/g)||[]).length,2);
   assert.match(gradle,/buildConfigField 'String', 'BASE_URL'/);
   assert.match(manifest,/usesCleartextTraffic="\$\{usesCleartextTraffic\}"/);
   for(const source of [main,service,notifications])assert.match(source,/BuildConfig\.BASE_URL/);
@@ -89,7 +89,7 @@ test("Android UI capture preserves battery and startup gates after recovered too
 test("production release CI builds and exports only an unsigned, production-configured APK for local signing",async()=>{
   const workflow=await read("../.github/workflows/android-apk.yml");
   const release=workflow.slice(workflow.indexOf("  release-build:"),workflow.indexOf("  signed-release-smoke:"));
-  assert.match(release,/inputs\.signed_release_asset_id == '' && inputs\.signed_release_sha256 == ''/);
+  assert.match(release,/inputs\.signed_release_asset_id == '' && inputs\.signed_release_apk_base64 == '' && inputs\.signed_release_sha256 == ''/);
   assert.match(release,/java-version: "17"/);
   assert.match(release,/gradle-version: "8\.11\.1"/);
   assert.match(release,/-PtapraBackendUrl=https:\/\/taprasystem\.ir :app:lintRelease :app:testReleaseUnitTest :app:assembleRelease/);
@@ -112,21 +112,32 @@ test("production release CI builds and exports only an unsigned, production-conf
   assert.doesNotMatch(release,/\$\{\{\s*secrets\.|\bkeytool\b|apksigner"?\s+sign\b|--ks\b|--key-pass\b|--ks-pass\b|gh release|contents: write/);
 });
 
-test("signed release smoke accepts only explicit same-repository asset and checksum inputs without signing secrets",async()=>{
+test("signed release smoke accepts only explicit validated public APK sources without signing secrets",async()=>{
   const workflow=await read("../.github/workflows/android-apk.yml");
+  const preparation=await read("../scripts/android/prepare_signed_apk.py");
   const release=workflow.slice(workflow.indexOf("  signed-release-smoke:"));
   assert.match(workflow,/workflow_dispatch:\s+inputs:\s+signed_release_asset_id:/);
   assert.match(release,/github\.event_name == 'workflow_dispatch'/);
-  assert.match(release,/inputs\.signed_release_asset_id != '' \|\| inputs\.signed_release_sha256 != ''/);
-  assert.match(release,/SIGNED_RELEASE_ASSET_ID: \$\{\{ inputs\.signed_release_asset_id \}\}/);
+  assert.match(release,/inputs\.signed_release_asset_id != '' \|\| inputs\.signed_release_apk_base64 != '' \|\| inputs\.signed_release_sha256 != ''/);
   assert.match(release,/SIGNED_RELEASE_SHA256: \$\{\{ inputs\.signed_release_sha256 \}\}/);
-  assert.match(release,/"\$SIGNED_RELEASE_ASSET_ID" =~ \^\[1-9\]\[0-9\]\{0,19\}\$/);
-  assert.match(release,/"\$SIGNED_RELEASE_SHA256" =~ \^\[0-9a-fA-F\]\{64\}\$/);
-  assert.match(release,/"\$GITHUB_REPOSITORY" == "rbayat2k-art\/mission"/);
+  assert.match(preparation,/re\.fullmatch\(r"\[1-9\]\[0-9\]\{0,19\}", asset\)/);
+  assert.match(preparation,/re\.fullmatch\(r"\[0-9a-fA-F\]\{64\}", checksum\)/);
+  assert.match(preparation,/REPOSITORY = "rbayat2k-art\/mission"/);
+  assert.match(preparation,/os\.environ\.get\("GITHUB_EVENT_PATH", ""\)/);
+  assert.match(preparation,/bool\(asset\) == bool\(payload\)/);
+  assert.match(preparation,/base64\.b64decode\(payload, validate=True\)/);
+  assert.match(preparation,/MAX_ENCODED_CHARS = 60_000/);
+  assert.match(preparation,/MAX_PAYLOAD_BYTES = 45_000/);
+  assert.match(preparation,/APPROVED_PAYLOAD_SHA256 = "2e202cf71bbf18ac1caefa465441175c734d6cea441aa485999f3dc70ca4e60b"/);
+  assert.match(preparation,/"AndroidManifest\.xml", "classes\.dex"/);
   assert.match(release,/GH_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(release,/GH_HOST: github\.com/);
-  assert.match(release,/gh api -H 'Accept: application\/octet-stream' "repos\/rbayat2k-art\/mission\/releases\/assets\/\$SIGNED_RELEASE_ASSET_ID" > apk\/final\.apk/);
-  assert.equal((release.match(/sha256sum --check --strict/g)||[]).length,2);
+  assert.match(preparation,/"gh", "api", "--hostname", "github\.com"/);
+  assert.match(preparation,/f"repos\/\{REPOSITORY\}\/releases\/assets\/\{asset\}"/);
+  assert.match(release,/python3 -B scripts\/android\/prepare_signed_apk\.py/);
+  assert.match(release,/python3 -B -m unittest discover -s tests\/android -p 'test_prepare_signed_apk\.py' -v/);
+  assert.equal((release.match(/sha256sum --check --strict/g)||[]).length,1);
+  assert.doesNotMatch(release,/\w+: \$\{\{ inputs\.signed_release_apk_base64 \}\}/);
   assert.doesNotMatch(release,/\$\{\{\s*secrets\.|\bkeytool\b|apksigner"?\s+sign\b|--ks\b|--key-pass\b|--ks-pass\b|\bgradle\b/);
   assert.doesNotMatch(release,/\b(?:adb\s+uninstall|pm\s+(?:uninstall|clear))\b/);
   assert.doesNotMatch(release,/\b(?:curl|fetch|POST|PATCH|DELETE)\b|DB_PASSWORD|INITIAL_ADMIN_PASSWORD/);
@@ -140,7 +151,10 @@ test("signed release smoke checks exact final manifest, signature, and packaged 
   const workflow=await read("../.github/workflows/android-apk.yml");
   const release=workflow.slice(workflow.indexOf("  signed-release-smoke:"));
   assert.match(release,/apksigner" verify --verbose --print-certs --min-sdk-version 23 apk\/final\.apk/);
-  assert.match(release,/resources xml --file \/res\/xml\/network_security_config\.xml apk\/final\.apk/);
+  assert.match(release,/resources value --config default --name network_security_config --type xml apk\/final\.apk/);
+  assert.match(release,/"\$network_config" =~ \^res\/\[A-Za-z0-9_\/-\]\+\\\.xml\$/);
+  assert.match(release,/resources xml --file "\$network_config" apk\/final\.apk/);
+  assert.doesNotMatch(release,/resources xml --file \/?res\/xml\/network_security_config\.xml/);
   for(const assertion of [
     "manifest.get('package') == 'ir.taprasystem.employee'",
     "manifest.get(android + 'versionCode') == '23'",
@@ -170,10 +184,10 @@ test("signed APK smoke is disposable-emulator-only and preserves identity and gr
   assert.match(release,/pm grant ir\.taprasystem\.employee android\.permission\.ACCESS_COARSE_LOCATION/);
   assert.match(release,/pm grant ir\.taprasystem\.employee android\.permission\.ACCESS_FINE_LOCATION/);
   assert.match(release,/\[ "\$TEST_API_LEVEL" -ge 33 \]; then adb shell pm grant ir\.taprasystem\.employee android\.permission\.POST_NOTIFICATIONS/);
-  assert.match(release,/capture_ui\.py apk\/signed-release-battery\.xml/);
+  assert.match(release,/capture_app_ui\.py apk\/signed-release-battery\.xml --expect battery/);
   assert.match(release,/grep -q "تنظیم باتری برای ورود الزامی است" apk\/signed-release-battery\.xml/);
   for(const stage of ["before","after"]){
-    assert.ok(release.includes(`capture_ui.py apk/signed-release-login-${stage}.xml`));
+    assert.ok(release.includes(`capture_app_ui.py apk/signed-release-login-${stage}.xml --expect page`));
     assert.ok(release.includes(`grep -q "ورود به پنل کارمند" apk/signed-release-login-${stage}.xml`));
     assert.ok(release.includes(`"صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" apk/signed-release-login-${stage}.xml`));
     assert.ok(release.includes(`"FATAL EXCEPTION" apk/signed-release-logcat-${stage}.txt`));
