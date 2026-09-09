@@ -54,3 +54,6 @@ yarn-error.log*
 /android/captures/
 *.jks
 *.keystore
+*.p12
+*.pfx
+*.dpapi.xml

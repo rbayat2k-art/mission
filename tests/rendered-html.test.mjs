@@ -1053,7 +1053,7 @@ test("prepares an upgrade-numbered Android wrapper with account-isolated GPS and
   assert.ok(Number(gradle.match(/^\s*versionCode (\d+)/m)?.[1]) > 22, "must exceed the last published APK code");
   assert.match(gradle, /versionName '1\.2\.4'/);
   assert.match(workflow, /matrix:\s*\n\s*api-level: \[23, 29, 35\]/);
-  assert.match(workflow, /uiautomator dump/);
+  assert.match(workflow, /python3 -B scripts\/android\/capture_ui\.py tapra-ui-api/);
   assert.match(workflow, /tapra-battery-gate-api/);
   assert.match(workflow, /deviceidle whitelist \+ir\.taprasystem\.employee/);
   assert.match(workflow, /POST_NOTIFICATIONS \|\| true/);

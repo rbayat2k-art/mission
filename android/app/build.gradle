@@ -10,6 +10,12 @@ def debugBackendUrl = providers.gradleProperty('tapraDebugBackendUrl')
     .orElse(providers.environmentVariable('TAPRA_DEBUG_BACKEND_URL'))
     .orElse(productionBackendUrl)
     .get()
+
+// A release handed to employees must never silently target a local/test server.
+// Local fixtures use the separate debug-only setting above.
+if (productionBackendUrl != 'https://taprasystem.ir') {
+    throw new GradleException('Release backend must be https://taprasystem.ir; use tapraDebugBackendUrl for local testing.')
+}
 def javaString = { value -> '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"' }
 
 android {
@@ -24,7 +30,7 @@ android {
         applicationId 'ir.taprasystem.employee'
         minSdk 23
         targetSdk 35
-        // Last published APK used versionCode 22 outside this older Gradle value.
+        // Keep the approved upgrade number. Old release-tag suffixes were run IDs.
         versionCode 23
         versionName '1.2.4'
         buildConfigField 'String', 'BASE_URL', javaString(productionBackendUrl)

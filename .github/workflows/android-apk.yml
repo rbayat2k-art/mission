@@ -1,7 +1,16 @@
-name: Android debug verification
+name: Android APK verification
 
 on:
   workflow_dispatch:
+    inputs:
+      signed_release_asset_id:
+        description: "Optional numeric asset ID of the locally signed APK in this repository"
+        required: false
+        type: string
+      signed_release_sha256:
+        description: "Required SHA-256 when testing a signed release asset"
+        required: false
+        type: string
   push:
     branches: [main, "codex/**"]
   pull_request:
@@ -12,10 +21,13 @@ permissions:
 
 jobs:
   build-debug:
+    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_sha256 == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Test UI capture failure handling
+        run: python3 -B -m unittest discover -s tests/android -p 'test_capture_ui.py' -v
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -47,6 +59,7 @@ jobs:
           retention-days: 14
 
   emulator-smoke:
+    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_sha256 == '' }}
     needs: build-debug
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -107,8 +120,7 @@ jobs:
             adb shell pm grant ir.taprasystem.employee android.permission.POST_NOTIFICATIONS || true
             adb shell am start -W -n ir.taprasystem.employee/.MainActivity
             sleep 2
-            adb shell uiautomator dump /sdcard/tapra-battery-gate.xml
-            adb pull /sdcard/tapra-battery-gate.xml tapra-battery-gate-api-${{ matrix.api-level }}.xml
+            python3 -B scripts/android/capture_ui.py tapra-battery-gate-api-${{ matrix.api-level }}.xml
             grep -q "تنظیم باتری برای ورود الزامی است" tapra-battery-gate-api-${{ matrix.api-level }}.xml
             adb shell dumpsys deviceidle whitelist +ir.taprasystem.employee
             adb shell am force-stop ir.taprasystem.employee
@@ -117,10 +129,210 @@ jobs:
             adb logcat -d -t 800 > android-logcat-api-${{ matrix.api-level }}.txt
             if grep -A 20 "FATAL EXCEPTION" android-logcat-api-${{ matrix.api-level }}.txt | grep -q "ir.taprasystem.employee"; then cat android-logcat-api-${{ matrix.api-level }}.txt; exit 1; fi
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
-            adb shell uiautomator dump /sdcard/tapra-ui.xml
-            adb pull /sdcard/tapra-ui.xml tapra-ui-api-${{ matrix.api-level }}.xml
+            python3 -B scripts/android/capture_ui.py tapra-ui-api-${{ matrix.api-level }}.xml
             if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" tapra-ui-api-${{ matrix.api-level }}.xml; then cat tapra-ui-api-${{ matrix.api-level }}.xml; exit 1; fi
+            grep -q "ورود به پنل کارمند" tapra-ui-api-${{ matrix.api-level }}.xml
+            adb logcat -d -t 800 > android-logcat-post-capture-api-${{ matrix.api-level }}.txt
+            if grep -A 20 "FATAL EXCEPTION" android-logcat-post-capture-api-${{ matrix.api-level }}.txt | grep -q "ir.taprasystem.employee"; then cat android-logcat-post-capture-api-${{ matrix.api-level }}.txt; exit 1; fi
+            adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
 
-# This workflow deliberately produces only a short-lived debug verification
-# artifact. Stable production signing and release publication are separate,
-# manually authorized processes and require no repository signing secret here.
+  release-build:
+    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_sha256 == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+      - name: Lint, unit test and assemble unsigned production-URL release
+        working-directory: android
+        run: gradle --no-daemon -PtapraBackendUrl=https://taprasystem.ir :app:lintRelease :app:testReleaseUnitTest :app:assembleRelease
+      - name: Verify unsigned release configuration, manifest and checksum
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/release/app-release-unsigned.apk"
+          config="app/build/generated/source/buildConfig/release/ir/taprasystem/employee/BuildConfig.java"
+          test -s "$apk"
+          grep -Fq 'public static final boolean DEBUG = false;' "$config"
+          grep -Fq 'public static final String BASE_URL = "https://taprasystem.ir";' "$config"
+          grep -Fq 'public static final String APPLICATION_ID = "ir.taprasystem.employee";' "$config"
+          grep -Fq 'public static final int VERSION_CODE = 23;' "$config"
+          grep -Fq 'public static final String VERSION_NAME = "1.2.4";' "$config"
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          test -x "$build_tools/aapt"
+          "$build_tools/aapt" dump badging "$apk" > tapra-release-badging.txt
+          grep -q "^package: name='ir.taprasystem.employee' versionCode='23' versionName='1.2.4'" tapra-release-badging.txt
+          grep -q "^sdkVersion:'23'" tapra-release-badging.txt
+          grep -q "^targetSdkVersion:'35'" tapra-release-badging.txt
+          if grep -q '^application-debuggable' tapra-release-badging.txt; then echo "Debuggable APK rejected" >&2; exit 1; fi
+          "$build_tools/aapt" dump xmltree "$apk" AndroidManifest.xml > tapra-release-manifest-tree.txt
+          grep -Eq 'android:usesCleartextTraffic.*\(type 0x12\)0x0$' tapra-release-manifest-tree.txt
+          grep -Eq 'android:allowBackup.*\(type 0x12\)0x0$' tapra-release-manifest-tree.txt
+          cp "$apk" tapra-employee-release-unsigned.apk
+          sha256sum tapra-employee-release-unsigned.apk > tapra-employee-release-unsigned.apk.sha256
+          printf 'commit=%s\npackage=ir.taprasystem.employee\nversionName=1.2.4\nversionCode=23\nminSdk=23\ntargetSdk=35\nbackend=https://taprasystem.ir\ndebuggable=false\nsigned=false\n' "$GITHUB_SHA" > tapra-release-build-metadata.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tapra-employee-release-unsigned-${{ github.sha }}
+          path: |
+            android/tapra-employee-release-unsigned.apk
+            android/tapra-employee-release-unsigned.apk.sha256
+            android/tapra-release-build-metadata.txt
+            android/tapra-release-badging.txt
+            android/tapra-release-manifest-tree.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  signed-release-smoke:
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.signed_release_asset_id != '' || inputs.signed_release_sha256 != '') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [23, 29, 35]
+    env:
+      SIGNED_RELEASE_ASSET_ID: ${{ inputs.signed_release_asset_id }}
+      SIGNED_RELEASE_SHA256: ${{ inputs.signed_release_sha256 }}
+      TEST_API_LEVEL: ${{ matrix.api-level }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate inputs and download exact locally signed release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_HOST: github.com
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "rbayat2k-art/mission" ]]
+          [[ "$SIGNED_RELEASE_ASSET_ID" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "Invalid numeric asset ID" >&2; exit 1; }
+          [[ "$SIGNED_RELEASE_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "Invalid SHA-256" >&2; exit 1; }
+          mkdir -p apk
+          gh api -H 'Accept: application/octet-stream' "repos/rbayat2k-art/mission/releases/assets/$SIGNED_RELEASE_ASSET_ID" > apk/final.apk
+          printf '%s  apk/final.apk\n' "$SIGNED_RELEASE_SHA256" | sha256sum --check --strict
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Verify final signature and release-only manifest and network policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          analyzer="$(find "$ANDROID_HOME/cmdline-tools" -type f -path '*/bin/apkanalyzer' | sort -V | tail -n 1)"
+          test -x "$build_tools/apksigner"
+          test -x "$analyzer"
+          "$build_tools/apksigner" verify --verbose --print-certs --min-sdk-version 23 apk/final.apk | tee apk/signed-release-signature.txt
+          "$analyzer" manifest print apk/final.apk > apk/signed-release-manifest.xml
+          "$analyzer" resources xml --file /res/xml/network_security_config.xml apk/final.apk > apk/signed-release-network.xml
+          python3 -B - <<'PY'
+          import xml.etree.ElementTree as ET
+          android = '{http://schemas.android.com/apk/res/android}'
+          manifest = ET.parse('apk/signed-release-manifest.xml').getroot()
+          assert manifest.get('package') == 'ir.taprasystem.employee', 'Wrong package'
+          assert manifest.get(android + 'versionCode') == '23', 'Wrong version code'
+          assert manifest.get(android + 'versionName') == '1.2.4', 'Wrong version name'
+          sdk = manifest.find('uses-sdk')
+          assert sdk is not None and sdk.get(android + 'minSdkVersion') == '23', 'Wrong min SDK'
+          assert sdk.get(android + 'targetSdkVersion') == '35', 'Wrong target SDK'
+          app = manifest.find('application')
+          assert app is not None, 'Missing application'
+          assert app.get(android + 'debuggable', 'false') == 'false', 'Debuggable APK rejected'
+          assert app.get(android + 'testOnly', 'false') == 'false', 'Test-only APK rejected'
+          assert app.get(android + 'usesCleartextTraffic') == 'false', 'Cleartext APK rejected'
+          assert app.get(android + 'allowBackup') == 'false', 'Backups must stay disabled'
+          assert app.get(android + 'networkSecurityConfig'), 'Missing network policy reference'
+          network = ET.parse('apk/signed-release-network.xml').getroot()
+          assert network.tag == 'network-security-config', 'Wrong network policy'
+          assert len(network) == 1 and network[0].tag == 'base-config', 'Network policy override rejected'
+          assert network[0].get('cleartextTrafficPermitted') == 'false', 'Debug network policy rejected'
+          certificates = network.findall('.//certificates')
+          assert len(certificates) == 1 and certificates[0].get('src') == 'system', 'Non-system trust root rejected'
+          print('Exact package/version and non-debug HTTPS-only release policy verified')
+          PY
+      - name: Test UI capture failure handling
+        run: python3 -B -m unittest discover -s tests/android -p 'test_capture_ui.py' -v
+      - run: sudo chmod 666 /dev/kvm
+      - name: Clean install and same-key replacement on a fresh disposable emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          profile: pixel_2
+          avd-name: tapra-signed-release-${{ matrix.api-level }}
+          force-avd-creation: true
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
+          script: |
+            test "$(adb shell getprop ro.kernel.qemu | tr -d '\r')" = "1"
+            adb shell pm list packages ir.taprasystem.employee > apk/signed-release-preinstalled.txt
+            if grep -q 'package:ir.taprasystem.employee' apk/signed-release-preinstalled.txt; then echo "Expected a fresh emulator with no TAPRA installation" >&2; exit 1; fi
+            adb install apk/final.apk
+            adb shell pm grant ir.taprasystem.employee android.permission.ACCESS_COARSE_LOCATION
+            adb shell pm grant ir.taprasystem.employee android.permission.ACCESS_FINE_LOCATION
+            if [ "$TEST_API_LEVEL" -ge 33 ]; then adb shell pm grant ir.taprasystem.employee android.permission.POST_NOTIFICATIONS; fi
+            adb shell am start -W -n ir.taprasystem.employee/.MainActivity
+            sleep 2
+            python3 -B scripts/android/capture_ui.py apk/signed-release-battery.xml
+            grep -q "تنظیم باتری برای ورود الزامی است" apk/signed-release-battery.xml
+            adb shell dumpsys deviceidle whitelist +ir.taprasystem.employee
+            adb shell am force-stop ir.taprasystem.employee
+            adb shell am start -W -n ir.taprasystem.employee/.MainActivity
+            sleep 15
+            python3 -B scripts/android/capture_ui.py apk/signed-release-login-before.xml
+            if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" apk/signed-release-login-before.xml; then cat apk/signed-release-login-before.xml; exit 1; fi
+            grep -q "ورود به پنل کارمند" apk/signed-release-login-before.xml
+            adb logcat -d -t 1500 > apk/signed-release-logcat-before.txt
+            if grep -A 20 "FATAL EXCEPTION" apk/signed-release-logcat-before.txt | grep -q "ir.taprasystem.employee"; then cat apk/signed-release-logcat-before.txt; exit 1; fi
+            adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
+            adb shell dumpsys package ir.taprasystem.employee > apk/signed-release-package-before.txt
+            sed -n 's/^[[:space:]]*userId=\([0-9][0-9]*\).*$/\1/p' apk/signed-release-package-before.txt > apk/signed-release-uid-before.txt
+            test "$(wc -l < apk/signed-release-uid-before.txt)" -eq 1
+            grep -E 'android[.]permission[.](ACCESS_FINE_LOCATION|ACCESS_COARSE_LOCATION|POST_NOTIFICATIONS): granted=' apk/signed-release-package-before.txt | sed -E 's/^[[:space:]]+//; s/,.*$//' | sort > apk/signed-release-permissions-before.txt
+            grep -q 'android.permission.ACCESS_FINE_LOCATION: granted=true' apk/signed-release-permissions-before.txt
+            grep -q 'android.permission.ACCESS_COARSE_LOCATION: granted=true' apk/signed-release-permissions-before.txt
+            if [ "$TEST_API_LEVEL" -ge 33 ]; then grep -q 'android.permission.POST_NOTIFICATIONS: granted=true' apk/signed-release-permissions-before.txt; fi
+            adb shell dumpsys deviceidle whitelist > apk/signed-release-whitelist-before-all.txt
+            grep -E '(^|,)ir\.taprasystem\.employee(,|$)' apk/signed-release-whitelist-before-all.txt | sort > apk/signed-release-whitelist-before.txt
+            test -s apk/signed-release-whitelist-before.txt
+            adb install -r apk/final.apk
+            adb shell dumpsys package ir.taprasystem.employee > apk/signed-release-package-after.txt
+            sed -n 's/^[[:space:]]*userId=\([0-9][0-9]*\).*$/\1/p' apk/signed-release-package-after.txt > apk/signed-release-uid-after.txt
+            cmp apk/signed-release-uid-before.txt apk/signed-release-uid-after.txt
+            grep -E 'android[.]permission[.](ACCESS_FINE_LOCATION|ACCESS_COARSE_LOCATION|POST_NOTIFICATIONS): granted=' apk/signed-release-package-after.txt | sed -E 's/^[[:space:]]+//; s/,.*$//' | sort > apk/signed-release-permissions-after.txt
+            cmp apk/signed-release-permissions-before.txt apk/signed-release-permissions-after.txt
+            adb shell dumpsys deviceidle whitelist > apk/signed-release-whitelist-after-all.txt
+            grep -E '(^|,)ir\.taprasystem\.employee(,|$)' apk/signed-release-whitelist-after-all.txt | sort > apk/signed-release-whitelist-after.txt
+            cmp apk/signed-release-whitelist-before.txt apk/signed-release-whitelist-after.txt
+            adb shell am start -W -n ir.taprasystem.employee/.MainActivity
+            sleep 15
+            python3 -B scripts/android/capture_ui.py apk/signed-release-login-after.xml
+            if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" apk/signed-release-login-after.xml; then cat apk/signed-release-login-after.xml; exit 1; fi
+            grep -q "ورود به پنل کارمند" apk/signed-release-login-after.xml
+            adb logcat -d -t 1500 > apk/signed-release-logcat-after.txt
+            if grep -A 20 "FATAL EXCEPTION" apk/signed-release-logcat-after.txt | grep -q "ir.taprasystem.employee"; then cat apk/signed-release-logcat-after.txt; exit 1; fi
+            adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
+            printf '%s  apk/final.apk\n' "$SIGNED_RELEASE_SHA256" | sha256sum --check --strict
+      - name: Retain non-secret signed-release verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-release-smoke-api-${{ matrix.api-level }}-${{ github.run_id }}
+          path: |
+            apk/signed-release-*.txt
+            apk/signed-release-*.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+# Automatic jobs build local-backend debug artifacts and an unsigned
+# production-URL release for local signing. The optional manual job tests
+# an already locally signed APK without signing,
+# publishing, production login, operations, or employee-device data changes.
+# Stable signing keys and passwords never enter this workflow.
