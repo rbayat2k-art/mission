@@ -409,7 +409,9 @@ test("ships a standard Node.js MySQL and cPanel production target", async () => 
     readFile(new URL("../app/api/health/route.ts", import.meta.url), "utf8"),
   ]);
 
-  assert.match(packageJson, /"next": "16\.3\.1"/);
+  const manifest = JSON.parse(packageJson);
+  assert.equal(manifest.dependencies.next, "16.3.4");
+  assert.equal(manifest.devDependencies["@next/eslint-plugin-next"], manifest.dependencies.next);
   assert.match(packageJson, /"mysql2": "3\.23\.3"/);
   assert.doesNotMatch(packageJson, /vinext|wrangler|cloudflare/);
   assert.match(database, /mysql2\/promise/);
