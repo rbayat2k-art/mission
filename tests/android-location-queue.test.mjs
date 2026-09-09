@@ -27,8 +27,8 @@ test("Android queue, restart metadata, and requests stay scoped to the authentic
   assert.match(service, /requestedUserId\.equals\(activeUserId\)/);
   assert.match(service, /preferences\.getString\("tracking_user_id", ""\)/);
   assert.match(service, /preferences\.getString\("tracking_work_session_id", ""\)/);
-  assert.match(service, /"location_queue_user_" \+ trackingUserId/);
-  assert.match(service, /setRequestProperty\("X-Tapra-User-Id", trackingUserId\)/);
+  assert.match(service, /"location_queue_user_" \+ userId/);
+  assert.match(service, /setRequestProperty\("X-Tapra-User-Id", expectedUserId\)/);
   assert.match(activity, /!previousUserId\.equals\(safeUserId\)/);
   assert.match(activity, /setTrackingActive\(false, ""\)/);
   assert.match(activity, /NativeNotificationHelper\.switchUser\(this, safeUserId\)/);

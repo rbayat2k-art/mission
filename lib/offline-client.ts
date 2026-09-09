@@ -14,7 +14,7 @@ export type OutboxConflict = {
   queueId: number;
   url: string;
   method: string;
-  status: 409;
+  status: number;
   operation: OutboxOperation;
   createdAt: string;
   serverError: string;
@@ -44,7 +44,7 @@ export type FlushOutboxResult = {
 };
 
 type PersistedConflict = {
-  status: 409;
+  status: number;
   serverError: string;
   serverCode?: string;
   detectedAt: string;
@@ -149,9 +149,18 @@ async function withStore<T>(mode: IDBTransactionMode, action: (store: IDBObjectS
   const database = await openDatabase();
   return new Promise<T>((resolve, reject) => {
     const transaction = database.transaction(storeName, mode);
-    action(transaction.objectStore(storeName), resolve, reject);
-    transaction.oncomplete = () => database.close();
+    let result: T;
+    // A successful IDB request may still be rolled back if its transaction
+    // aborts. Never report a saved/deleted item until the commit completes.
+    transaction.oncomplete = () => { database.close(); resolve(result); };
     transaction.onerror = () => { database.close(); reject(transaction.error); };
+    transaction.onabort = () => { database.close(); reject(transaction.error ?? new Error("ذخیره تغییر آفلاین کامل نشد")); };
+    try {
+      action(transaction.objectStore(storeName), value => { result = value; }, reject);
+    } catch (error) {
+      transaction.abort();
+      reject(error);
+    }
   });
 }
 
@@ -232,11 +241,13 @@ function isLocationEntry(entry:JsonEntry) {
   return entry.url === "/api/locations" && entry.method.toUpperCase() === "POST";
 }
 
-export function nonLocationOutboxResponseAction(status:number):"sent"|"discard"|"retry"|"conflict" {
+export function nonLocationOutboxResponseAction(status:number):"sent"|"retry"|"conflict" {
   if (status >= 200 && status < 300) return "sent";
   if (status === 409) return "conflict";
-  if (status >= 500 || status === 401) return "retry";
-  return "discard";
+  if (status >= 500 || [401, 408, 425, 429].includes(status)) return "retry";
+  // A permanent rejection is not a successful sync. Keep it for explicit
+  // resolution instead of silently discarding the employee's report or file.
+  return "conflict";
 }
 
 export function locationBatchHasFinalAck(points:Array<{clientEventId?:string}> | undefined, body:LocationAck) {
@@ -258,10 +269,11 @@ function locationEntryHasFinalAck(entry:JsonEntry, body:LocationAck) {
 }
 
 export async function sendJsonOrQueue<T>(accountId: string, url: string, method: string, body: unknown): Promise<OutboxResult<T>> {
+  const currentAccountId = validAccountId(accountId);
   const entry: Omit<JsonEntry, "accountId"> = { kind: "json", url, method, body, createdAt: new Date().toISOString() };
   if (!navigator.onLine) { const queueId = await enqueue(accountId, entry); return { queued: true, queueId }; }
   try {
-    const response = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const response = await fetch(url, { method, headers: { "Content-Type": "application/json", "X-Tapra-User-Id": currentAccountId }, body: JSON.stringify(body) });
     const data = await responseBody<T>(response);
     if (isLocationEntry(entry) && !locationEntryHasFinalAck(entry, data as LocationAck)) {
       const queueId = await enqueue(accountId, entry);
@@ -275,13 +287,14 @@ export async function sendJsonOrQueue<T>(accountId: string, url: string, method:
 }
 
 export async function sendFileOrQueue<T>(accountId: string, url: string, fields: Record<string, string>, file: File): Promise<OutboxResult<T>> {
+  const currentAccountId = validAccountId(accountId);
   const entry: Omit<FileEntry, "accountId"> = { kind: "file", url, fields, file, createdAt: new Date().toISOString() };
   if (!navigator.onLine) { const queueId = await enqueue(accountId, entry); return { queued: true, queueId }; }
   try {
     const form = new FormData();
     Object.entries(fields).forEach(([key, value]) => form.set(key, value));
     form.set("file", file);
-    const response = await fetch(url, { method: "POST", body: form });
+    const response = await fetch(url, { method: "POST", headers: { "X-Tapra-User-Id": currentAccountId }, body: form });
     return { queued: false, data: await responseBody<T>(response) };
   } catch (error) {
     if (error instanceof TypeError) { const queueId = await enqueue(accountId, entry); return { queued: true, queueId }; }
@@ -325,19 +338,36 @@ function conflictDescription(entry: OutboxEntry, position: number, total: number
     queueId:entry.id,
     url:entry.url,
     method:entry.kind === "json" ? entry.method : "POST",
-    status:409,
+    status:entry.conflict.status,
     operation,
     createdAt:entry.createdAt,
     serverError:entry.conflict.serverError,
     serverCode:entry.conflict.serverCode,
     ...metadata,
-    reapplyable:operation === "mission_task_result" && entry.conflict.serverCode === "TASK_VERSION_CONFLICT",
+    reapplyable:entry.conflict.status === 409 && operation === "mission_task_result" && entry.conflict.serverCode === "TASK_VERSION_CONFLICT",
     position,
     total,
   };
 }
 
-export async function flushOutbox(accountId: string) {
+const activeFlushes = new Map<string, Promise<FlushOutboxResult>>();
+
+export function flushOutbox(accountId: string): Promise<FlushOutboxResult> {
+  const currentAccountId = validAccountId(accountId);
+  const active = activeFlushes.get(currentAccountId);
+  if (active) return active;
+  const run = () => flushOwnedOutbox(currentAccountId);
+  // Web Locks coordinate different tabs/WebViews sharing this origin. Older
+  // engines still get the per-realm single-flight guard without requiring it.
+  const work = typeof navigator.locks?.request === "function"
+    ? navigator.locks.request(`tapra-outbox:${currentAccountId}`, run)
+    : run();
+  const pending = Promise.resolve(work).finally(() => activeFlushes.delete(currentAccountId));
+  activeFlushes.set(currentAccountId, pending);
+  return pending;
+}
+
+async function flushOwnedOutbox(accountId: string) {
   const currentAccountId = validAccountId(accountId);
   const stateBefore = await getOutboxState(currentAccountId);
   if (!navigator.onLine) return { sent:0, remaining:stateBefore.ownedCount, conflicts:[], quarantined:stateBefore.quarantined } satisfies FlushOutboxResult;
@@ -351,21 +381,24 @@ export async function flushOutbox(accountId: string) {
     try {
       let response: Response;
       if (entry.kind === "json") {
-        response = await fetch(entry.url, { method: entry.method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(entry.body) });
+        response = await fetch(entry.url, { method: entry.method, headers: { "Content-Type": "application/json", "X-Tapra-User-Id": currentAccountId }, body: JSON.stringify(entry.body) });
       } else {
         const form = new FormData();
         Object.entries(entry.fields).forEach(([key, value]) => form.set(key, value));
         form.set("file", entry.file);
-        response = await fetch(entry.url, { method: "POST", body: form });
+        response = await fetch(entry.url, { method: "POST", headers: { "X-Tapra-User-Id": currentAccountId }, body: form });
       }
       if (nonLocationOutboxResponseAction(response.status) === "conflict") {
         const body = await response.json().catch(() => ({})) as { code?: unknown };
+        // A different session is not a version conflict. Leave this account's
+        // queue intact so it can resume after the correct account signs in.
+        if (body.code === "ACCOUNT_CONTEXT_CHANGED") break;
         const operation = outboxOperation(entry);
         const persisted:OutboxEntry = {
           ...entry,
           conflict:{
-            status:409,
-            serverError:safeConflictReason(operation),
+            status:response.status,
+            serverError:response.status === 409 ? safeConflictReason(operation) : "سرور این تغییر را نپذیرفت؛ اطلاعات محلی برای بررسی شما محفوظ است",
             serverCode:safeServerCode(body.code),
             detectedAt:new Date().toISOString(),
           },

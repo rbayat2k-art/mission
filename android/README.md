@@ -15,7 +15,7 @@
 از داخل پوشه `android`:
 
 ```text
-gradlew.bat clean lintDebug testDebugUnitTest assembleDebug
+gradle --no-daemon lintDebug testDebugUnitTest assembleDebug
 ```
 
 خروجی در `app/build/outputs/apk/debug/app-debug.apk` قرار می‌گیرد. نسخه ۱.۲.۰ در صورت
@@ -26,6 +26,14 @@ gradlew.bat clean lintDebug testDebugUnitTest assembleDebug
 `-PtapraDebugBackendUrl=http://10.0.2.2:3000` ساخت؛ مجوز cleartext فقط در منبع Debug
 فعال است و وارد Release نمی‌شود. APK گردش‌کار CI یک خروجی Debug آزمایشی است، نه
 نسخه قابل انتشار. امضای پایدار Release باید در فرایند جداگانه و با کلید امن انجام شود.
+
+این checkout فاقد Gradle Wrapper است؛ ساخت به JDK 17، Gradle 8.11.1 و Android SDK 35
+نیاز دارد (همان محیط CI). نسخه آماده ساخت ۱.۲.۴ با versionCode برابر ۲۳ است؛ آخرین
+Release قبلی `android-test-v1.2.3-22` شماره ۲۲ داشته است. شماره کمتر قدیمی داخل
+Gradle مبنای ارتقا نیست. قبل از توزیع APK، امضای آن باید با نسخه واقعاً نصب‌شده
+تطبیق داده و ارتقا با حفظ داده آزموده شود. APK آزمایشی CI به Backend محلی شبیه‌ساز
+وصل است و نباید برای کارمند فرستاده شود. برای حل تعارض امضا، حذف برنامه یا پاک‌کردن
+داده/صف آفلاین مجاز نیست.
 
 ## مجوزهای لازم روی گوشی
 

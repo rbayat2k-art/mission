@@ -35,6 +35,9 @@ export function normalizeMissionSteps(raw: unknown): { steps: NormalizedMissionS
   const steps: NormalizedMissionStep[] = [];
   for (let index = 0; index < raw.length; index += 1) {
     const value = raw[index] && typeof raw[index] === "object" ? raw[index] as MissionStepInput : {};
+    for (const key of ["title","description","destinationName","deadlineDate","deadlineTime"] as const) {
+      if (value[key] != null && typeof value[key] !== "string") return {error:`اطلاعات مرحله ${index + 1} معتبر نیست.`};
+    }
     const title = value.title?.trim() ?? "";
     if (title.length < 2 || title.length > 255) return { error: `عنوان مرحله ${index + 1} معتبر نیست.` };
     const requiresLocation = value.requiresLocation !== false;

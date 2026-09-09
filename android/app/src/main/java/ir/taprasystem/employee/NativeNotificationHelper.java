@@ -116,6 +116,15 @@ final class NativeNotificationHelper {
         return true;
     }
 
+    static synchronized boolean showForUser(
+        Context context, String expectedUserId, String notificationId,
+        String title, String message, String targetUrl
+    ) {
+        // Check and post under the same lock as switchUser/clearUser.
+        if (expectedUserId == null || !expectedUserId.equals(activeUserId(context))) return false;
+        return show(context, notificationId, title, message, targetUrl);
+    }
+
     private static String clean(String value, int maximumLength) {
         if (value == null) return "";
         String cleaned = value.trim();

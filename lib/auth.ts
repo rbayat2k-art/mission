@@ -9,7 +9,10 @@ function cookieValue(request: Request, key: string) {
   const cookies = request.headers.get("cookie") ?? "";
   for (const pair of cookies.split(";")) {
     const [name, ...value] = pair.trim().split("=");
-    if (name === key) return decodeURIComponent(value.join("="));
+    if (name === key) {
+      try { return decodeURIComponent(value.join("=")); }
+      catch { return null; }
+    }
   }
   return null;
 }
@@ -72,6 +75,15 @@ export async function revokeSession(request: Request) {
 export async function requireRole(request: Request, roles: AppRole[]) {
   const user = await getSessionUser(request);
   if (!user) return { error: Response.json({ error: "unauthorized" }, { status: 401 }) } as const;
+  // Cookies are shared by browser tabs. A queued operation must stay bound to
+  // the account which created it, even after another tab signs in elsewhere.
+  const expectedUserId = request.headers.get("x-tapra-user-id")?.trim();
+  if (expectedUserId !== undefined && expectedUserId !== user.id) {
+    return { error: Response.json(
+      { error: "حساب جاری تغییر کرده است؛ دوباره وارد حساب مربوط به این تغییر شوید.", code: "ACCOUNT_CONTEXT_CHANGED" },
+      { status: 409, headers: { "Cache-Control": "private, no-store" } },
+    ) } as const;
+  }
   if (!roles.includes(user.role)) return { error: Response.json({ error: "forbidden" }, { status: 403 }) } as const;
   return { user } as const;
 }

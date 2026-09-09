@@ -53,7 +53,8 @@ export async function createUserNotification(userId: string, input: Notification
     } catch (error) {
       const statusCode = typeof error === "object" && error && "statusCode" in error ? Number(error.statusCode) : 0;
       if ([404, 410].includes(statusCode)) await db.prepare("DELETE FROM push_subscriptions WHERE id = ?").bind(subscription.id).run();
-      else console.error("push delivery failed", error);
+      // Provider errors may contain a private push endpoint and response body.
+      else console.error("push delivery failed", { statusCode });
     }
   }));
   return { id, delivered };

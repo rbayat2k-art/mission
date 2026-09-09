@@ -8,10 +8,22 @@ const read = path => readFile(new URL(path, import.meta.url), "utf8");
 
 test("non-location 409 is a retained conflict while retry and terminal responses remain distinct", () => {
   assert.equal(nonLocationOutboxResponseAction(200), "sent");
-  assert.equal(nonLocationOutboxResponseAction(400), "discard");
+  assert.equal(nonLocationOutboxResponseAction(400), "conflict");
   assert.equal(nonLocationOutboxResponseAction(401), "retry");
   assert.equal(nonLocationOutboxResponseAction(409), "conflict");
   assert.equal(nonLocationOutboxResponseAction(503), "retry");
+});
+
+test("temporary HTTP failures never discard an offline mutation", () => {
+  for (const status of [408, 425, 429, 500, 502, 503, 504]) {
+    assert.equal(nonLocationOutboxResponseAction(status), "retry", `HTTP ${status}`);
+  }
+});
+
+test("permanent rejections require explicit local resolution, never a false successful sync", () => {
+  for (const status of [400,403,404,413,415,422]) {
+    assert.equal(nonLocationOutboxResponseAction(status), "conflict");
+  }
 });
 
 test("flush stops before deletion on a non-location conflict and reports it to the UI", async () => {

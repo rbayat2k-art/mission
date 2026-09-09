@@ -384,7 +384,8 @@ public class MainActivity extends Activity {
     private void verifyRenderedPage(WebView view) {
         if (mainFrameFailed || view != webView) return;
         view.evaluateJavascript(
-            "Boolean(document.body && document.body.innerText && document.body.innerText.trim().length > 8)",
+            "Boolean(document.body && ((document.body.innerText && document.body.innerText.trim().length > 8) || " +
+            "(/^image\\//i.test(document.contentType || '') && Array.prototype.some.call(document.images, function(img) { return img.complete && img.naturalWidth > 0; }))))",
             rendered -> {
                 if ("true".equals(rendered)) {
                     pageCommitted = true;
@@ -495,7 +496,11 @@ public class MainActivity extends Activity {
     private void requestRuntimePermissions() {
         if (permissionRequestInFlight) return;
         List<String> permissions = new ArrayList<>();
-        if (!hasLocationPermission()) permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        if (!hasLocationPermission()) {
+            // Android 12+ can ignore a fine-only runtime request.
+            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
+            permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS);
@@ -771,6 +776,14 @@ public class MainActivity extends Activity {
         ) {
             return NativeNotificationHelper.show(
                 MainActivity.this, notificationId, title, message, targetUrl);
+        }
+
+        @JavascriptInterface
+        public boolean showNativeNotificationForUser(
+            String expectedUserId, String notificationId, String title, String message, String targetUrl
+        ) {
+            return NativeNotificationHelper.showForUser(
+                MainActivity.this, expectedUserId, notificationId, title, message, targetUrl);
         }
 
         @JavascriptInterface

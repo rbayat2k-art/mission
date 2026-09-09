@@ -23,6 +23,7 @@ export function normalizeMissionTasks(raw: unknown): { tasks: NormalizedMissionT
   const tasks: NormalizedMissionTask[] = [];
   for (let index = 0; index < raw.length; index += 1) {
     const value = raw[index] && typeof raw[index] === "object" ? raw[index] as MissionTaskInput : {};
+    if ((value.title != null && typeof value.title !== "string") || (value.description != null && typeof value.description !== "string")) return {error:`اطلاعات کار ${index + 1} معتبر نیست.`};
     const title = value.title?.trim() ?? "";
     if (title.length < 2 || title.length > 255) return { error: `عنوان کار ${index + 1} معتبر نیست.` };
     tasks.push({

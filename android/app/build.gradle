@@ -24,8 +24,9 @@ android {
         applicationId 'ir.taprasystem.employee'
         minSdk 23
         targetSdk 35
-        versionCode 7
-        versionName '1.2.3'
+        // Last published APK used versionCode 22 outside this older Gradle value.
+        versionCode 23
+        versionName '1.2.4'
         buildConfigField 'String', 'BASE_URL', javaString(productionBackendUrl)
         manifestPlaceholders = [usesCleartextTraffic: 'false']
     }

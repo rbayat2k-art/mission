@@ -11,7 +11,7 @@ export async function GET(request: Request) {
   const auth = await requireRole(request, ["owner", "admin", "supervisor", "employee"]);
   if ("error" in auth) return auth.error;
   const db = await ensureDatabase();
-  const select = `SELECT m.id, m.title, m.description, m.source, m.status, m.priority, m.execution_rank AS executionRank, m.execution_rank_version AS executionRankVersion, m.assigned_to AS assignedTo, m.workflow_type AS workflowType, m.current_step_no AS currentStepNo, m.referrer_name AS referrerName, m.destination_name AS destinationName, m.result, m.report, m.expense_amount AS expenseAmount, m.score_pending AS scorePending, m.score_confirmed AS scoreConfirmed, m.score_penalty AS scorePenalty, m.score_note AS scoreNote, m.deadline, m.deadline_at AS deadlineAt, m.started_at AS startedAt, m.completed_at AS completedAt, m.cancelled_at AS cancelledAt, m.cancelled_by AS cancelledBy, m.cancellation_reason AS cancellationReason, canceller.full_name AS cancelledByName, m.created_at AS createdAt, u.full_name AS employeeName,
+  const select = `SELECT m.id, m.title, m.description, m.source, m.status, m.priority, m.execution_rank AS executionRank, m.execution_rank_version AS executionRankVersion, m.assigned_to AS assignedTo, m.workflow_type AS workflowType, m.current_step_no AS currentStepNo, m.referrer_name AS referrerName, m.destination_name AS destinationName, m.result, m.report, m.expense_amount AS expenseAmount, m.score_pending AS scorePending, m.score_confirmed AS scoreConfirmed, m.score_penalty AS scorePenalty, m.score_note AS scoreNote, m.deadline, m.deadline_at AS deadlineAt, m.started_at AS startedAt, (SELECT MAX(md.created_at) FROM mission_destinations md WHERE md.mission_id=m.id) AS destinationRegisteredAt, m.completed_at AS completedAt, m.cancelled_at AS cancelledAt, m.cancelled_by AS cancelledBy, m.cancellation_reason AS cancellationReason, canceller.full_name AS cancelledByName, m.created_at AS createdAt, u.full_name AS employeeName,
     (SELECT COUNT(*) FROM mission_attempts ma WHERE ma.mission_id = m.id) AS attemptCount,
     (SELECT fr.status FROM mission_follow_up_requests fr WHERE fr.mission_id=m.id ORDER BY fr.created_at DESC LIMIT 1) AS followUpRequestStatus,
     (SELECT COUNT(*) FROM audit_logs al WHERE al.entity_type='mission' AND al.entity_id=m.id AND al.action='mission.start_cancelled') AS startCancellationCount,
@@ -68,8 +68,13 @@ export async function POST(request: Request) {
   const auth = await requireRole(request, ["owner", "admin", "supervisor", "employee"]);
   if ("error" in auth) return auth.error;
   const body = await request.json().catch(() => ({})) as { title?: string; description?: string; priority?: string; executionRank?: unknown; deadline?: string | null; deadlineDate?: string | null; deadlineTime?: string | null; destinationName?: string | null; assignedTo?: string; referrerName?: string | null; workflowType?: string; steps?: MissionStepInput[]; tasks?: MissionTaskInput[] };
+  if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({error:"اطلاعات مأموریت معتبر نیست."},{status:400});
+  for (const key of ["title","description","priority","deadline","deadlineDate","deadlineTime","destinationName","assignedTo","referrerName","workflowType"] as const) {
+    if (body[key] != null && typeof body[key] !== "string") return Response.json({error:"نوع اطلاعات مأموریت معتبر نیست."},{status:400});
+  }
   const title = body.title?.trim() ?? "";
   if (!title) return Response.json({ error: "عنوان مأموریت الزامی است." }, { status: 400 });
+  if (title.length > 255 || (body.description?.length ?? 0) > 4000 || (body.destinationName?.length ?? 0) > 255) return Response.json({error:"عنوان یا توضیحات مأموریت بیش از حد طولانی است."},{status:400});
   const requestedReferrerName = body.referrerName?.trim() ?? "";
   if (requestedReferrerName.length > 255) return Response.json({ error: "نام ارجاع‌دهنده کار نباید بیشتر از ۲۵۵ نویسه باشد." }, { status: 400 });
   const db = await ensureDatabase();

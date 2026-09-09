@@ -108,8 +108,8 @@ test("web and Android heartbeats remain user and work-session scoped", async () 
   assert.match(page, /api\("\/api\/tracking\/heartbeat", \{ method:"POST", body:JSON\.stringify\(\{ workSessionId \}\) \}\)/);
   assert.match(page, /if \(!signedIn \|\| !working \|\| !workSessionId\) return/);
   assert.match(service, /HEARTBEAT_ENDPOINT = BASE_URL \+ "\/api\/tracking\/heartbeat"/);
-  assert.match(service, /new JSONObject\(\)\.put\("workSessionId", trackingWorkSessionId\)/);
-  assert.match(service, /setRequestProperty\("X-Tapra-User-Id", trackingUserId\)/);
+  assert.match(service, /new JSONObject\(\)\.put\("workSessionId", scope\.workSessionId\)/);
+  assert.match(service, /setRequestProperty\("X-Tapra-User-Id", expectedUserId\)/);
   assert.match(service, /trackingUserId\.equals\(NativeNotificationHelper\.activeUserId\(this\)\)/);
   assert.match(page, /ارتباطی از دستگاه دریافت نشده/);
 });

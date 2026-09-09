@@ -60,5 +60,5 @@ export async function GET(request: Request) {
     uploader.full_name AS uploadedByName, uploader.role AS uploadedByRole
     FROM attachments a JOIN users uploader ON uploader.id = a.uploaded_by
     WHERE a.mission_id = ? ORDER BY a.created_at DESC`).bind(missionId).all();
-  return Response.json({ attachments: result.results });
+  return Response.json({ attachments: result.results }, { headers: { "Cache-Control": "private, no-store, max-age=0" } });
 }

@@ -12,7 +12,8 @@ export async function GET(request: Request) {
   }
   const db = await ensureDatabase();
   const notifications = (await db.prepare("SELECT id, type, title, message, entity_type AS entityType, entity_id AS entityId, read_at AS readAt, created_at AS createdAt FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50").bind(auth.user.id).all<NotificationRow>()).results;
-  const unreadCount = notifications.filter(item => !item.readAt).length;
+  const unread = await db.prepare("SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND read_at IS NULL").bind(auth.user.id).first<{count:number}>();
+  const unreadCount = Number(unread?.count ?? 0);
   let openRequestCount = 0;
   if (auth.user.role === "employee") {
     const row = await db.prepare(`SELECT
@@ -26,17 +27,21 @@ export async function GET(request: Request) {
     const row = await db.prepare("SELECT COUNT(*) AS count FROM mission_follow_up_requests WHERE status IN ('awaiting_supervisor','escalated')").first<{count:number}>();
     openRequestCount = Number(row?.count ?? 0);
   }
-  return Response.json({ userId: auth.user.id, notifications, unreadCount, openRequestCount });
+  return Response.json({ userId: auth.user.id, notifications, unreadCount, openRequestCount }, {headers:{"Cache-Control":"private, no-store"}});
 }
 
 export async function PATCH(request: Request) {
   const auth = await requireRole(request, ["owner", "admin", "supervisor", "employee"]);
   if ("error" in auth) return auth.error;
   const body = await request.json().catch(() => ({})) as { id?:string; markAll?:boolean };
+  if (!body || typeof body !== "object" || Array.isArray(body) ||
+      (body.markAll !== undefined && typeof body.markAll !== "boolean") ||
+      (body.id !== undefined && (typeof body.id !== "string" || !body.id.trim() || body.id.length > 100))) return Response.json({error:"درخواست اعلان معتبر نیست."},{status:400});
+  if (body.markAll !== true && !body.id) return Response.json({error:"اعلان معتبری انتخاب نشده است."},{status:400});
   const db = await ensureDatabase();
   const now = new Date().toISOString();
-  if (body.markAll) await db.prepare("UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL").bind(now, auth.user.id).run();
+  if (body.markAll === true) await db.prepare("UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL").bind(now, auth.user.id).run();
   else if (body.id) await db.prepare("UPDATE notifications SET read_at = ? WHERE id = ? AND user_id = ? AND read_at IS NULL").bind(now, body.id, auth.user.id).run();
   else return Response.json({ error: "اعلان معتبری انتخاب نشده است." }, { status: 400 });
-  return Response.json({ ok: true, readAt: now });
+  return Response.json({ ok: true, readAt: now }, {headers:{"Cache-Control":"private, no-store"}});
 }

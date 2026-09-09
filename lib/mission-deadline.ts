@@ -35,6 +35,7 @@ function jalaliToGregorian(jy: number, jm: number, jd: number) {
 }
 
 export function normalizeJalaliDeadline(dateValue?: string | null, timeValue?: string | null) {
+  if ((dateValue != null && typeof dateValue !== "string") || (timeValue != null && typeof timeValue !== "string")) return {error:"تاریخ و ساعت باید به صورت متن وارد شوند."} as const;
   const rawDate = dateValue?.trim() ?? "";
   const rawTime = timeValue?.trim() ?? "";
   if (!rawDate && !rawTime) return { deadline: null } as const;
@@ -53,6 +54,8 @@ export function normalizeJalaliDeadline(dateValue?: string | null, timeValue?: s
   const normalizedDate = `${dateMatch[1]}/${dateMatch[2].padStart(2, "0")}/${dateMatch[3].padStart(2, "0")}`;
   const normalizedTime = `${timeMatch[1].padStart(2, "0")}:${timeMatch[2]}`;
   const { gy, gm, gd } = jalaliToGregorian(Number(dateMatch[1]), month, day);
+  const nextYear = jalaliToGregorian(Number(dateMatch[1]) + 1, 1, 1);
+  if (Date.UTC(gy, gm - 1, gd) >= Date.UTC(nextYear.gy, nextYear.gm - 1, nextYear.gd)) return {error:"روز واردشده در سال شمسی انتخاب‌شده وجود ندارد."} as const;
   const hour = Number(timeMatch[1]);
   const minute = Number(timeMatch[2]);
   // Iran standard time is UTC+03:30. Storing UTC makes overdue/on-time reports reliable.

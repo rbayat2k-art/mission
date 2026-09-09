@@ -102,7 +102,7 @@ export async function POST(request: Request) {
         .bind(crypto.randomUUID(), auth.user.id, mission.id, JSON.stringify({ stepNo:step.stepNo, stepTitle:step.title, destinationName, recordedAt }), now),
     ]);
     void enrichMissionStatusEventLocation(stepEvent.id, capturedLocation);
-    return Response.json({ destination:{ missionId:mission.id, stepNo:step.stepNo, stepTitle:step.title, destinationName, latitude:body.latitude, longitude:body.longitude, accuracy:body.accuracy, recordedAt } }, { status:201 });
+    return Response.json({ destination:{ missionId:mission.id, stepNo:step.stepNo, stepTitle:step.title, destinationName, latitude:body.latitude, longitude:body.longitude, accuracy:body.accuracy, recordedAt, registeredAt:now } }, { status:201 });
   }
   await db.batch([
     db.prepare(`INSERT INTO mission_destinations (id, mission_id, user_id, work_session_id, destination_name, latitude_e6, longitude_e6, accuracy_cm, recorded_at, created_at)
@@ -115,7 +115,7 @@ export async function POST(request: Request) {
       .bind(crypto.randomUUID(), auth.user.id, mission.id, JSON.stringify({ destinationName, accuracy: Math.round(body.accuracy!), recordedAt }), now),
   ]);
   void enrichMissionStatusEventLocation(statusEvent.id, capturedLocation);
-  return Response.json({ destination: { missionId: mission.id, destinationName, latitude: body.latitude, longitude: body.longitude, accuracy: body.accuracy, recordedAt } }, { status: 201 });
+  return Response.json({ destination: { missionId: mission.id, destinationName, latitude: body.latitude, longitude: body.longitude, accuracy: body.accuracy, recordedAt, registeredAt:now } }, { status: 201 });
 }
 
 export async function GET(request: Request) {

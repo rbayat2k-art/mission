@@ -49,6 +49,6 @@ test("a persisted conflict is blocked on reload and sensitive operations cannot 
   const offline = await read("../lib/offline-client.ts");
   assert.match(offline, /const blocked = conflictDescription\(entry/);
   assert.match(offline, /if \(blocked\) \{ conflicts\.push\(blocked\); break; \}/);
-  assert.match(offline, /reapplyable:operation === "mission_task_result" && entry\.conflict\.serverCode === "TASK_VERSION_CONFLICT"/);
+  assert.match(offline, /reapplyable:entry\.conflict\.status === 409 && operation === "mission_task_result" && entry\.conflict\.serverCode === "TASK_VERSION_CONFLICT"/);
   assert.match(offline, /اعمال مجدد خودکار برای این نوع عملیات مجاز نیست/);
 });

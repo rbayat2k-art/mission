@@ -1,6 +1,6 @@
 import { ensureDatabase } from "../../../db/runtime";
 import { requireRole } from "../../../lib/auth";
-import { classifyLocationBatch, type ExistingLocationEvent, type IncomingLocationPoint, type LocationSessionWindow } from "../../../lib/location-batch";
+import { classifyLocationBatch, validDeviceSpeed, type ExistingLocationEvent, type IncomingLocationPoint, type LocationSessionWindow } from "../../../lib/location-batch";
 import { MAX_LOCATION_FUTURE_SKEW_MS, MAX_TRUSTED_LOCATION_ACCURACY_METERS } from "../../../lib/mission-location";
 import { createManagerIntegrityNotifications } from "../../../lib/push-notifications";
 import { GPS_GAP_GRACE_MINUTES, reconcileNineHourLimit } from "../../../lib/work-session-policy";
@@ -14,20 +14,20 @@ export async function POST(request: Request) {
   }
 
   const body = await request.json().catch(() => ({})) as { points?: IncomingLocationPoint[] };
-  const incomingPoints = Array.isArray(body.points) ? body.points.slice(0, 100) : [];
+  const incomingPoints = Array.isArray(body?.points) ? body.points.slice(0, 100).filter(point => point && typeof point === "object" && !Array.isArray(point)) : [];
   if (!incomingPoints.length) return Response.json({ error: "نقطه موقعیت معتبری دریافت نشد." }, { status: 400 });
 
   const db = await ensureDatabase();
   const receivedAt = new Date().toISOString();
   const activeSession = await db.prepare("SELECT id, user_id AS userId, started_at AS startedAt, ended_at AS endedAt, status FROM work_sessions WHERE user_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1")
     .bind(auth.user.id).first<LocationSessionWindow>();
-  const explicitSessionIds = [...new Set(incomingPoints.map((point) => point.workSessionId?.trim()).filter((id): id is string => Boolean(id)))];
+  const explicitSessionIds = [...new Set(incomingPoints.map((point) => typeof point.workSessionId === "string" ? point.workSessionId.trim() : "").filter(Boolean))];
   const sessionPlaceholders = explicitSessionIds.map(() => "?").join(", ");
   const sessionResult = explicitSessionIds.length
     ? await db.prepare(`SELECT id, user_id AS userId, started_at AS startedAt, ended_at AS endedAt, status FROM work_sessions WHERE (user_id = ? AND status = 'active') OR id IN (${sessionPlaceholders})`).bind(auth.user.id, ...explicitSessionIds).all<LocationSessionWindow>()
     : await db.prepare("SELECT id, user_id AS userId, started_at AS startedAt, ended_at AS endedAt, status FROM work_sessions WHERE user_id = ? AND status = 'active'").bind(auth.user.id).all<LocationSessionWindow>();
 
-  const eventIds = [...new Set(incomingPoints.map((point) => point.clientEventId?.trim()).filter((id): id is string => Boolean(id)))];
+  const eventIds = [...new Set(incomingPoints.map((point) => typeof point.clientEventId === "string" ? point.clientEventId.trim() : "").filter(Boolean))];
   const eventPlaceholders = eventIds.map(() => "?").join(", ");
   const existingResult = eventIds.length
     ? await db.prepare(`SELECT client_event_id AS clientEventId, user_id AS userId, work_session_id AS workSessionId FROM location_points WHERE client_event_id IN (${eventPlaceholders})`).bind(...eventIds).all<ExistingLocationEvent>()
@@ -175,7 +175,7 @@ export async function GET(request: Request) {
     return {
       id: row.id, userId: row.userId, fullName: row.fullName, workSessionId: row.workSessionId,
       latitude: Number(row.latitudeE6) / 1_000_000, longitude: Number(row.longitudeE6) / 1_000_000,
-      accuracy: Number(row.accuracyCm) / 100, speed: row.speedCms == null ? null : Number(row.speedCms) / 100,
+      accuracy: Number(row.accuracyCm) / 100, speed: row.speedCms == null ? null : validDeviceSpeed(Number(row.speedCms) / 100),
       recordedAt, receivedAt: row.receivedAt, workSessionStatus: row.workSessionStatus,
       isLive: row.workSessionStatus === "active" && Date.parse(recordedAt) >= freshnessThreshold,
     };

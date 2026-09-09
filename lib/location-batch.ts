@@ -66,6 +66,10 @@ function validCoordinates(point: IncomingLocationPoint) {
     point.accuracy! >= 0 && point.accuracy! <= 10_000 && Number.isFinite(Date.parse(point.recordedAt ?? ""));
 }
 
+export function validDeviceSpeed(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value * 3.6 <= 160 ? value : null;
+}
+
 export function classifyLocationBatch(input: {
   points: IncomingLocationPoint[];
   userId: string;
@@ -86,6 +90,10 @@ export function classifyLocationBatch(input: {
   const maximumRecordedAt = Date.parse(input.receivedAt) + input.clockSkewMs;
 
   for (const raw of input.points.slice(0, 100)) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      unidentifiedRejected += 1;
+      continue;
+    }
     if (!hasValidEventId(raw.clientEventId)) {
       unidentifiedRejected += 1;
       continue;
@@ -153,6 +161,9 @@ export function classifyLocationBatch(input: {
       latitude: raw.latitude!,
       longitude: raw.longitude!,
       accuracy: raw.accuracy!,
+      speed: validDeviceSpeed(raw.speed),
+      altitude: typeof raw.altitude === "number" && Number.isFinite(raw.altitude) && Math.abs(raw.altitude) <= 100_000 ? raw.altitude : null,
+      heading: typeof raw.heading === "number" && Number.isFinite(raw.heading) && raw.heading >= 0 && raw.heading < 360 ? raw.heading : null,
       recordedAt: new Date(recordedAt).toISOString(),
     });
   }

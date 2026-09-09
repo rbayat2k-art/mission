@@ -13,9 +13,11 @@ function unavailable() {
 }
 
 export async function POST(request:Request) {
-  const body = await request.json().catch(() => ({})) as { username?:string; password?:string };
-  const username = body.username?.trim().toLowerCase() ?? "";
-  const password = body.password ?? "";
+  const input: unknown = await request.json().catch(() => null);
+  const body = input && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown> : {};
+  const username = typeof body.username === "string" ? body.username.trim().toLowerCase() : "";
+  const password = typeof body.password === "string" ? body.password : "";
   if (!username || !password) return Response.json({ error:"نام کاربری و رمز عبور الزامی است." }, { status:400 });
 
   let db:Awaited<ReturnType<typeof ensureDatabase>>;

@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import "./globals.css";
 import "./access.css";
 import "./mission-attachments.css";
+import "./employee-mission-flow.css";
 import "leaflet/dist/leaflet.css";
 
 export async function generateMetadata(): Promise<Metadata> {

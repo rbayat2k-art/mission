@@ -7,6 +7,7 @@ type SettingsResponse = { userId?: string; enabled: boolean; configured: boolean
 type NativeNotificationBridge = {
   isNativeApp?: () => boolean;
   showNativeNotification?: (id: string, title: string, message: string, targetUrl: string) => boolean;
+  showNativeNotificationForUser?: (userId: string, id: string, title: string, message: string, targetUrl: string) => boolean;
 };
 type NotificationItem = {
   id: string;
@@ -60,33 +61,43 @@ export default function PushNotificationBootstrap({ active, userId = "", onMessa
   useEffect(() => {
     if (!active || !userId || !isNativeAndroid()) return;
     let cancelled = false;
+    let polling = false;
+    let controller: AbortController | null = null;
     const pollNativeNotifications = async () => {
+      if (polling || cancelled) return;
+      polling = true;
+      const requestController = new AbortController();
+      controller = requestController;
+      const timeout = window.setTimeout(() => requestController.abort(), 15_000);
       try {
         const bridge = nativeBridge();
         if (!bridge?.showNativeNotification) return;
         const headers = { "X-Tapra-User-Id": userId };
-        const settingsResponse = await fetch("/api/notifications/settings", { cache: "no-store", credentials: "same-origin", headers });
+        const settingsResponse = await fetch("/api/notifications/settings", { cache: "no-store", credentials: "same-origin", headers, signal:requestController.signal });
         if (!settingsResponse.ok) return;
         const current = await settingsResponse.json() as SettingsResponse;
         if (current.userId !== userId || !current.enabled || cancelled) return;
-        const response = await fetch("/api/notifications", { cache: "no-store", credentials: "same-origin", headers });
+        const response = await fetch("/api/notifications", { cache: "no-store", credentials: "same-origin", headers, signal:requestController.signal });
         if (!response.ok || cancelled) return;
         const body = await response.json() as { userId?:string;notifications?: NotificationItem[] };
-        if (body.userId !== userId) return;
+        if (cancelled || body.userId !== userId) return;
         for (const item of (body.notifications ?? []).filter(item => !item.readAt).slice(0, 5)) {
           const target = item.entityType === "follow_up_request"
             ? "https://taprasystem.ir/?panel=employee&screen=notifications"
             : "https://taprasystem.ir/?panel=employee&screen=missions";
-          bridge.showNativeNotification(item.id, item.title, item.message, target);
+          if (cancelled) return;
+          if (bridge.showNativeNotificationForUser) bridge.showNativeNotificationForUser(userId, item.id, item.title, item.message, target);
+          else bridge.showNativeNotification(item.id, item.title, item.message, target);
         }
       } catch {
         // Native polling is best-effort; the in-app notification center remains available.
-      }
+      } finally { window.clearTimeout(timeout); polling = false; }
     };
     pollNativeNotifications();
     const timer = window.setInterval(pollNativeNotifications, 30_000);
     return () => {
       cancelled = true;
+      controller?.abort();
       window.clearInterval(timer);
     };
   }, [active, userId]);

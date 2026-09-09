@@ -439,9 +439,9 @@ test("lets employees inspect open missions and records a transparent no-start sc
 
   assert.match(page, /onClick=\{\(\) => openMissionDetail\(m\)\}/);
   assert.match(page, /شرح وظیفه را بخوانید و سپس روش ادامه را انتخاب کنید/);
-  assert.match(page, /شروع کار روی این مأموریت/);
-  assert.match(page, /ثبت مقصد بدون زدن شروع کار/);
-  assert.match(page, /انتخاب مأموریت دیگر از فهرست/);
+  assert.match(page, /شروع این مأموریت/);
+  assert.match(page, /ثبت نتیجه بدون شروع مأموریت/);
+  assert.match(page, /className="back-link" onClick=\{\(\) => setScreen\("missions"\)\}/);
   assert.match(page, /<h2>ثبت مقصد<\/h2>/);
   assert.doesNotMatch(page, /<h2>ثبت مقصد و شروع کار<\/h2>/);
   assert.match(page, /۳ امتیاز کسر شد؛ چون شروع کار روی این مأموریت ثبت نشده بود/);
@@ -480,7 +480,7 @@ test("stores numbered daily mission destinations and maps them only in managemen
   assert.match(destinations, /u\.supervisor_id = \?/);
   assert.match(completeRoute, /FROM mission_destinations WHERE mission_id = \?/);
   assert.match(page, /setLatestGps\(\{ latitude:position\.coords\.latitude/);
-  assert.match(page, /sendJsonOrQueue\(employeeUserId, "\/api\/destinations", "POST"/);
+  assert.match(page, /\(employeeUserId, "\/api\/destinations", "POST"/);
   assert.match(page, /نقشه فقط در پنل مدیر نمایش داده می‌شود/);
   assert.match(page, /موقعیت زنده و مقصدهای امروز/);
   assert.match(page, /نقشه مقصدهای \{selected\.fullName\}/);
@@ -975,7 +975,7 @@ test("allows an authorized manager to cancel an active mission with an audited r
   assert.match(styles, /\.employee-cancelled-mission/);
 });
 
-test("ships an Android 1.2.3 wrapper with account-isolated GPS and native notifications", async () => {
+test("prepares an upgrade-numbered Android wrapper with account-isolated GPS and native notifications", async () => {
   const [activity, service, nativeNotifications, manifest, gradle, workflow, page, locations, notifications, notificationApiSettings, notificationSettings, bootstrap] = await Promise.all([
     readFile(new URL("../android/app/src/main/java/ir/taprasystem/employee/MainActivity.java", import.meta.url), "utf8"),
     readFile(new URL("../android/app/src/main/java/ir/taprasystem/employee/LocationTrackingService.java", import.meta.url), "utf8"),
@@ -1016,7 +1016,7 @@ test("ships an Android 1.2.3 wrapper with account-isolated GPS and native notifi
   assert.match(service, /pollNotifications\(\)/);
   assert.match(service, /\/api\/notifications\/settings/);
   assert.match(service, /NativeNotificationHelper\.show/);
-  assert.match(service, /trackingUserId\.equals\(responseBody\.optString\("userId", ""\)\)/);
+  assert.match(service, /scope\.userId\.equals\(responseBody\.optString\("userId", ""\)\)/);
   assert.match(service, /location_queue_user_/);
   assert.match(service, /X-Tapra-User-Id/);
   assert.match(nativeNotifications, /tapra_account_notifications/);
@@ -1047,8 +1047,9 @@ test("ships an Android 1.2.3 wrapper with account-isolated GPS and native notifi
   assert.match(bootstrap, /current\.userId !== userId/);
   assert.match(bootstrap, /body\.userId !== userId/);
   assert.match(bootstrap, /setInterval\(pollNativeNotifications, 30_000\)/);
-  assert.match(gradle, /versionCode 7/);
-  assert.match(gradle, /versionName '1\.2\.3'/);
+  assert.match(gradle, /versionCode 23/);
+  assert.ok(Number(gradle.match(/^\s*versionCode (\d+)/m)?.[1]) > 22, "must exceed the last published APK code");
+  assert.match(gradle, /versionName '1\.2\.4'/);
   assert.match(workflow, /matrix:\s*\n\s*api-level: \[23, 29, 35\]/);
   assert.match(workflow, /uiautomator dump/);
   assert.match(workflow, /tapra-battery-gate-api/);
@@ -1074,8 +1075,9 @@ test("supports mission brief attachments with picker, drag/drop, clipboard paste
   assert.match(picker, /MAX_FILE_BYTES = 10 \* 1024 \* 1024/);
   assert.match(picker, /MAX_FILE_COUNT = 10/);
   assert.match(page, /uploadMissionAttachment\(String\(result\.mission\.id\), file\)/);
-  assert.match(page, /فایل‌های ارسالی همراه مأموریت/);
-  assert.match(page, /attachment\.uploadedByRole !== "employee"/);
+  const brief = await readFile(new URL("../app/components/MissionBriefAttachments.tsx", import.meta.url), "utf8");
+  assert.match(brief, /فایل‌های ارسالی همراه مأموریت/);
+  assert.match(brief, /attachment\.uploadedByRole !== "employee"/);
   assert.match(attachments, /uploader\.full_name AS uploadedByName/);
   assert.match(attachments, /uploader\.role AS uploadedByRole/);
   assert.match(attachments, /mission\.assignedTo !== auth\.user\.id/);

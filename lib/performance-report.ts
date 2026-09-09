@@ -3,6 +3,7 @@ import type { AppRole } from "./auth";
 import { calculateGpsGapMinutes } from "./gps-gap";
 import { calculateWorkSessionMetrics, OVERTIME_START_MINUTES, REQUIRED_WORK_MINUTES, type WorkSessionPolicyRow } from "./work-session-policy";
 import { MAX_TRUSTED_LOCATION_ACCURACY_METERS } from "./mission-location";
+import { routeMotion } from "./route-motion";
 
 export type PerformancePeriod = "daily" | "weekly" | "monthly";
 export type PerformanceMetricKey =
@@ -111,7 +112,7 @@ function validDate(value: string | null) {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-function missionTripMetrics(mission: MissionRow, locations: LocationRow[], rangeStart: string, rangeEnd: string): MissionTrip | null {
+export function missionTripMetrics(mission: MissionRow, locations: LocationRow[], rangeStart: string, rangeEnd: string): MissionTrip | null {
   const startedAt = mission.startLocationRecordedAt ?? mission.startedAt;
   const startedTimestamp = validDate(startedAt);
   const destinationTimestamp = validDate(mission.destinationRecordedAt);
@@ -145,25 +146,11 @@ function missionTripMetrics(mission: MissionRow, locations: LocationRow[], range
   }
   routePoints.sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt));
 
-  let routeDistance = 0;
-  let movingMinutesRaw = 0;
-  let maxSpeedKmh = 0;
-  let hasLargeGpsGap = false;
-  for (let index = 1; index < routePoints.length; index++) {
-    const previous = routePoints[index - 1];
-    const current = routePoints[index];
-    const elapsedMinutes = (Date.parse(current.recordedAt) - Date.parse(previous.recordedAt)) / 60_000;
-    if (elapsedMinutes <= 0) continue;
-    if (elapsedMinutes > 20) { hasLargeGpsGap = true; continue; }
-    const segmentKm = distanceKm(previous, current);
-    const inferredSpeedKmh = segmentKm / (elapsedMinutes / 60);
-    const deviceSpeedMs = Math.max(previous.speedCms ?? 0, current.speedCms ?? 0) / 100;
-    const isMoving = deviceSpeedMs >= 1.4 || inferredSpeedKmh >= 5;
-    if (!isMoving || inferredSpeedKmh > 160) continue;
-    movingMinutesRaw += elapsedMinutes;
-    if (segmentKm >= 0.005) routeDistance += segmentKm;
-    maxSpeedKmh = Math.max(maxSpeedKmh, inferredSpeedKmh, deviceSpeedMs * 3.6);
-  }
+  const motion = routeMotion(routePoints);
+  const routeDistance = motion.movingDistanceKm;
+  const movingMinutesRaw = motion.movingMilliseconds / 60_000;
+  const maxSpeedKmh = motion.maxSpeedKmh;
+  const hasLargeGpsGap = motion.hasGap;
 
   const travelMinutes = Math.max(1, Math.round((routeEnd - routeStart) / 60_000));
   const movingMinutes = Math.min(travelMinutes, Math.round(movingMinutesRaw));
@@ -172,37 +159,45 @@ function missionTripMetrics(mission: MissionRow, locations: LocationRow[], range
   const coverageStatus = routePoints.length >= 3 && hasExactEndpoints && !hasLargeGpsGap ? "complete" : routePoints.length >= 2 ? "partial" : "missing";
   const roundedDistance = Math.round(routeDistance * 10) / 10;
   return {
-    ...base, travelMinutes, movingMinutes, stoppedMinutes: Math.max(0, travelMinutes - movingMinutes),
+    ...base, travelMinutes, movingMinutes, stoppedMinutes: Math.round(motion.stoppedMilliseconds / 60_000),
     distanceKm: roundedDistance,
-    averageMovingSpeedKmh: movingMinutes > 0 ? Math.round(routeDistance / (movingMinutes / 60) * 10) / 10 : 0,
+    averageMovingSpeedKmh: movingMinutesRaw > 0 ? Math.round(routeDistance / (movingMinutesRaw / 60) * 10) / 10 : 0,
     maxSpeedKmh: Math.round(maxSpeedKmh * 10) / 10, pointCount: routePoints.length, coverageStatus,
   };
 }
 
-function multiStageMissionTrips(rows:MissionStepSegmentRow[],locations:LocationRow[],rangeStart:string,rangeEnd:string):MissionTrip[]{
-  const grouped=new Map<string,MissionTrip>();
-  for(const row of rows){
-    const from=Math.max(Date.parse(row.startedAt),Date.parse(rangeStart));
-    const to=Math.min(Date.parse(row.endedAt??rangeEnd),Date.parse(rangeEnd));
-    if(!Number.isFinite(from)||!Number.isFinite(to)||to<=from)continue;
-    const segmentPoints=locations.filter(point=>point.workSessionId===row.workSessionId&&Date.parse(point.recordedAt)>=from&&Date.parse(point.recordedAt)<=to);
-    const distance=totalLocationDistanceKm(segmentPoints);
-    let movingMinutes=0;
-    let maxSpeed=0;
-    for(let index=1;index<segmentPoints.length;index+=1){const previous=segmentPoints[index-1];const current=segmentPoints[index];const elapsed=(Date.parse(current.recordedAt)-Date.parse(previous.recordedAt))/60_000;if(elapsed<=0||elapsed>20)continue;const speed=distanceKm(previous,current)/(elapsed/60);if(speed>=5&&speed<=160)movingMinutes+=elapsed;maxSpeed=Math.max(maxSpeed,speed)}
-    const current=grouped.get(row.missionId)??{missionId:row.missionId,title:row.title,status:row.status,destinationName:row.destinationName,startedAt:row.startedAt,destinationRecordedAt:row.destinationRecordedAt,travelMinutes:0,movingMinutes:0,stoppedMinutes:0,distanceKm:0,averageMovingSpeedKmh:0,maxSpeedKmh:0,pointCount:0,coverageStatus:"missing"};
-    current.startedAt=!current.startedAt||row.startedAt<current.startedAt?row.startedAt:current.startedAt;
-    current.destinationRecordedAt=!current.destinationRecordedAt||row.destinationRecordedAt&&row.destinationRecordedAt>current.destinationRecordedAt?row.destinationRecordedAt:current.destinationRecordedAt;
-    current.destinationName=row.destinationName??current.destinationName;
-    current.travelMinutes+=Math.max(0,Math.round((to-from)/60_000));
-    current.movingMinutes+=Math.round(movingMinutes);
-    current.distanceKm=Math.round((current.distanceKm+distance)*10)/10;
-    current.maxSpeedKmh=Math.max(current.maxSpeedKmh,Math.round(maxSpeed*10)/10);
-    current.pointCount+=segmentPoints.length;
-    current.coverageStatus=current.pointCount>=3?"complete":current.pointCount>=2?"partial":"missing";
-    grouped.set(row.missionId,current);
+export function multiStageMissionTrips(rows:MissionStepSegmentRow[],locations:LocationRow[],rangeStart:string,rangeEnd:string):MissionTrip[]{
+  const grouped = new Map<string, { trip: MissionTrip; travelMs: number; movingMs: number; stoppedMs: number; distance: number; incomplete: boolean }>();
+  for (const row of rows) {
+    const from = Math.max(Date.parse(row.startedAt), Date.parse(rangeStart));
+    const to = Math.min(Date.parse(row.endedAt ?? rangeEnd), Date.parse(rangeEnd));
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) continue;
+    const points = locations.filter(point => point.workSessionId === row.workSessionId && Date.parse(point.recordedAt) >= from && Date.parse(point.recordedAt) <= to);
+    const motion = routeMotion(points);
+    const current = grouped.get(row.missionId) ?? {
+      trip: { missionId:row.missionId,title:row.title,status:row.status,destinationName:row.destinationName,startedAt:row.startedAt,destinationRecordedAt:row.destinationRecordedAt,travelMinutes:0,movingMinutes:0,stoppedMinutes:0,distanceKm:0,averageMovingSpeedKmh:0,maxSpeedKmh:0,pointCount:0,coverageStatus:"missing" },
+      travelMs:0, movingMs:0, stoppedMs:0, distance:0, incomplete:false,
+    };
+    const trip = current.trip;
+    trip.startedAt = !trip.startedAt || row.startedAt < trip.startedAt ? row.startedAt : trip.startedAt;
+    trip.destinationRecordedAt = !trip.destinationRecordedAt || row.destinationRecordedAt && row.destinationRecordedAt > trip.destinationRecordedAt ? row.destinationRecordedAt : trip.destinationRecordedAt;
+    trip.destinationName = row.destinationName ?? trip.destinationName;
+    current.travelMs += to - from;
+    current.movingMs += motion.movingMilliseconds;
+    current.stoppedMs += motion.stoppedMilliseconds;
+    current.distance += motion.movingDistanceKm;
+    current.incomplete ||= motion.hasGap || motion.movingMilliseconds + motion.stoppedMilliseconds < to - from;
+    trip.maxSpeedKmh = Math.max(trip.maxSpeedKmh, motion.maxSpeedKmh);
+    trip.pointCount += points.length;
+    grouped.set(row.missionId, current);
   }
-  return [...grouped.values()].map(trip=>({...trip,stoppedMinutes:Math.max(0,trip.travelMinutes-trip.movingMinutes),averageMovingSpeedKmh:trip.movingMinutes>0?Math.round(trip.distanceKm/(trip.movingMinutes/60)*10)/10:0}));
+  return [...grouped.values()].map(({ trip, travelMs, movingMs, stoppedMs, distance, incomplete }) => ({
+    ...trip, travelMinutes:Math.round(travelMs / 60_000), movingMinutes:Math.round(movingMs / 60_000),
+    stoppedMinutes:Math.round(stoppedMs / 60_000), distanceKm:Math.round(distance * 10) / 10,
+    maxSpeedKmh:Math.round(trip.maxSpeedKmh * 10) / 10,
+    averageMovingSpeedKmh:movingMs > 0 ? Math.round(distance / (movingMs / 3_600_000) * 10) / 10 : 0,
+    coverageStatus:trip.pointCount >= 3 && !incomplete ? "complete" : trip.pointCount >= 2 ? "partial" : "missing",
+  }));
 }
 
 function percent(part: number, total: number) { return total > 0 ? Math.round(part / total * 100) : 0; }

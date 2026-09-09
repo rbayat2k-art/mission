@@ -3,6 +3,19 @@ import test from "node:test";
 
 import { classifyLocationBatch } from "../lib/location-batch.ts";
 
+test("invalid optional speed does not poison a valid GPS point", () => {
+  for (const speed of [-1, Infinity, NaN, "20", 1000]) {
+    const result = classify([point("event-speed-00001", { speed, altitude:Infinity, heading:-1 })]);
+    assert.equal(result.candidates.length,1);
+    assert.equal(result.candidates[0].speed,null);
+    assert.equal(result.candidates[0].altitude,null);
+    assert.equal(result.candidates[0].heading,null);
+  }
+  assert.equal(classify([point("event-speed-00001",{speed:0})]).candidates[0].speed,0);
+  assert.equal(classify([point("event-speed-00001",{speed:10})]).candidates[0].speed,10);
+  assert.equal(classify([null,23,[],point("event-speed-00001")]).candidates.length,1);
+});
+
 const activeId = "11111111-1111-4111-8111-111111111111";
 const closedId = "22222222-2222-4222-8222-222222222222";
 const foreignId = "33333333-3333-4333-8333-333333333333";

@@ -164,7 +164,7 @@ export function buildPerformanceXlsx(report: PerformanceReport, historyReport: P
   const routes: XlsxSheet = {
     name: "مسیر و مسافت",
     widths: [22, 30, 24, 22, 22, 18, 18, 18, 18, 18, 18, 16],
-    rows: [["کارمند", "مأموریت", "مقصد", "شروع مسیر", "ثبت مقصد", "کل زمان مسیر", "حرکت واقعی با GPS", "توقف", "مسافت km", "سرعت متوسط", "حداکثر سرعت", "پوشش GPS"]],
+    rows: [["کارمند", "مأموریت", "مقصد", "شروع مسیر", "ثبت مقصد", "کل زمان مسیر", "حرکت ثبت‌شده با GPS", "توقف ثبت‌شده", "مسافت km", "میانگین تخمینی حرکت km/h", "بیشترین سرعت تخمینی km/h", "پوشش GPS"]],
   };
   for (const row of report.rows) for (const trip of row.movement.missionTrips) routes.rows.push([
     row.fullName, trip.title, trip.destinationName ?? "—", dateTime(trip.startedAt), dateTime(trip.destinationRecordedAt),
