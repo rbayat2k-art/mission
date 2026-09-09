@@ -1,0 +1,52 @@
+name: Prepare security patch lock
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["codex/system-audit-2026-09-09"]
+    paths: [".github/workflows/security-lock-refresh.yml"]
+
+# Produces reviewable artifacts only. It cannot push, deploy, or use app secrets.
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Resolve only the reviewed security updates from the official registry
+        run: |
+          npm view next@16.3.4 version
+          npm view @next/eslint-plugin-next@16.3.4 version
+          npm view sharp@0.35.4 version
+          npm view js-yaml@4.3.2 version
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund --save-exact next@16.3.4
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund --save-dev --save-exact @next/eslint-plugin-next@16.3.4
+          npm update sharp js-yaml --package-lock-only --ignore-scripts --no-audit --no-fund
+          git diff --stat -- package.json package-lock.json
+      - name: Check the proposed lock and security audit
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ls next @next/eslint-plugin-next sharp js-yaml
+          npm audit --audit-level=moderate --json > security-audit.json
+      - name: Prepare public package cache for isolated Windows validation
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund --os=win32 --cpu=x64 --cache "$RUNNER_TEMP/tapra-public-npm-cache"
+          tar -czf public-npm-cache.tgz -C "$RUNNER_TEMP/tapra-public-npm-cache" _cacache
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reviewed-security-lock-${{ github.sha }}
+          path: |
+            package.json
+            package-lock.json
+            security-audit.json
+            public-npm-cache.tgz
+          if-no-files-found: error
+          retention-days: 3
