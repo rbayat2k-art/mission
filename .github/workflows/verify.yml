@@ -21,6 +21,30 @@ jobs:
       - run: npm ci
       - run: npm run verify
 
+  windows-verify:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      AUTO_MIGRATE: "false"
+      DB_HOST: 127.0.0.1
+      DB_PORT: "1"
+      DB_NAME: tapra_audit_disabled
+      DB_USER: audit_disabled
+      DB_PASSWORD: local-test-placeholder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: npm ci
+      - run: npx playwright install chromium
+      - run: npm run verify
+
   mariadb-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 20
