@@ -53,7 +53,8 @@ test("Android UI capture preserves battery and startup gates after recovered too
   assert.match(workflow,/deviceidle whitelist \+ir\.taprasystem\.employee/);
   const finalCapture=workflow.slice(workflow.indexOf("capture_ui.py tapra-ui-api"));
   assert.match(finalCapture,/صفحه سامانه بارگذاری نشد\|در حال بازکردن راهکار/);
-  assert.match(finalCapture,/grep -q "ورود به پنل کارمند" tapra-ui-api/);
+  assert.match(finalCapture,/verify_login_screen\.py --xml tapra-ui-api/);
+  assert.match(finalCapture,/--expect "\$\{\{ matrix\.api-level == 35 && 'login' \|\| 'obsolete-webview' \}\}"/);
   assert.match(finalCapture,/adb logcat -d -t 800 > android-logcat-post-capture-api/);
   assert.match(finalCapture,/FATAL EXCEPTION/);
   assert.match(finalCapture,/adb shell dumpsys activity activities \| grep -q "ir\.taprasystem\.employee\/\.MainActivity"/);
@@ -99,9 +100,9 @@ test("signed release smoke accepts only explicit validated public APK sources wi
   assert.match(preparation,/os\.environ\.get\("GITHUB_EVENT_PATH", ""\)/);
   assert.match(preparation,/bool\(asset\) == bool\(payload\)/);
   assert.match(preparation,/base64\.b64decode\(payload, validate=True\)/);
-  assert.match(preparation,/MAX_ENCODED_CHARS = 60_000/);
-  assert.match(preparation,/MAX_PAYLOAD_BYTES = 45_000/);
-  assert.match(preparation,/APPROVED_PAYLOAD_SHA256 = "2e202cf71bbf18ac1caefa465441175c734d6cea441aa485999f3dc70ca4e60b"/);
+  assert.match(preparation,/MAX_ENCODED_CHARS = 64_000/);
+  assert.match(preparation,/MAX_PAYLOAD_BYTES = 48_000/);
+  assert.match(preparation,/APPROVED_PAYLOAD_SHA256 = "2f4b707a78b7157f6577b77541ad6c2f923bfa67a060ab4d5ad866acc54b04ac"/);
   assert.match(preparation,/"AndroidManifest\.xml", "classes\.dex"/);
   assert.match(release,/GH_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(release,/GH_HOST: github\.com/);
@@ -161,7 +162,7 @@ test("signed APK smoke is disposable-emulator-only and preserves identity and gr
   assert.match(release,/grep -q "تنظیم باتری برای ورود الزامی است" apk\/signed-release-battery\.xml/);
   for(const stage of ["before","after"]){
     assert.ok(release.includes(`capture_ui.py apk/signed-release-login-${stage}.xml`));
-    assert.ok(release.includes(`grep -q "ورود به پنل کارمند" apk/signed-release-login-${stage}.xml`));
+    assert.ok(release.includes(`verify_login_screen.py --xml apk/signed-release-login-${stage}.xml --png apk/signed-release-screen-${stage}.png`));
     assert.ok(release.includes(`"صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" apk/signed-release-login-${stage}.xml`));
     assert.ok(release.includes(`"FATAL EXCEPTION" apk/signed-release-logcat-${stage}.txt`));
   }
@@ -171,4 +172,19 @@ test("signed APK smoke is disposable-emulator-only and preserves identity and gr
   const replacement=release.slice(release.indexOf("            adb install -r apk/final.apk"));
   assert.doesNotMatch(replacement,/pm grant|whitelist \+|am force-stop/);
   assert.equal((release.match(/adb shell dumpsys activity activities \| grep -q "ir\.taprasystem\.employee\/\.MainActivity"/g)||[]).length,2);
+});
+
+test("screen verification distinguishes actual API35 login from stock obsolete-WebView rejection",async()=>{
+  const [workflow,helper]=await Promise.all([read("../.github/workflows/android-apk.yml"),read("../scripts/android/verify_login_screen.py")]);
+  assert.equal((workflow.match(/verify_login_screen\.py --xml /g)||[]).length,3);
+  assert.equal((workflow.match(/--expect "\$\{\{ matrix\.api-level == 35 && 'login' \|\| 'obsolete-webview' \}\}"/g)||[]).length,3);
+  assert.equal((workflow.match(/stock obsolete-WebView rejection/g)||[]).length,2);
+  assert.equal((workflow.match(/python3 -B -m unittest discover -s tests\/android -p 'test_verify_login_screen\.py' -v/g)||[]).length,2);
+  assert.equal((workflow.match(/adb shell dumpsys webviewupdate/g)||[]).length,3);
+  assert.match(workflow,/if: matrix\.api-level == 35\s+run: sudo apt-get update && sudo apt-get install --no-install-recommends -y tesseract-ocr tesseract-ocr-fas tesseract-ocr-eng/);
+  assert.match(workflow,/android-screen-api-\*\.ocr\.txt/);
+  for(const label of ["ورود به پنل کارمند","نام کاربری","رمز عبور","ورود به پنل","نمایشگر وب گوشی نیاز به به‌روزرسانی دارد"])assert.ok(helper.includes(label));
+  assert.match(helper,/"fas\+eng", "--psm", "11"/);
+  assert.match(helper,/successful login compatibility is NOT established/);
+  assert.doesNotMatch(workflow,/adb exec-out screencap -p >/);
 });

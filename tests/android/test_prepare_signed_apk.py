@@ -39,9 +39,9 @@ class SignedApkPreparationTests(unittest.TestCase):
         return values
 
     def test_production_payload_is_pinned_and_bounded(self):
-        self.assertEqual(policy.APPROVED_PAYLOAD_SHA256, "2e202cf71bbf18ac1caefa465441175c734d6cea441aa485999f3dc70ca4e60b")
-        self.assertEqual(policy.MAX_ENCODED_CHARS, 60_000)
-        self.assertEqual(policy.MAX_PAYLOAD_BYTES, 45_000)
+        self.assertEqual(policy.APPROVED_PAYLOAD_SHA256, "2f4b707a78b7157f6577b77541ad6c2f923bfa67a060ab4d5ad866acc54b04ac")
+        self.assertEqual(policy.MAX_ENCODED_CHARS, 64_000)
+        self.assertEqual(policy.MAX_PAYLOAD_BYTES, 48_000)
         with self.assertRaisesRegex(policy.PreparationError, "specifically approved"):
             policy.validate_inputs(self.inputs())
 
@@ -67,8 +67,8 @@ class SignedApkPreparationTests(unittest.TestCase):
 
     def test_oversize_encoded_and_decoded_payloads_rejected(self):
         with self.assertRaisesRegex(policy.PreparationError, "encoded size"):
-            policy.decode_payload("A" * 60_001, self.sha)
-        oversized = base64.b64encode(b"A" * 45_001).decode("ascii")
+            policy.decode_payload("A" * 64_001, self.sha)
+        oversized = base64.b64encode(b"A" * 48_001).decode("ascii")
         with patch.object(policy, "MAX_ENCODED_CHARS", len(oversized)):
             with self.assertRaisesRegex(policy.PreparationError, "decoded size"):
                 policy.decode_payload(oversized, self.sha)
