@@ -326,7 +326,7 @@ jobs:
             if grep -A 20 "FATAL EXCEPTION" apk/signed-release-logcat-before.txt | grep -q "ir.taprasystem.employee"; then cat apk/signed-release-logcat-before.txt; exit 1; fi
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
             adb shell dumpsys package ir.taprasystem.employee > apk/signed-release-package-before.txt
-            adb shell am get-current-user > apk/signed-release-android-user-before.txt
+            adb shell dumpsys activity activities > apk/signed-release-android-user-before.txt
             python3 -B scripts/android/package_identity.py apk/signed-release-package-before.txt apk/signed-release-android-user-before.txt > apk/signed-release-uid-before.txt
             test "$(wc -l < apk/signed-release-uid-before.txt)" -eq 1
             grep -E 'android[.]permission[.](ACCESS_FINE_LOCATION|ACCESS_COARSE_LOCATION|POST_NOTIFICATIONS): granted=' apk/signed-release-package-before.txt | sed -E 's/^[[:space:]]+//; s/,.*$//' | sort > apk/signed-release-permissions-before.txt
@@ -338,9 +338,6 @@ jobs:
             test -s apk/signed-release-whitelist-before.txt
             adb install -r apk/final.apk
             adb shell dumpsys package ir.taprasystem.employee > apk/signed-release-package-after.txt
-            adb shell am get-current-user > apk/signed-release-android-user-after.txt
-            python3 -B scripts/android/package_identity.py apk/signed-release-package-after.txt apk/signed-release-android-user-after.txt > apk/signed-release-uid-after.txt
-            cmp apk/signed-release-uid-before.txt apk/signed-release-uid-after.txt
             grep -E 'android[.]permission[.](ACCESS_FINE_LOCATION|ACCESS_COARSE_LOCATION|POST_NOTIFICATIONS): granted=' apk/signed-release-package-after.txt | sed -E 's/^[[:space:]]+//; s/,.*$//' | sort > apk/signed-release-permissions-after.txt
             cmp apk/signed-release-permissions-before.txt apk/signed-release-permissions-after.txt
             adb shell dumpsys deviceidle whitelist > apk/signed-release-whitelist-after-all.txt
@@ -357,6 +354,9 @@ jobs:
             adb logcat -d -t 1500 > apk/signed-release-logcat-after.txt
             if grep -A 20 "FATAL EXCEPTION" apk/signed-release-logcat-after.txt | grep -q "ir.taprasystem.employee"; then cat apk/signed-release-logcat-after.txt; exit 1; fi
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
+            adb shell dumpsys activity activities > apk/signed-release-android-user-after.txt
+            python3 -B scripts/android/package_identity.py apk/signed-release-package-after.txt apk/signed-release-android-user-after.txt > apk/signed-release-uid-after.txt
+            cmp apk/signed-release-uid-before.txt apk/signed-release-uid-after.txt
             printf '%s  apk/final.apk\n' "$SIGNED_RELEASE_SHA256" | sha256sum --check --strict
       - name: Retain non-secret signed-release verification evidence
         if: always()

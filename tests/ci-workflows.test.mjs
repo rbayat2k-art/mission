@@ -171,12 +171,26 @@ test("signed APK smoke is disposable-emulator-only and preserves identity and gr
   }
   assert.match(release,/python3 -B -m unittest discover -s tests\/android -p 'test_package_identity\.py' -v/);
   for(const stage of ["before","after"]){
-    assert.ok(release.includes(`adb shell am get-current-user > apk/signed-release-android-user-${stage}.txt`));
+    assert.ok(release.includes(`adb shell dumpsys activity activities > apk/signed-release-android-user-${stage}.txt`));
     assert.ok(release.includes(`package_identity.py apk/signed-release-package-${stage}.txt apk/signed-release-android-user-${stage}.txt > apk/signed-release-uid-${stage}.txt`));
   }
   assert.doesNotMatch(release,/sed -n 's\/\^\[\[:space:\]\]\*userId=/);
+  assert.doesNotMatch(release,/adb shell am get-current-user/);
   const replacement=release.slice(release.indexOf("            adb install -r apk/final.apk"));
   assert.doesNotMatch(replacement,/pm grant|whitelist \+|am force-stop/);
+  const afterLaunch=replacement.indexOf("adb shell am start -W");
+  const afterScreen=replacement.indexOf("verify_login_screen.py --xml apk/signed-release-login-after.xml");
+  const afterForeground=replacement.indexOf('adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"');
+  const afterUserCapture=replacement.indexOf("adb shell dumpsys activity activities > apk/signed-release-android-user-after.txt");
+  const afterIdentityComparison=replacement.indexOf("cmp apk/signed-release-uid-before.txt apk/signed-release-uid-after.txt");
+  assert.ok(afterLaunch>=0&&afterScreen>afterLaunch&&afterForeground>afterScreen&&afterUserCapture>afterForeground&&afterIdentityComparison>afterUserCapture,
+    "Replacement kills the app: prove its foreground user only after relaunch and positive screen verification");
+  for(const immediateCheck of [
+    "adb shell dumpsys package ir.taprasystem.employee > apk/signed-release-package-after.txt",
+    "cmp apk/signed-release-permissions-before.txt apk/signed-release-permissions-after.txt",
+    "cmp apk/signed-release-whitelist-before.txt apk/signed-release-whitelist-after.txt",
+  ])assert.ok(replacement.indexOf(immediateCheck)>=0&&replacement.indexOf(immediateCheck)<afterLaunch,
+    "Replacement package, grants and whitelist evidence must be checked before relaunch");
   assert.equal((release.match(/adb shell dumpsys activity activities \| grep -q "ir\.taprasystem\.employee\/\.MainActivity"/g)||[]).length,2);
 });
 
