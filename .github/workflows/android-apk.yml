@@ -233,6 +233,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test public signed APK preparation policy
         run: python3 -B -m unittest discover -s tests/android -p 'test_prepare_signed_apk.py' -v
+      - name: Test cross-version package identity parsing
+        run: python3 -B -m unittest discover -s tests/android -p 'test_package_identity.py' -v
       - name: Prepare exact locally signed public APK from validated event inputs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -324,7 +326,8 @@ jobs:
             if grep -A 20 "FATAL EXCEPTION" apk/signed-release-logcat-before.txt | grep -q "ir.taprasystem.employee"; then cat apk/signed-release-logcat-before.txt; exit 1; fi
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
             adb shell dumpsys package ir.taprasystem.employee > apk/signed-release-package-before.txt
-            sed -n 's/^[[:space:]]*userId=\([0-9][0-9]*\).*$/\1/p' apk/signed-release-package-before.txt > apk/signed-release-uid-before.txt
+            adb shell am get-current-user > apk/signed-release-android-user-before.txt
+            python3 -B scripts/android/package_identity.py apk/signed-release-package-before.txt apk/signed-release-android-user-before.txt > apk/signed-release-uid-before.txt
             test "$(wc -l < apk/signed-release-uid-before.txt)" -eq 1
             grep -E 'android[.]permission[.](ACCESS_FINE_LOCATION|ACCESS_COARSE_LOCATION|POST_NOTIFICATIONS): granted=' apk/signed-release-package-before.txt | sed -E 's/^[[:space:]]+//; s/,.*$//' | sort > apk/signed-release-permissions-before.txt
             grep -q 'android.permission.ACCESS_FINE_LOCATION: granted=true' apk/signed-release-permissions-before.txt
@@ -335,7 +338,8 @@ jobs:
             test -s apk/signed-release-whitelist-before.txt
             adb install -r apk/final.apk
             adb shell dumpsys package ir.taprasystem.employee > apk/signed-release-package-after.txt
-            sed -n 's/^[[:space:]]*userId=\([0-9][0-9]*\).*$/\1/p' apk/signed-release-package-after.txt > apk/signed-release-uid-after.txt
+            adb shell am get-current-user > apk/signed-release-android-user-after.txt
+            python3 -B scripts/android/package_identity.py apk/signed-release-package-after.txt apk/signed-release-android-user-after.txt > apk/signed-release-uid-after.txt
             cmp apk/signed-release-uid-before.txt apk/signed-release-uid-after.txt
             grep -E 'android[.]permission[.](ACCESS_FINE_LOCATION|ACCESS_COARSE_LOCATION|POST_NOTIFICATIONS): granted=' apk/signed-release-package-after.txt | sed -E 's/^[[:space:]]+//; s/,.*$//' | sort > apk/signed-release-permissions-after.txt
             cmp apk/signed-release-permissions-before.txt apk/signed-release-permissions-after.txt

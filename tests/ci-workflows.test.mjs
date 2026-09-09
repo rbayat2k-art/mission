@@ -169,6 +169,12 @@ test("signed APK smoke is disposable-emulator-only and preserves identity and gr
   for(const state of ["uid","permissions","whitelist"]){
     assert.ok(release.includes(`cmp apk/signed-release-${state}-before.txt apk/signed-release-${state}-after.txt`));
   }
+  assert.match(release,/python3 -B -m unittest discover -s tests\/android -p 'test_package_identity\.py' -v/);
+  for(const stage of ["before","after"]){
+    assert.ok(release.includes(`adb shell am get-current-user > apk/signed-release-android-user-${stage}.txt`));
+    assert.ok(release.includes(`package_identity.py apk/signed-release-package-${stage}.txt apk/signed-release-android-user-${stage}.txt > apk/signed-release-uid-${stage}.txt`));
+  }
+  assert.doesNotMatch(release,/sed -n 's\/\^\[\[:space:\]\]\*userId=/);
   const replacement=release.slice(release.indexOf("            adb install -r apk/final.apk"));
   assert.doesNotMatch(replacement,/pm grant|whitelist \+|am force-stop/);
   assert.equal((release.match(/adb shell dumpsys activity activities \| grep -q "ir\.taprasystem\.employee\/\.MainActivity"/g)||[]).length,2);
