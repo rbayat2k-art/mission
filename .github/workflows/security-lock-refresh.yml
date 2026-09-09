@@ -36,10 +36,19 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           npm ls next @next/eslint-plugin-next sharp js-yaml
           npm audit --audit-level=moderate --json > security-audit.json
-      - name: Prepare public package cache for isolated Windows validation
+      - name: Export public dependency metadata for local review
+        # Only these public JSON files are logged, never environment or app data.
         run: |
-          npm ci --ignore-scripts --no-audit --no-fund --os=win32 --cpu=x64 --cache "$RUNNER_TEMP/tapra-public-npm-cache"
-          tar -czf public-npm-cache.tgz -C "$RUNNER_TEMP/tapra-public-npm-cache" _cacache
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          for (const name of ['package.json', 'package-lock.json', 'security-audit.json']) {
+            const json = JSON.parse(fs.readFileSync(name, 'utf8'));
+            const encoded = Buffer.from(JSON.stringify(json)).toString('base64');
+            for (let i = 0; i < encoded.length; i += 4096) {
+              console.log(`TAPRA_PUBLIC_JSON:${name}:${encoded.slice(i, i + 4096)}`);
+            }
+          }
+          NODE
       - uses: actions/upload-artifact@v4
         with:
           name: reviewed-security-lock-${{ github.sha }}
@@ -47,6 +56,5 @@ jobs:
             package.json
             package-lock.json
             security-audit.json
-            public-npm-cache.tgz
           if-no-files-found: error
           retention-days: 3
