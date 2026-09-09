@@ -1056,6 +1056,7 @@ test("prepares an upgrade-numbered Android wrapper with account-isolated GPS and
   assert.match(workflow, /matrix:\s*\n\s*api-level: \[23, 29, 35\]/);
   assert.match(workflow, /scripts\/android\/capture_app_ui\.py/);
   assert.match(await readFile(new URL("../scripts/android/capture_ui.py", import.meta.url), "utf8"), /run_adb\("shell", "uiautomator", "dump", remote\)/);
+  assert.match(workflow, /python3 -B scripts\/android\/capture_app_ui\.py tapra-ui-api/);
   assert.match(workflow, /tapra-battery-gate-api/);
   assert.match(workflow, /deviceidle whitelist \+ir\.taprasystem\.employee/);
   assert.match(workflow, /POST_NOTIFICATIONS \|\| true/);
