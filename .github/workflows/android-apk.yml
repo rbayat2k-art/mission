@@ -7,8 +7,12 @@ on:
         description: "Optional numeric asset ID of the locally signed APK in this repository"
         required: false
         type: string
+      signed_release_apk_base64:
+        description: "Optional approved small public APK payload; mutually exclusive with asset ID"
+        required: false
+        type: string
       signed_release_sha256:
-        description: "Required SHA-256 when testing a signed release asset"
+        description: "Required SHA-256 when testing either signed APK source"
         required: false
         type: string
   push:
@@ -21,7 +25,7 @@ permissions:
 
 jobs:
   build-debug:
-    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_sha256 == '' }}
+    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_apk_base64 == '' && inputs.signed_release_sha256 == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -59,7 +63,7 @@ jobs:
           retention-days: 14
 
   emulator-smoke:
-    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_sha256 == '' }}
+    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_apk_base64 == '' && inputs.signed_release_sha256 == '' }}
     needs: build-debug
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -131,13 +135,28 @@ jobs:
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
             python3 -B scripts/android/capture_ui.py tapra-ui-api-${{ matrix.api-level }}.xml
             if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" tapra-ui-api-${{ matrix.api-level }}.xml; then cat tapra-ui-api-${{ matrix.api-level }}.xml; exit 1; fi
+            adb exec-out screencap -p > android-screen-api-${{ matrix.api-level }}.png
             grep -q "ورود به پنل کارمند" tapra-ui-api-${{ matrix.api-level }}.xml
             adb logcat -d -t 800 > android-logcat-post-capture-api-${{ matrix.api-level }}.txt
             if grep -A 20 "FATAL EXCEPTION" android-logcat-post-capture-api-${{ matrix.api-level }}.txt | grep -q "ir.taprasystem.employee"; then cat android-logcat-post-capture-api-${{ matrix.api-level }}.txt; exit 1; fi
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
 
+      - name: Retain unauthenticated debug UI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-ui-api-${{ matrix.api-level }}-${{ github.run_id }}
+          path: |
+            tapra-ui-api-*.xml
+            tapra-battery-gate-api-*.xml
+            android-logcat-api-*.txt
+            android-logcat-post-capture-api-*.txt
+            android-screen-api-*.png
+          if-no-files-found: warn
+          retention-days: 14
+
   release-build:
-    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_sha256 == '' }}
+    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_apk_base64 == '' && inputs.signed_release_sha256 == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -191,7 +210,7 @@ jobs:
           retention-days: 14
 
   signed-release-smoke:
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.signed_release_asset_id != '' || inputs.signed_release_sha256 != '') }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.signed_release_asset_id != '' || inputs.signed_release_apk_base64 != '' || inputs.signed_release_sha256 != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
@@ -199,24 +218,17 @@ jobs:
       matrix:
         api-level: [23, 29, 35]
     env:
-      SIGNED_RELEASE_ASSET_ID: ${{ inputs.signed_release_asset_id }}
       SIGNED_RELEASE_SHA256: ${{ inputs.signed_release_sha256 }}
       TEST_API_LEVEL: ${{ matrix.api-level }}
     steps:
       - uses: actions/checkout@v4
-      - name: Validate inputs and download exact locally signed release
+      - name: Test public signed APK preparation policy
+        run: python3 -B -m unittest discover -s tests/android -p 'test_prepare_signed_apk.py' -v
+      - name: Prepare exact locally signed public APK from validated event inputs
         env:
           GH_TOKEN: ${{ github.token }}
           GH_HOST: github.com
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_REPOSITORY" == "rbayat2k-art/mission" ]]
-          [[ "$SIGNED_RELEASE_ASSET_ID" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "Invalid numeric asset ID" >&2; exit 1; }
-          [[ "$SIGNED_RELEASE_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "Invalid SHA-256" >&2; exit 1; }
-          mkdir -p apk
-          gh api -H 'Accept: application/octet-stream' "repos/rbayat2k-art/mission/releases/assets/$SIGNED_RELEASE_ASSET_ID" > apk/final.apk
-          printf '%s  apk/final.apk\n' "$SIGNED_RELEASE_SHA256" | sha256sum --check --strict
+        run: python3 -B scripts/android/prepare_signed_apk.py
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -231,7 +243,9 @@ jobs:
           test -x "$analyzer"
           "$build_tools/apksigner" verify --verbose --print-certs --min-sdk-version 23 apk/final.apk | tee apk/signed-release-signature.txt
           "$analyzer" manifest print apk/final.apk > apk/signed-release-manifest.xml
-          "$analyzer" resources xml --file /res/xml/network_security_config.xml apk/final.apk > apk/signed-release-network.xml
+          network_config="$("$analyzer" resources value --config default --name network_security_config --type xml apk/final.apk)"
+          [[ "$network_config" =~ ^res/[A-Za-z0-9_/-]+\.xml$ ]] || { echo "Invalid packaged network policy path" >&2; exit 1; }
+          "$analyzer" resources xml --file "$network_config" apk/final.apk > apk/signed-release-network.xml
           python3 -B - <<'PY'
           import xml.etree.ElementTree as ET
           android = '{http://schemas.android.com/apk/res/android}'
@@ -287,6 +301,8 @@ jobs:
             adb shell am start -W -n ir.taprasystem.employee/.MainActivity
             sleep 15
             python3 -B scripts/android/capture_ui.py apk/signed-release-login-before.xml
+            adb exec-out screencap -p > apk/signed-release-screen-before.png
+            adb logcat -d -t 1500 > apk/signed-release-logcat-before.txt
             if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" apk/signed-release-login-before.xml; then cat apk/signed-release-login-before.xml; exit 1; fi
             grep -q "ورود به پنل کارمند" apk/signed-release-login-before.xml
             adb logcat -d -t 1500 > apk/signed-release-logcat-before.txt
@@ -314,6 +330,8 @@ jobs:
             adb shell am start -W -n ir.taprasystem.employee/.MainActivity
             sleep 15
             python3 -B scripts/android/capture_ui.py apk/signed-release-login-after.xml
+            adb exec-out screencap -p > apk/signed-release-screen-after.png
+            adb logcat -d -t 1500 > apk/signed-release-logcat-after.txt
             if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" apk/signed-release-login-after.xml; then cat apk/signed-release-login-after.xml; exit 1; fi
             grep -q "ورود به پنل کارمند" apk/signed-release-login-after.xml
             adb logcat -d -t 1500 > apk/signed-release-logcat-after.txt
@@ -328,6 +346,7 @@ jobs:
           path: |
             apk/signed-release-*.txt
             apk/signed-release-*.xml
+            apk/signed-release-screen-*.png
           if-no-files-found: warn
           retention-days: 14
 
