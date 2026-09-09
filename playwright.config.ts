@@ -19,9 +19,12 @@ export default defineConfig({
     screenshot:"only-on-failure",
   },
   webServer:process.env.PLAYWRIGHT_BASE_URL ? undefined : {
-    command:"npm run dev -- -p 3210",
+    // CI has just built the release. Test that artifact, not React's development
+    // StrictMode effect replay (which intentionally repeats read-only requests).
+    command:process.env.CI ? "node .next/standalone/server.js" : "npm run dev -- -p 3210",
+    env:{ PORT:"3210", HOSTNAME:"127.0.0.1", AUTO_MIGRATE:"false" },
     url:baseURL,
-    reuseExistingServer:true,
+    reuseExistingServer:!process.env.CI,
     timeout:120_000,
   },
   projects:[
