@@ -71,12 +71,15 @@ public class MainActivity extends Activity {
     private boolean pageCommitted;
     private boolean mainFrameFailed;
     private boolean batteryGateVisible;
+    private boolean webViewCompatibilityGateVisible;
     private boolean applicationLoadStarted;
     private String initialApplicationUrl = APP_URL;
     private boolean initialClearCache;
     private int automaticRecoveryCount;
+    private int pageLoadGeneration;
 
     private final Runnable loadWatchdog = () -> {
+        if (!canUseWebContent(webView)) return;
         if (!pageCommitted && !mainFrameFailed) recoverFromBlankPage("زمان دریافت صفحه طولانی شد.");
     };
 
@@ -84,7 +87,9 @@ public class MainActivity extends Activity {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (LocationTrackingService.ACTION_SESSION_ENDED.equals(intent.getAction()) && webView != null) {
-                webView.post(() -> webView.evaluateJavascript("window.location.reload()", null));
+                webView.post(() -> {
+                    if (canUseWebContent(webView)) webView.evaluateJavascript("window.location.reload()", null);
+                });
             }
         }
     };
@@ -188,16 +193,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean enforceBatteryAccessGate() {
-        if (!isBatteryOptimizationExempt()) {
-            showBatteryRequirement();
-            return false;
-        }
-        if (batteryGateVisible) {
-            batteryGateVisible = false;
-            configurePageRetryButton();
-            webView.setVisibility(View.VISIBLE);
-            statusPanel.setVisibility(View.GONE);
-        }
+        if (!enforceApplicationRequirements()) return false;
         if (!applicationLoadStarted) {
             applicationLoadStarted = true;
             loadApplication(initialApplicationUrl, initialClearCache);
@@ -205,7 +201,72 @@ public class MainActivity extends Activity {
         return true;
     }
 
+    private boolean enforceApplicationRequirements() {
+        boolean batteryExempt = isBatteryOptimizationExempt();
+        WebViewCompatibility.Gate gate = WebViewCompatibility.startupGate(batteryExempt,
+            batteryExempt ? actualWebViewUserAgent(webView) : null);
+        if (gate == WebViewCompatibility.Gate.BATTERY_REQUIRED) {
+            showBatteryRequirement();
+            return false;
+        }
+        if (gate == WebViewCompatibility.Gate.WEBVIEW_UPDATE_REQUIRED) {
+            showWebViewUpdateRequirement();
+            return false;
+        }
+        if (batteryGateVisible || webViewCompatibilityGateVisible) {
+            batteryGateVisible = false;
+            webViewCompatibilityGateVisible = false;
+            configurePageRetryButton();
+            statusPanel.setVisibility(View.GONE);
+            webView.setVisibility(View.VISIBLE);
+        }
+        return true;
+    }
+
+    private String actualWebViewUserAgent(WebView view) {
+        if (view == null) return null;
+        try {
+            return view.getSettings().getUserAgentString();
+        } catch (RuntimeException unavailableEngine) {
+            return null;
+        }
+    }
+
+    private boolean canUseWebContent(WebView view) {
+        return view != null && view == webView && !isFinishing() && !isDestroyed()
+            && !batteryGateVisible && !webViewCompatibilityGateVisible
+            && WebViewCompatibility.meetsMinimumEngineVersion(actualWebViewUserAgent(view));
+    }
+
+    private void showWebViewUpdateRequirement() {
+        if (!webViewCompatibilityGateVisible) pageLoadGeneration++;
+        batteryGateVisible = false;
+        webViewCompatibilityGateVisible = true;
+        applicationLoadStarted = false;
+        mainFrameFailed = true;
+        pageCommitted = false;
+        mainHandler.removeCallbacks(loadWatchdog);
+        webView.stopLoading();
+        webView.onPause();
+        webView.setVisibility(View.GONE);
+        statusPanel.setVisibility(View.VISIBLE);
+        statusProgress.setVisibility(View.GONE);
+        statusTitle.setText("نمایشگر وب گوشی نیاز به به‌روزرسانی دارد");
+        statusMessage.setText("Android System WebView و Google Chrome را از Google Play به‌روز کنید. سپس راهکار را کامل ببندید و دوباره باز کنید. اگر به‌روزرسانی برای گوشی شما موجود نیست، از گوشی به‌روزتری استفاده کنید؛ نیازی به حذف برنامه یا پاک‌کردن داده‌ها نیست.");
+        retryButton.setText("به‌روزرسانی از Google Play");
+        retryButton.setVisibility(View.VISIBLE);
+        retryButton.setOnClickListener(view -> {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(WebViewCompatibility.UPDATE_URL)));
+            } catch (Exception unavailable) {
+                Toast.makeText(this, "Google Play را باز کنید و Android System WebView را به‌روز کنید.",
+                    Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
     private void showBatteryRequirement() {
+        if (!batteryGateVisible) pageLoadGeneration++;
         batteryGateVisible = true;
         mainHandler.removeCallbacks(loadWatchdog);
         webView.setVisibility(View.GONE);
@@ -245,7 +306,9 @@ public class MainActivity extends Activity {
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
         settings.setLoadWithOverviewMode(false);
         settings.setUseWideViewPort(true);
-        settings.setUserAgentString(settings.getUserAgentString() + " TapraAndroid/" + BuildConfig.VERSION_NAME);
+        String actualWebViewUserAgent = actualWebViewUserAgent(webView);
+        settings.setUserAgentString((actualWebViewUserAgent == null ? "" : actualWebViewUserAgent)
+            + " TapraAndroid/" + BuildConfig.VERSION_NAME);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) settings.setSafeBrowsingEnabled(true);
 
         CookieManager cookies = CookieManager.getInstance();
@@ -267,6 +330,8 @@ public class MainActivity extends Activity {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
+                pageLoadGeneration++;
+                if (!canUseWebContent(view)) return;
                 pageCommitted = false;
                 mainFrameFailed = false;
                 showLoading("در حال دریافت آخرین نسخه سامانه…");
@@ -276,6 +341,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageCommitVisible(WebView view, String url) {
                 super.onPageCommitVisible(view, url);
+                if (!canUseWebContent(view)) return;
                 pageCommitted = true;
                 mainHandler.removeCallbacks(loadWatchdog);
             }
@@ -283,6 +349,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
+                if (!canUseWebContent(view) || mainFrameFailed) return;
                 CookieManager.getInstance().flush();
                 if (isTrustedWebOrigin(url) && hasLocationPermission()) {
                     Uri pageUri = Uri.parse(url);
@@ -290,7 +357,10 @@ public class MainActivity extends Activity {
                     GeolocationPermissions.getInstance().allow(origin);
                 }
                 view.evaluateJavascript("window.dispatchEvent(new CustomEvent('tapra-native-ready'))", null);
-                mainHandler.postDelayed(() -> verifyRenderedPage(view), 900L);
+                int completedPageGeneration = pageLoadGeneration;
+                mainHandler.postDelayed(() -> {
+                    if (completedPageGeneration == pageLoadGeneration) verifyRenderedPage(view);
+                }, 900L);
             }
 
             @Override
@@ -321,7 +391,8 @@ public class MainActivity extends Activity {
             @Override
             public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
                 handler.cancel();
-                showLoadError("اتصال امن سایت تأیید نشد.", "تاریخ و ساعت گوشی و اتصال اینترنت را بررسی کنید.");
+                showLoadError("اتصال امن سایت تأیید نشد.",
+                    "گوشی به گواهی امنیتی سایت اعتماد نکرد. تاریخ و ساعت گوشی، به‌روزرسانی Android و Android System WebView و گواهی‌های مورد اعتماد سیستم را بررسی کنید. برای حفظ امنیت، اتصال بدون تأیید گواهی انجام نمی‌شود.");
             }
 
             @Override
@@ -331,6 +402,7 @@ public class MainActivity extends Activity {
                 Toast.makeText(MainActivity.this,
                     "نمایشگر برنامه دوباره راه‌اندازی شد", Toast.LENGTH_LONG).show();
                 view.destroy();
+                if (view == webView) webView = null;
                 recreate();
                 return true;
             }
@@ -382,11 +454,14 @@ public class MainActivity extends Activity {
     }
 
     private void verifyRenderedPage(WebView view) {
-        if (mainFrameFailed || view != webView) return;
+        if (mainFrameFailed || !canUseWebContent(view)) return;
+        int verifiedPageGeneration = pageLoadGeneration;
         view.evaluateJavascript(
             "Boolean(document.body && ((document.body.innerText && document.body.innerText.trim().length > 8) || " +
             "(/^image\\//i.test(document.contentType || '') && Array.prototype.some.call(document.images, function(img) { return img.complete && img.naturalWidth > 0; }))))",
             rendered -> {
+                if (mainFrameFailed || !canUseWebContent(view)) return;
+                if (verifiedPageGeneration != pageLoadGeneration) return;
                 if ("true".equals(rendered)) {
                     pageCommitted = true;
                     automaticRecoveryCount = 0;
@@ -401,10 +476,12 @@ public class MainActivity extends Activity {
 
     private void scheduleLoadWatchdog() {
         mainHandler.removeCallbacks(loadWatchdog);
+        if (!canUseWebContent(webView)) return;
         mainHandler.postDelayed(loadWatchdog, PAGE_LOAD_TIMEOUT_MS);
     }
 
     private void recoverFromBlankPage(String reason) {
+        if (!canUseWebContent(webView)) return;
         if (automaticRecoveryCount >= MAX_AUTOMATIC_RECOVERIES) {
             showLoadError("صفحه سامانه بارگذاری نشد.",
                 reason + " اینترنت یا Android System WebView را بررسی کنید.");
@@ -416,11 +493,9 @@ public class MainActivity extends Activity {
     }
 
     private void loadApplication(String requestedUrl, boolean clearCache) {
-        if (!isBatteryOptimizationExempt()) {
-            showBatteryRequirement();
-            return;
-        }
+        if (!enforceApplicationRequirements()) return;
         mainHandler.removeCallbacks(loadWatchdog);
+        pageLoadGeneration++;
         pageCommitted = false;
         mainFrameFailed = false;
         if (clearCache) webView.clearCache(true);
@@ -441,6 +516,7 @@ public class MainActivity extends Activity {
     }
 
     private void showLoading(String message) {
+        if (!canUseWebContent(webView)) return;
         statusPanel.setVisibility(View.VISIBLE);
         statusProgress.setVisibility(View.VISIBLE);
         retryButton.setVisibility(View.GONE);
@@ -449,6 +525,7 @@ public class MainActivity extends Activity {
     }
 
     private void showLoadError(String title, String details) {
+        if (!canUseWebContent(webView)) return;
         mainFrameFailed = true;
         pageCommitted = false;
         mainHandler.removeCallbacks(loadWatchdog);
@@ -461,6 +538,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean openExternalWhenNeeded(Uri uri) {
+        if (!enforceApplicationRequirements()) return true;
         boolean trusted = isBackendOrigin(uri);
         if (trusted) return false;
         try {
@@ -531,11 +609,14 @@ public class MainActivity extends Activity {
     }
 
     private void dispatchNativeNotificationPermissionState() {
-        if (webView == null) return;
+        if (!canUseWebContent(webView)) return;
         String granted = hasNotificationPermission() ? "true" : "false";
-        webView.post(() -> webView.evaluateJavascript(
-            "window.dispatchEvent(new CustomEvent('tapra-notification-permission-changed'," +
-                "{detail:{granted:" + granted + "}}))", null));
+        webView.post(() -> {
+            if (!canUseWebContent(webView)) return;
+            webView.evaluateJavascript(
+                "window.dispatchEvent(new CustomEvent('tapra-notification-permission-changed'," +
+                    "{detail:{granted:" + granted + "}}))", null);
+        });
     }
 
     private void openNotificationSettings() {
@@ -564,8 +645,10 @@ public class MainActivity extends Activity {
         resolvePendingGeolocation(locationGranted);
         dispatchNativeNotificationPermissionState();
         if (locationGranted && webView != null) {
-            webView.post(() -> webView.evaluateJavascript(
-                "window.dispatchEvent(new CustomEvent('tapra-location-permission-granted'))", null));
+            webView.post(() -> {
+                if (canUseWebContent(webView)) webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('tapra-location-permission-granted'))", null);
+            });
         }
     }
 
@@ -677,11 +760,24 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (webView != null) {
+            boolean recheckRestoredPage = batteryGateVisible && applicationLoadStarted;
             if (!enforceBatteryAccessGate()) return;
             webView.onResume();
             dispatchNativeNotificationPermissionState();
             if (webView.getUrl() == null || webView.getUrl().trim().isEmpty()) loadApplication(APP_URL, false);
+            else if (recheckRestoredPage) recheckPageAfterBatteryGate();
         }
+    }
+
+    private void recheckPageAfterBatteryGate() {
+        if (!canUseWebContent(webView)) return;
+        mainFrameFailed = false;
+        pageCommitted = false;
+        showLoading("در حال بررسی صفحه سامانه…");
+        scheduleLoadWatchdog();
+        // Retain a valid page (including in-progress forms). A still-loading page is
+        // checked by onPageFinished; only an actual blank page enters normal recovery.
+        if (webView.getProgress() == 100) verifyRenderedPage(webView);
     }
 
     @Override
@@ -702,7 +798,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (webView.canGoBack()) webView.goBack();
+        if (canUseWebContent(webView) && webView.canGoBack()) webView.goBack();
         else super.onBackPressed();
     }
 
