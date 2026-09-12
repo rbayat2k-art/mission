@@ -1,5 +1,6 @@
 import { getSessionUser, isSecureRequest, rotateSession, sessionCookie } from "../../../../lib/auth";
 import { ensureDatabase } from "../../../../db/runtime";
+import { isValidPassword, PASSWORD_ERROR } from "../../../../lib/password-policy";
 import { hashPassword } from "../../../../lib/security";
 
 export async function POST(request: Request) {
@@ -7,8 +8,8 @@ export async function POST(request: Request) {
   if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
   const body = await request.json().catch(() => ({})) as { newPassword?: string; confirmPassword?: string };
   const password = body.newPassword ?? "";
-  if (password.length < 10 || !/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
-    return Response.json({ error: "رمز جدید باید حداقل ۱۰ کاراکتر و شامل حرف و عدد باشد." }, { status: 400 });
+  if (!isValidPassword(password)) {
+    return Response.json({ error: PASSWORD_ERROR }, { status: 400 });
   }
   // Older installed/cached clients only send `newPassword`. Keep those clients
   // compatible, while still enforcing confirmation whenever the field exists.

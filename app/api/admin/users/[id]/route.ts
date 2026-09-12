@@ -1,5 +1,6 @@
 import { ensureDatabase } from "../../../../../db/runtime";
 import { requireRole } from "../../../../../lib/auth";
+import { isValidPassword, PASSWORD_ERROR } from "../../../../../lib/password-policy";
 import { hashPassword } from "../../../../../lib/security";
 
 type UserRow = {
@@ -48,7 +49,7 @@ export async function PATCH(request: Request, context: RouteContext) {
   if (!fullName || !mobile || !username) return Response.json({ error: "نام، موبایل و نام کاربری الزامی است." }, { status: 400 });
   if (!["admin", "supervisor", "employee"].includes(role)) return Response.json({ error: "نقش انتخاب‌شده معتبر نیست." }, { status: 400 });
   if (!["active", "disabled"].includes(status)) return Response.json({ error: "وضعیت حساب معتبر نیست." }, { status: 400 });
-  if (password && password.length < 8) return Response.json({ error: "رمز جدید باید حداقل ۸ کاراکتر باشد." }, { status: 400 });
+  if (password && !isValidPassword(password)) return Response.json({ error: PASSWORD_ERROR }, { status: 400 });
   if (auth.user.id === id && (status !== "active" || role !== target.role)) {
     return Response.json({ error: "برای جلوگیری از قطع دسترسی، نمی‌توانید نقش یا وضعیت حساب خودتان را تغییر دهید." }, { status: 403 });
   }

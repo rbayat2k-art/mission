@@ -1,5 +1,6 @@
 import { isSecureRequest, requireRole, rotateSession, sessionCookie } from "../../../lib/auth";
 import { ensureDatabase } from "../../../db/runtime";
+import { isValidPassword, PASSWORD_ERROR } from "../../../lib/password-policy";
 import { hashPassword, verifyPassword } from "../../../lib/security";
 
 export async function PATCH(request: Request) {
@@ -11,7 +12,7 @@ export async function PATCH(request: Request) {
   if (fullName.length < 2 || fullName.length > 190) return Response.json({ error: "نام و نام خانوادگی معتبر وارد کنید." }, { status: 400 });
   if (!/^[a-z0-9._-]{3,40}$/.test(username)) return Response.json({ error: "نام کاربری باید ۳ تا ۴۰ کاراکتر انگلیسی و شامل حرف، عدد، نقطه، خط تیره یا زیرخط باشد." }, { status: 400 });
   if (!body.currentPassword) return Response.json({ error: "برای ذخیره تغییرات، رمز فعلی را وارد کنید." }, { status: 400 });
-  if (body.newPassword && (body.newPassword.length < 10 || !/[A-Za-z]/.test(body.newPassword) || !/[0-9]/.test(body.newPassword))) return Response.json({ error: "رمز جدید باید حداقل ۱۰ کاراکتر و شامل حرف و عدد باشد." }, { status: 400 });
+  if (body.newPassword && !isValidPassword(body.newPassword)) return Response.json({ error: PASSWORD_ERROR }, { status: 400 });
   const db = await ensureDatabase();
   const current = await db.prepare("SELECT password_hash AS passwordHash, password_salt AS passwordSalt FROM users WHERE id = ?").bind(auth.user.id).first<{passwordHash:string;passwordSalt:string}>();
   if (!current || !await verifyPassword(body.currentPassword, current.passwordSalt, current.passwordHash)) return Response.json({ error: "رمز فعلی صحیح نیست." }, { status: 403 });

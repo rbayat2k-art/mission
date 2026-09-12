@@ -1,5 +1,6 @@
 import { ensureDatabase } from "../../../../db/runtime";
 import { requireRole } from "../../../../lib/auth";
+import { isValidPassword } from "../../../../lib/password-policy";
 import { hashPassword } from "../../../../lib/security";
 
 export async function GET(request: Request) {
@@ -23,7 +24,7 @@ export async function POST(request: Request) {
   const password = body.temporaryPassword ?? "";
   const role = body.role ?? "employee";
   if (!["admin", "supervisor", "employee"].includes(role)) return Response.json({ error: "نقش انتخاب‌شده معتبر نیست." }, { status: 400 });
-  if (!fullName || !mobile || !username || password.length < 8) return Response.json({ error: "اطلاعات حساب کامل نیست یا رمز کمتر از ۸ کاراکتر است." }, { status: 400 });
+  if (!fullName || !mobile || !username || !isValidPassword(password)) return Response.json({ error: "اطلاعات حساب کامل نیست یا رمز کمتر از ۴ کاراکتر است." }, { status: 400 });
 
   const db = await ensureDatabase();
   let supervisorId: string | null = null;

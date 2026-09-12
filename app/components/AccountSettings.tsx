@@ -28,7 +28,7 @@ export default function AccountSettings({ initialFullName, initialUsername, onSa
     <label>نام کاربری<input value={username} onChange={event=>setUsername(event.target.value)} required dir="ltr" pattern="[a-z0-9._-]{3,40}"/><small>فقط حروف انگلیسی، عدد، نقطه، خط تیره و زیرخط</small></label>
     <div className="account-security-separator"><b>تأیید امنیتی</b><small>برای ذخیره هر تغییری، رمز فعلی لازم است.</small></div>
     <label>رمز عبور فعلی<input type="password" value={currentPassword} onChange={event=>setCurrentPassword(event.target.value)} autoComplete="current-password" required/></label>
-    <label>رمز جدید <small>اختیاری</small><input type="password" value={newPassword} onChange={event=>setNewPassword(event.target.value)} autoComplete="new-password" placeholder="حداقل ۱۰ کاراکتر، شامل حرف و عدد"/></label>
+    <label>رمز جدید <small>اختیاری</small><input type="password" value={newPassword} onChange={event=>setNewPassword(event.target.value)} autoComplete="new-password" placeholder="حداقل ۴ کاراکتر؛ حرف یا عدد یا ترکیب آن‌ها"/></label>
     <label>تکرار رمز جدید<input type="password" value={confirmPassword} onChange={event=>setConfirmPassword(event.target.value)} autoComplete="new-password" disabled={!newPassword}/></label>
     <button className="primary-wide" disabled={saving}>{saving?"در حال ذخیره...":"ذخیره تغییرات حساب"}</button>
   </form>;
