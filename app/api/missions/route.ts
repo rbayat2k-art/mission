@@ -57,11 +57,11 @@ export async function GET(request: Request) {
     values.push(task);
     taskMap.set(missionId, values);
   }
-  return Response.json({ missions: result.results.map((mission) => ({
+  return Response.json({ userId: auth.user.id, missions: result.results.map((mission) => ({
     ...mission,
     steps: stepMap.get(String((mission as { id: string }).id)) ?? [],
     tasks: taskMap.get(String((mission as { id: string }).id)) ?? [],
-  })) });
+  })) }, { headers: { "Cache-Control":"private, no-store", "Vary":"Cookie, X-Tapra-User-Id" } });
 }
 
 export async function POST(request: Request) {

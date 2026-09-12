@@ -62,6 +62,7 @@ export default function PushNotificationBootstrap({ active, userId = "", onMessa
     if (!active || !userId || !isNativeAndroid()) return;
     let cancelled = false;
     let polling = false;
+    const observed = new Set<string>();
     let controller: AbortController | null = null;
     const pollNativeNotifications = async () => {
       if (polling || cancelled) return;
@@ -81,6 +82,15 @@ export default function PushNotificationBootstrap({ active, userId = "", onMessa
         if (!response.ok || cancelled) return;
         const body = await response.json() as { userId?:string;notifications?: NotificationItem[] };
         if (cancelled || body.userId !== userId) return;
+        // Native service may already have displayed this notification. Its
+        // display/deduplication result must not suppress the data refresh signal.
+        const fresh = (body.notifications ?? []).filter(item => !observed.has(item.id));
+        for (const item of body.notifications ?? []) observed.add(item.id);
+        if (observed.size > 500) {
+          observed.clear();
+          for (const item of body.notifications ?? []) observed.add(item.id);
+        }
+        if (fresh.length) window.dispatchEvent(new CustomEvent("tapra-missions-changed", {detail:{userId}}));
         for (const item of (body.notifications ?? []).filter(item => !item.readAt).slice(0, 5)) {
           const target = item.entityType === "follow_up_request"
             ? "https://taprasystem.ir/?panel=employee&screen=notifications"

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, type SetStateAction, useCallback, useEffect, useRef, useState } from "react";
 import {
   claimQuarantinedItem,
   flushOutbox,
@@ -29,6 +29,7 @@ import { missionWorkEntryStep } from "../lib/employee-mission-flow";
 import { MAX_CONCURRENT_MISSIONS, missionStartCancellationState } from "../lib/mission-start-policy";
 import { detachPushDevice } from "../lib/push-client";
 import type { MissionAssigneesResponse } from "../lib/mission-assignee-order";
+import { createMissionRefresh } from "../lib/mission-refresh";
 
 type EmployeeScreen = "home" | "missions" | "new" | "work" | "report" | "mission-detail" | "end-review" | "profile" | "notifications" | "notification-settings" | "account-settings";
 type AdminScreen = "dashboard" | "live" | "missions" | "actions" | "access" | "approvals" | "integrity" | "reports" | "notifications" | "account";
@@ -532,7 +533,15 @@ function EmployeeApp() {
   const [detailReturnScreen, setDetailReturnScreen] = useState<"missions" | "report">("missions");
   const lastGpsSentAt = useRef(0);
   const gpsProblemReported = useRef(false);
-  const [missions, setMissions] = useState<UiMission[]>([]);
+  const [missionSnapshot, setMissionSnapshot] = useState<{accountId:string;items:UiMission[]}>({accountId:"",items:[]});
+  const missions = missionSnapshot.accountId === employeeUserId ? missionSnapshot.items : [];
+  const missionRevision = useRef(0);
+  const missionRefresh = useRef<ReturnType<typeof createMissionRefresh<ApiMission[]>> | null>(null);
+  const setMissions = useCallback((update:SetStateAction<UiMission[]>) => {
+    missionRevision.current++;
+    setMissionSnapshot(current => ({accountId:employeeUserId,items:typeof update === "function" ? update(current.accountId===employeeUserId?current.items:[]) : update}));
+  }, [employeeUserId]);
+  const refreshEmployeeMissions = useCallback(() => missionRefresh.current?.refresh() ?? Promise.resolve(), []);
   const [selectedMission, setSelectedMission] = useState<UiMission>(emptyMission);
   const [missionEvents, setMissionEvents] = useState<ApiMissionEvent[]>([]);
   const [missionEventsLoading, setMissionEventsLoading] = useState(false);
@@ -573,9 +582,8 @@ function EmployeeApp() {
     return result;
   }, [employeeUserId]);
 
-  const loadEmployeeData = useCallback(async () => {
-    const [missionData, workData, notificationData] = await Promise.all([
-      api<{ missions: ApiMission[] }>("/api/missions"),
+  const loadEmployeeStatus = useCallback(async () => {
+    const [workData, notificationData] = await Promise.all([
       api<ApiWorkState>("/api/work-sessions"),
       api<{unreadCount:number;openRequestCount:number}>("/api/notifications"),
     ]);
@@ -591,7 +599,16 @@ function EmployeeApp() {
     setTodayUnverifiedGpsMinutes(workData.today.unverifiedGpsMinutes);
     setTodayPendingCorrectionMinutes(workData.today.pendingCorrectionMinutes);
     if (workData.autoEnded) notify("۹ ساعت کار دارای GPS تکمیل شد و فعالیت به‌صورت سیستمی پایان یافت؛ برای اضافه‌کاری دوباره شروع فعالیت را بزنید");
-    setMissions(missionData.missions.map((mission) => ({
+  }, [notify]);
+
+  const loadEmployeeData = useCallback(async () => {
+    // Each result updates independently: an unrelated status error cannot hide
+    // a successfully fetched mission, but explicit refresh still reports errors.
+    await Promise.all([refreshEmployeeMissions(), loadEmployeeStatus()]);
+  }, [refreshEmployeeMissions, loadEmployeeStatus]);
+
+  const applyEmployeeMissions = useCallback((items:ApiMission[]) => {
+    setMissions(items.map((mission) => ({
       ...mission,
       meta: `${mission.workflowType==="task_list"?`${Number(mission.tasks?.filter(task=>task.status!=="open").length??0).toLocaleString("fa-IR")} از ${Number(mission.tasks?.length??0).toLocaleString("fa-IR")} کار · ${mission.destinationName??"مقصد هنگام انجام ثبت می‌شود"}`:currentMissionStep(mission)?.destinationName ?? mission.destinationName ?? (mission.workflowType === "multi_stage" ? `مرحله ${Number(mission.currentStepNo ?? 1).toLocaleString("fa-IR")} از ${Number(mission.steps?.length ?? 0).toLocaleString("fa-IR")}` : "مقصد هنگام انجام ثبت می‌شود")} · ${mission.deadline ?? "بدون مهلت"} · ثبت ${formatPersianDateTime(mission.createdAt)}`,
       type: mission.source === "employee" ? "خودم" : "مدیر",
@@ -599,7 +616,46 @@ function EmployeeApp() {
       backendStatus: mission.status,
       status: ["follow_up", "follow_up_pending"].includes(mission.status) ? "follow_up" : ["approved", "completed", "rejected", "cancelled"].includes(mission.status) ? "done" : ["revision","stage_waiting"].includes(mission.status) ? "open" : mission.status,
     })));
-  }, [notify]);
+  }, [setMissions]);
+
+  useEffect(() => {
+    if (!signedIn || !employeeUserId) return;
+    const refresh = createMissionRefresh<ApiMission[]>({
+      revision: () => missionRevision.current,
+      read: async signal => {
+        const result = await api<{userId?:string;missions:ApiMission[]}>("/api/missions", {
+          signal, cache:"no-store", headers:{"X-Tapra-User-Id":employeeUserId},
+        });
+        if (!Array.isArray(result.missions) || (result.userId !== undefined && result.userId !== employeeUserId)) throw new Error("پاسخ مأموریت‌ها معتبر نیست");
+        return result.missions;
+      },
+      apply: applyEmployeeMissions,
+    });
+    missionRefresh.current = refresh;
+    const update = () => { if (document.visibilityState !== "hidden" && navigator.onLine) void refresh.refresh().catch(() => undefined); };
+    const notified = (event:Event) => { if ((event as CustomEvent<{userId?:string}>).detail?.userId === employeeUserId) update(); };
+    const initial = window.setTimeout(update, 0);
+    const interval = window.setInterval(update, 10_000);
+    window.addEventListener("focus", update);
+    window.addEventListener("online", update);
+    document.addEventListener("visibilitychange", update);
+    window.addEventListener("tapra-missions-changed", notified);
+    return () => {
+      refresh.dispose();
+      if (missionRefresh.current === refresh) missionRefresh.current = null;
+      window.clearTimeout(initial); window.clearInterval(interval);
+      window.removeEventListener("focus", update);
+      window.removeEventListener("online", update);
+      document.removeEventListener("visibilitychange", update);
+      window.removeEventListener("tapra-missions-changed", notified);
+    };
+  }, [signedIn, employeeUserId, applyEmployeeMissions]);
+
+  useEffect(() => {
+    if (!signedIn || screen !== "missions") return;
+    const timer = window.setTimeout(() => { void refreshEmployeeMissions().catch(() => undefined); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [signedIn, screen, refreshEmployeeMissions]);
 
   const discardSyncConflict = useCallback(async () => {
     const conflict = syncConflicts[0];
@@ -1404,7 +1460,7 @@ function EmployeeApp() {
 
         <nav className="bottom-nav" aria-label="ناوبری اپ">
           <button className={screen === "home" ? "active" : ""} onClick={() => setScreen("home")}><Icon>⌂</Icon><span>خانه</span></button>
-          <button className={screen === "missions" || screen === "work" || screen === "new" || screen === "mission-detail" ? "active" : ""} onClick={() => setScreen("missions")}><Icon>▣</Icon><span>مأموریت‌ها</span><i>{missions.filter(m=>["open","in_progress","follow_up"].includes(m.status)).length.toLocaleString("fa-IR")}</i></button>
+          <button className={screen === "missions" || screen === "work" || screen === "new" || screen === "mission-detail" ? "active" : ""} onClick={() => {setScreen("missions");void refreshEmployeeMissions().catch(()=>undefined)}}><Icon>▣</Icon><span>مأموریت‌ها</span><i>{missions.filter(m=>["open","in_progress","follow_up"].includes(m.status)).length.toLocaleString("fa-IR")}</i></button>
           <button onClick={() => setScreen("new")} className="nav-add" aria-label="مأموریت جدید"><Icon>＋</Icon></button>
           <button className={screen === "report" || screen === "end-review" ? "active" : ""} onClick={openMyReport}><Icon>▤</Icon><span>گزارش من</span></button>
           <button className={["profile","notification-settings","account-settings"].includes(screen) ? "active" : ""} onClick={() => setScreen("profile")}><Icon>♙</Icon><span>حساب</span></button>
