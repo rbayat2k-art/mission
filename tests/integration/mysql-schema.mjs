@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import mysql from "mysql2/promise";
+import { verifyMissionAssigneeHistory } from "./mission-assignee-history.mjs";
 
 const host=process.env.DB_HOST||"127.0.0.1", port=Number(process.env.DB_PORT||3306), user=process.env.DB_USER||"root", password=process.env.DB_PASSWORD||"";
-const prefix=(process.env.TAPRA_CI_DB_PREFIX||"tapra_ci").replace(/[^a-z0-9_]/gi,"_");
+const prefix=process.env.TAPRA_CI_DB_PREFIX||"tapra_ci";
+assert.ok(["127.0.0.1","localhost","::1"].includes(host),"Database integration requires a loopback disposable service");
+assert.match(prefix,/^tapra_(?:ci|mariadb|mysql84)(?:_[a-z0-9]+)*$/i,"Refusing a non-test database prefix");
+assert.ok(prefix.length<=48,"CI database prefix is too long");
 const freshDb=`${prefix}_fresh`, legacyDb=`${prefix}_legacy`;
 const root=await mysql.createConnection({host,port,user,password});
 const run=(script,database,extra={})=>{const result=spawnSync(process.execPath,[script],{cwd:process.cwd(),encoding:"utf8",env:{...process.env,DB_HOST:host,DB_PORT:String(port),DB_USER:user,DB_PASSWORD:password,DB_NAME:database,AUTO_MIGRATE:"false",...extra}});assert.equal(result.status,0,`${script} failed\n${result.stdout}\n${result.stderr}`);};
@@ -28,6 +32,7 @@ async function verify(database){
     assert(fks.some(row=>row.TABLE_NAME==="score_ledger_entries"&&row.COLUMN_NAME==="user_id"&&row.REFERENCED_TABLE_NAME==="users"),"missing ledger user FK");
     assert(fks.some(row=>row.TABLE_NAME==="mission_tasks"&&row.COLUMN_NAME==="mission_id"&&row.REFERENCED_TABLE_NAME==="missions"),"missing mission task mission FK");
     assert(fks.some(row=>row.TABLE_NAME==="mission_task_events"&&row.COLUMN_NAME==="mission_task_id"&&row.REFERENCED_TABLE_NAME==="mission_tasks"),"missing task event task FK");
+    await verifyMissionAssigneeHistory(db);
   }finally{await db.end();}
 }
 try{

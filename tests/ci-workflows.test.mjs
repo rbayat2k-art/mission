@@ -17,6 +17,21 @@ test("database CI gates MariaDB 10.11 and MySQL 8.4 with the real migration harn
   assert.match(schema,/CONSTRAINT fk_missions_cancelled_by FOREIGN KEY \(cancelled_by\)/);
 });
 
+test("both migrated CI schemas gate the real assignee history SQL without allowing fallback", async () => {
+  const [harness, integration] = await Promise.all([
+    read("./integration/mysql-schema.mjs"), read("./integration/mission-assignee-history.mjs"),
+  ]);
+  assert.match(harness, /import \{ verifyMissionAssigneeHistory \} from "\.\/mission-assignee-history\.mjs"/);
+  assert.match(harness, /await verifyMissionAssigneeHistory\(db\)/);
+  assert.match(harness, /await verify\(freshDb\)/);
+  assert.match(harness, /await verify\(legacyDb\)/);
+  assert.match(integration, /app\/api\/missions\/assignees\/route\.ts/);
+  assert.match(integration, /await connection\.execute\(sql, this\.args\)/);
+  assert.match(integration, /assert\.equal\(payload\.orderMode, "recent"/);
+  assert.match(integration, /await connection\.beginTransaction\(\)/);
+  assert.match(integration, /finally \{\s+await connection\.rollback\(\)/);
+});
+
 test("Android CI is read-only, branch-complete, local-backend-only and never publishes",async()=>{
   const [workflow,gradle,manifest,main,service,notifications,readme]=await Promise.all([
     read("../.github/workflows/android-apk.yml"),read("../android/app/build.gradle"),read("../android/app/src/main/AndroidManifest.xml"),

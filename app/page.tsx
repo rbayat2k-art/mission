@@ -28,6 +28,7 @@ import MissionBriefAttachments from "./components/MissionBriefAttachments";
 import { missionWorkEntryStep } from "../lib/employee-mission-flow";
 import { MAX_CONCURRENT_MISSIONS, missionStartCancellationState } from "../lib/mission-start-policy";
 import { detachPushDevice } from "../lib/push-client";
+import type { MissionAssigneesResponse } from "../lib/mission-assignee-order";
 
 type EmployeeScreen = "home" | "missions" | "new" | "work" | "report" | "mission-detail" | "end-review" | "profile" | "notifications" | "notification-settings" | "account-settings";
 type AdminScreen = "dashboard" | "live" | "missions" | "actions" | "access" | "approvals" | "integrity" | "reports" | "notifications" | "account";
@@ -1524,6 +1525,10 @@ function AdminPanel() {
   const [adminMissionSort, setAdminMissionSort] = useState<"newest"|"oldest"|"deadline"|"priority"|"execution_rank"|"employee"|"status">("newest");
   const [adminMissionAssignees, setAdminMissionAssignees] = useState<string[]>([]);
   const [missionFormOpen, setMissionFormOpen] = useState(false);
+  const [missionAssigneeList, setMissionAssigneeList] = useState<MissionAssigneesResponse | null>(null);
+  const missionFormRequest = useRef<AbortController | null>(null);
+  const missionAssigneeOptions = missionAssigneeList?.accountId === adminUserId ? missionAssigneeList.assignees : [];
+  useEffect(() => () => { missionFormRequest.current?.abort(); }, [adminUserId, adminSignedIn]);
   const [missionEditingId, setMissionEditingId] = useState<string | null>(null);
   const [missionCancelTarget, setMissionCancelTarget] = useState<ApiMission | null>(null);
   const [missionCancelReason, setMissionCancelReason] = useState("");
@@ -1724,11 +1729,19 @@ function AdminPanel() {
   };
 
   const openMissionForm = async (mission?: ApiMission) => {
+    missionFormRequest.current?.abort();
+    const controller = new AbortController();
+    missionFormRequest.current = controller;
+    const accountId = adminUserId;
     try {
-      const users = (await api<{users:ApiUser[]}>("/api/admin/users")).users;
-      const assignable = users.filter(user => user.status === "active" && (adminRole !== "supervisor" || user.role === "employee"));
+      const list = await api<MissionAssigneesResponse>("/api/missions/assignees", {
+        signal: controller.signal, cache: "no-store", headers: { "X-Tapra-User-Id": accountId },
+      });
+      if (controller.signal.aborted) return;
+      if (list.accountId !== accountId || !Array.isArray(list.assignees)) throw new Error("حساب جاری تغییر کرده است؛ صفحه را تازه کنید.");
+      const assignable = list.assignees;
       const parsedDeadline = splitStoredDeadline(mission?.deadline);
-      setAdminUsers(users);
+      setMissionAssigneeList(list);
       setMissionEditingId(mission?.id ?? null);
       setMissionTitle(mission?.title ?? ""); setMissionDescription(mission?.description ?? ""); setMissionDestination(mission?.destinationName ?? "");
       setMissionPriority(mission?.priority ?? "normal");setMissionExecutionRank(String(mission?.executionRank??5)); setMissionDeadlineDate(parsedDeadline.date); setMissionDeadlineTime(parsedDeadline.time);
@@ -1736,20 +1749,22 @@ function AdminPanel() {
       setMissionDraftAttachments([]);
       setMissionSteps(mission?.steps?.length ? mission.steps.map((step,index)=>{const deadline=splitStoredDeadline(step.deadline);return {localId:step.id||`step-${index}`,title:step.title,actionType:step.actionType||"other",description:step.description||"",requiresLocation:Boolean(step.requiresLocation),destinationName:step.destinationName||"",evidenceRequirement:step.evidenceRequirement||"none",deadlineDate:deadline.date,deadlineTime:deadline.time}}) : [emptyMissionStepDraft(0),emptyMissionStepDraft(1)]);
       setMissionTasks(mission?.tasks?.length ? mission.tasks.map((task,index)=>({localId:task.id||`task-${index}`,title:task.title,description:task.description||""})) : [emptyMissionTaskDraft(0),emptyMissionTaskDraft(1)]);
-      setMissionAssignee(mission?.assignedTo && assignable.some(user => user.id === mission.assignedTo) ? mission.assignedTo : assignable[0]?.id ?? "");
+      // Ranking is a suggestion, never consent to assign the first person.
+      setMissionAssignee(mission?.assignedTo && assignable.some(user => user.id === mission.assignedTo) ? mission.assignedTo : "");
       setMissionFormOpen(true);
-    } catch (error) { notify(error instanceof Error ? error.message : "دریافت فهرست کاربران ناموفق بود"); }
+    } catch (error) { if (!controller.signal.aborted) notify(error instanceof Error ? error.message : "دریافت فهرست کاربران ناموفق بود"); }
   };
 
   const createAdminMission = async (e: FormEvent) => {
     e.preventDefault();
     if (!missionTitle.trim() || !missionAssignee) return notify("عنوان و مسئول مأموریت را انتخاب کنید");
+    if (missionAssigneeList?.accountId !== adminUserId || !missionAssigneeOptions.some(user => user.id === missionAssignee)) return notify("مسئول مأموریت در دسترس نیست؛ دوباره انتخاب کنید");
     if (missionWorkflowType === "multi_stage" && (missionSteps.length < 2 || missionSteps.some(step=>step.title.trim().length < 2))) return notify("برای مأموریت چندمرحله‌ای حداقل دو مرحله با عنوان مشخص لازم است");
     if (missionWorkflowType === "task_list" && (missionTasks.length < 2 || missionTasks.length > 10 || missionTasks.some(task=>task.title.trim().length < 2))) return notify("برای مأموریت چندتسکی بین ۲ تا ۱۰ تسک با عنوان مشخص لازم است");
     setMissionSubmitting(true);
     try {
       const editingId = missionEditingId;
-      const result = await api<{mission:ApiMission}>(editingId ? `/api/missions/${editingId}` : "/api/missions", { method:editingId ? "PATCH" : "POST", body:JSON.stringify({
+      const result = await api<{mission:ApiMission}>(editingId ? `/api/missions/${editingId}` : "/api/missions", { method:editingId ? "PATCH" : "POST", headers:{"X-Tapra-User-Id":adminUserId}, body:JSON.stringify({
         title:missionTitle, description:missionDescription, destinationName:missionDestination,
         priority:missionPriority, executionRank:Number(missionExecutionRank), deadlineDate:missionDeadlineDate || null, deadlineTime:missionDeadlineTime || null, assignedTo:missionAssignee,
         workflowType:missionWorkflowType,
@@ -2031,15 +2046,22 @@ function AdminPanel() {
         {screen === "notifications" && <section className="admin-settings-layout"><NotificationCenter key={adminUserId} accountId={adminUserId} onOpenMissions={()=>setScreen("missions")} onOpenFollowUps={()=>setScreen("actions")} onCounts={setAdminNotificationCounts}/></section>}
         {screen === "account" && <div className="admin-settings-layout"><AccountSettings initialFullName={adminDisplayName} initialUsername={adminUsername} onSaved={user=>{setAdminDisplayName(user.fullName);setAdminUsername(user.username)}} onMessage={notify}/><NotificationSettings onMessage={notify}/></div>}
       </div>
-      {missionFormOpen && <div className="mission-modal-backdrop">
+      {missionFormOpen && missionAssigneeList?.accountId === adminUserId && <div className="mission-modal-backdrop">
         <section className="mission-modal panel" role="dialog" aria-modal="true" aria-labelledby="new-admin-mission-title">
           <form onSubmit={createAdminMission}>
             <div className="drawer-head"><div><h2 id="new-admin-mission-title">{missionEditingId ? "ویرایش مأموریت" : "مأموریت جدید"}</h2><p>{missionEditingId ? "تا قبل از شروع کارمند می‌توانید جزئیات مأموریت را تغییر دهید." : adminRole === "supervisor" ? "مأموریت را به یکی از کاربران زیرمجموعه خود تخصیص دهید." : "مأموریت را ثبت و به کاربر موردنظر ارجاع دهید."}</p></div><button type="button" aria-label="بستن فرم" onClick={()=>{setMissionFormOpen(false);setMissionEditingId(null)}}>×</button></div>
             <label>عنوان مأموریت <b>*</b><input value={missionTitle} onChange={e=>setMissionTitle(e.target.value)} placeholder="مثلاً: تحویل اسناد قرارداد" required /></label>
-            <label>مسئول مأموریت <b>*</b><select value={missionAssignee} onChange={e=>setMissionAssignee(e.target.value)} required disabled={!adminUsers.some(user=>user.status==="active" && (adminRole!=="supervisor" || user.role==="employee"))}><option value="">انتخاب کاربر...</option>{adminUsers.filter(user=>user.status==="active" && (adminRole!=="supervisor" || user.role==="employee")).map(user=><option key={user.id} value={user.id}>{user.fullName} · {user.role === "employee" ? "کارمند" : user.role === "supervisor" ? "سرپرست" : user.role === "admin" ? "مدیر" : "مالک"}</option>)}</select></label>
+            <label>مسئول مأموریت <b>*</b><select value={missionAssignee} onChange={e=>setMissionAssignee(e.target.value)} required aria-describedby="mission-assignee-help" disabled={!missionAssigneeOptions.length}>
+              <option value="">انتخاب مسئول مأموریت...</option>
+              {([true, false] as const).map(recent => {
+                const group = missionAssigneeOptions.filter(user => (user.recentAssignmentCount > 0) === recent);
+                return group.length ? <optgroup key={String(recent)} label={recent ? "ارجاع‌های پرتکرار اخیر شما" : "سایر افراد"}>{group.map(user => <option key={user.id} value={user.id}>{user.fullName} · {user.role === "employee" ? "کارمند" : user.role === "supervisor" ? "سرپرست" : user.role === "admin" ? "مدیر" : "مالک"} · {user.username}</option>)}</optgroup> : null;
+              })}
+            </select></label>
+            <small id="mission-assignee-help">{!missionAssigneeOptions.length ? "کاربر فعال و مجازی برای تخصیص وجود ندارد." : missionAssigneeList?.orderMode === "name" ? "سابقه ارجاع دریافت نشد؛ افراد فعلاً به‌ترتیب نام هستند." : "ثبت‌های پرتکرار شما در ۳۰ روز اخیر بالاترند؛ در تعداد برابر، آخرین ثبت اول است."} {missionAssignee ? `انتخاب شما: ${missionAssigneeOptions.find(user=>user.id===missionAssignee)?.fullName ?? ""}` : "مسئول را خودتان انتخاب کنید."}</small>
             <div className="mission-workflow-selector"><button type="button" className={missionWorkflowType==="single"?"active":""} onClick={()=>setMissionWorkflowType("single")}><b>تک‌مرحله‌ای</b><small>یک مراجعه یا یک کار مشخص</small></button><button type="button" className={missionWorkflowType==="multi_stage"?"active":""} onClick={()=>setMissionWorkflowType("multi_stage")}><b>چندمرحله‌ای</b><small>چند کار یا مقصد پشت سر هم</small></button><button type="button" className={missionWorkflowType==="task_list"?"active":""} onClick={()=>setMissionWorkflowType("task_list")}><b>یک مقصد + چند کار</b><small>چند کار مستقل در یک مراجعه</small></button></div>
             {adminRole === "supervisor" && <div className="assignment-rule"><Icon>✓</Icon><span><b>محدوده تخصیص سرپرست</b><small>فقط کارکنانی نمایش داده می‌شوند که مستقیماً زیر نظر شما هستند.</small></span></div>}
-            {!adminUsers.some(user=>user.status==="active" && (adminRole!=="supervisor" || user.role==="employee")) && <div className="mission-form-error">کاربر فعالی برای تخصیص مأموریت پیدا نشد.</div>}
+            {!missionAssigneeOptions.length && <div className="mission-form-error">کاربر فعالی برای تخصیص مأموریت پیدا نشد.</div>}
             <div className="mission-form-grid"><label>اولویت<select value={missionPriority} onChange={e=>setMissionPriority(e.target.value)}><option value="normal">عادی</option><option value="urgent">فوری</option><option value="low">کم</option></select></label><label className="mission-execution-rank-field">اولویت انجام <small>۱ بالاترین</small><select value={missionExecutionRank} onChange={event=>setMissionExecutionRank(event.target.value)}>{Array.from({length:9},(_,index)=>index+1).map(rank=><option key={rank} value={rank}>{rank.toLocaleString("fa-IR")}</option>)}</select></label><label>تاریخ شمسی مهلت <small>اختیاری</small><input value={missionDeadlineDate} onChange={e=>setMissionDeadlineDate(e.target.value)} inputMode="numeric" placeholder="مثلاً: ۱۴۰۵/۰۵/۲۷" aria-describedby="jalali-deadline-help" /></label><label>ساعت مهلت <small>اختیاری</small><input value={missionDeadlineTime} onChange={e=>setMissionDeadlineTime(e.target.value)} inputMode="numeric" placeholder="مثلاً: ۱۴:۳۰" aria-describedby="jalali-deadline-help" /></label></div>
             <p id="jalali-deadline-help" className="deadline-help">تاریخ را به‌صورت شمسی وارد کنید؛ اگر مهلت تعیین می‌کنید، تاریخ و ساعت را با هم بنویسید.</p>
             {/* The checkbox label has visible Persian text in its nested span; the accessibility rule cannot resolve it inside this mapped editor. */}
