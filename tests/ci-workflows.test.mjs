@@ -40,3 +40,15 @@ test("automatic runtime migration is disabled in deployment examples",async()=>{
   const runtime=await read("../db/runtime.ts");
   assert.match(runtime,/process\.env\.NODE_ENV !== "production" && process\.env\.AUTO_MIGRATE === "true"/);
 });
+
+test("Android UI tooling recovery cannot bypass application assertions", async () => {
+  const workflow = await read("../.github/workflows/android-apk.yml");
+  assert.match(workflow, /python3 -B -m unittest discover -s tests\/android -p 'test_capture\*\.py' -v/);
+  assert.match(workflow, /capture_app_ui\.py tapra-battery-gate-api-.* --expect battery/);
+  assert.match(workflow, /capture_app_ui\.py tapra-ui-api-.* --expect page/);
+  assert.doesNotMatch(workflow, /adb shell uiautomator dump|capture_app_ui[^\n]*\|\| true|continue-on-error/);
+  assert.match(workflow, /grep -q "تنظیم باتری برای ورود الزامی است"/);
+  assert.match(workflow, /FATAL EXCEPTION/);
+  assert.match(workflow, /if grep -Eq "صفحه سامانه بارگذاری نشد\|در حال بازکردن راهکار"/);
+  assert.match(workflow, /Preserve emulator UI evidence\s+if: always\(\)/);
+});

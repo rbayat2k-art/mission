@@ -16,6 +16,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Test fresh UI capture and live application guards
+        run: python3 -B -m unittest discover -s tests/android -p 'test_capture*.py' -v
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -107,8 +109,7 @@ jobs:
             adb shell pm grant ir.taprasystem.employee android.permission.POST_NOTIFICATIONS || true
             adb shell am start -W -n ir.taprasystem.employee/.MainActivity
             sleep 2
-            adb shell uiautomator dump /sdcard/tapra-battery-gate.xml
-            adb pull /sdcard/tapra-battery-gate.xml tapra-battery-gate-api-${{ matrix.api-level }}.xml
+            python3 -B scripts/android/capture_app_ui.py tapra-battery-gate-api-${{ matrix.api-level }}.xml --expect battery
             grep -q "تنظیم باتری برای ورود الزامی است" tapra-battery-gate-api-${{ matrix.api-level }}.xml
             adb shell dumpsys deviceidle whitelist +ir.taprasystem.employee
             adb shell am force-stop ir.taprasystem.employee
@@ -117,9 +118,19 @@ jobs:
             adb logcat -d -t 800 > android-logcat-api-${{ matrix.api-level }}.txt
             if grep -A 20 "FATAL EXCEPTION" android-logcat-api-${{ matrix.api-level }}.txt | grep -q "ir.taprasystem.employee"; then cat android-logcat-api-${{ matrix.api-level }}.txt; exit 1; fi
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
-            adb shell uiautomator dump /sdcard/tapra-ui.xml
-            adb pull /sdcard/tapra-ui.xml tapra-ui-api-${{ matrix.api-level }}.xml
+            python3 -B scripts/android/capture_app_ui.py tapra-ui-api-${{ matrix.api-level }}.xml --expect page
             if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" tapra-ui-api-${{ matrix.api-level }}.xml; then cat tapra-ui-api-${{ matrix.api-level }}.xml; exit 1; fi
+      - name: Preserve emulator UI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-ui-api-${{ matrix.api-level }}-${{ github.sha }}
+          path: |
+            tapra-battery-gate-api-${{ matrix.api-level }}.xml
+            tapra-ui-api-${{ matrix.api-level }}.xml
+            android-logcat-api-${{ matrix.api-level }}.txt
+          if-no-files-found: warn
+          retention-days: 14
 
 # This workflow deliberately produces only a short-lived debug verification
 # artifact. Stable production signing and release publication are separate,
