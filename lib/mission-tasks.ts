@@ -39,10 +39,8 @@ export function normalizeMissionTasks(raw: unknown): { tasks: NormalizedMissionT
 export function normalizeMissionTaskResult(result: unknown, report: unknown) {
   const normalizedResult = typeof result === "string" ? result.trim() as MissionTaskResult : "" as MissionTaskResult;
   if (!MISSION_TASK_RESULTS.includes(normalizedResult)) return { error: "نتیجه انتخاب‌شده برای این کار معتبر نیست." } as const;
+  if (report != null && typeof report !== "string") return { error: "توضیح نتیجه باید متن باشد." } as const;
   const normalizedReport = typeof report === "string" ? report.trim().slice(0, 4000) : "";
-  if (normalizedResult !== "انجام شد" && normalizedReport.length < 3) {
-    return { error: "برای کار انجام‌نشده یا نیازمند پیگیری، توضیح حداقل ۳ کاراکتری لازم است." } as const;
-  }
   return { result: normalizedResult, report: normalizedReport } as const;
 }
 

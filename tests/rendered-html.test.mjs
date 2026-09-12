@@ -148,7 +148,8 @@ test("makes every mission result selectable and persists the selected value", as
     assert.match(page, new RegExp(result));
     assert.match(completeRoute, new RegExp(result));
   }
-  assert.match(page, /onClick=\{\(\)=>\{setWorkResult\(option\.label\);setWorkReport\(option\.defaultReport\)/);
+  assert.match(page, /onClick=\{\(\)=>\{setWorkResult\(option\.label\);/);
+  assert.doesNotMatch(page, /setWorkReport\(option\.defaultReport\)/);
   assert.match(page, /result: workResult, report: workReport\.trim\(\)/);
   assert.match(page, /aria-pressed=\{workResult === option\.label\}/);
   assert.match(completeRoute, /allowedResults\.includes\(workResult\)/);

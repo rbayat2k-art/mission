@@ -23,7 +23,7 @@ test("task-list rules accept 2..10 ordered tasks and exact result vocabulary", a
   assert.equal(normalized.tasks.length, 2);
   assert.deepEqual(normalized.tasks.map(task=>task.taskNo), [1,2]);
   assert.equal(rules.normalizeMissionTaskResult("انجام شد", "").result, "انجام شد");
-  assert.match(rules.normalizeMissionTaskResult("انجام نشد", "ن").error, /۳/);
+  assert.equal(rules.normalizeMissionTaskResult("انجام نشد", "ن").report, "ن");
   assert.equal(rules.normalizeMissionTaskResult("نیاز به پیگیری", "مراجعه بعدی").report, "مراجعه بعدی");
   assert.equal(rules.deriveMissionTaskOutcome([{status:"completed",result:"انجام شد"},{status:"completed",result:"انجام شد"}]).result, "انجام شد");
   assert.equal(rules.deriveMissionTaskOutcome([{status:"completed",result:"انجام شد"},{status:"follow_up",result:"نیاز به پیگیری"}]).result, "نیاز به پیگیری");

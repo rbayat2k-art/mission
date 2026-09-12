@@ -354,12 +354,12 @@ const Icon = ({ children, className = "" }: { children: React.ReactNode; classNa
 const emptyMission: UiMission = { id:"", title:"", meta:"", type:"", priority:"normal", status:"open" };
 
 const workResultOptions = [
-  { label: "انجام شد", icon: "✓", defaultReport: "کار با موفقیت انجام شد و نتیجه یا رسید دریافت گردید." },
-  { label: "نیاز به پیگیری", icon: "↻", defaultReport: "بخشی از کار انجام شد و ادامه آن نیاز به پیگیری دارد." },
-  { label: "مسئول نبود", icon: "♙", defaultReport: "مسئول مربوطه در زمان مراجعه در محل حضور نداشت." },
-  { label: "تعطیل بود", icon: "▰", defaultReport: "محل مراجعه در زمان حضور تعطیل بود." },
-  { label: "موکول شد", icon: "••", defaultReport: "انجام کار با هماهنگی انجام‌شده به زمان دیگری موکول شد." },
-  { label: "سایر", icon: "••", defaultReport: "" },
+  { label: "انجام شد", icon: "✓" },
+  { label: "نیاز به پیگیری", icon: "↻" },
+  { label: "مسئول نبود", icon: "♙" },
+  { label: "تعطیل بود", icon: "▰" },
+  { label: "موکول شد", icon: "••" },
+  { label: "سایر", icon: "••" },
 ] as const;
 
 function TopSwitcher({ mode, setMode }: { mode: "employee" | "admin"; setMode: (m: "employee" | "admin") => void }) {
@@ -431,7 +431,6 @@ function MissionTaskChecklist({accountId,mission,location,onUpdate,onContinue,on
     if(!activeTask)return;
     if(!result)return onMessage("ابتدا نتیجه این کار را انتخاب کنید");
     if(!location)return onMessage("برای ثبت نتیجه این کار، منتظر GPS تازه بمانید");
-    if(result!=="انجام شد"&&report.trim().length<3)return onMessage("برای این نتیجه، توضیح حداقل ۳ کاراکتری بنویسید");
     savingRequest.current=true;setSaving(true);
     try{
       const response=await sendJsonOrQueue<{task:ApiMissionTask}>(accountId,`/api/missions/${mission.id}/tasks/${activeTask.id}`,"PATCH",{result,report,location,expectedVersion:activeTask.version,clientEventId:createClientId()});
@@ -456,7 +455,7 @@ function MissionTaskChecklist({accountId,mission,location,onUpdate,onContinue,on
     <div className="task-progress" aria-label={`پیشرفت ${determined} از ${tasks.length}`}><i style={{width:`${tasks.length?determined/tasks.length*100:0}%`}}/></div>
     <div className="task-checklist-items">{tasks.map(task=><article key={task.id} className={`${task.status!=="open"?"determined":""} ${task.id===activeId?"active":""}`}>
       <button type="button" disabled={saving} onClick={()=>selectTask(task)}><i>{task.status==="completed"?"✓":task.status==="follow_up"?"↻":task.taskNo.toLocaleString("fa-IR")}</i><span><b>{task.title}</b><small>{task.result??(task.description||"هنوز تعیین وضعیت نشده")}</small></span><em>{task.id===activeId?"−":"＋"}</em></button>
-      {task.id===activeId&&<div className="task-result-editor"><div>{["انجام شد","انجام نشد","نیاز به پیگیری"].map(option=><button type="button" disabled={saving} key={option} aria-pressed={result===option} className={result===option?"selected":""} onClick={()=>setResult(option)}>{option}</button>)}</div><label>توضیح {result!=="انجام شد"&&<b>*</b>}<textarea disabled={saving} value={report} onChange={event=>setReport(event.target.value)} placeholder={result==="انجام شد"?"توضیح اختیاری":"دلیل و اقدام بعدی را بنویسید"}/></label><button type="button" className="save-task-result" disabled={saving||!result} onClick={save}>{saving?"در حال ثبت...":activeTask?.result?"ذخیره اصلاح نتیجه":"ثبت نتیجه این کار"}</button></div>}
+      {task.id===activeId&&<div className="task-result-editor"><div>{["انجام شد","انجام نشد","نیاز به پیگیری"].map(option=><button type="button" disabled={saving} key={option} aria-pressed={result===option} className={result===option?"selected":""} onClick={()=>setResult(option)}>{option}</button>)}</div><label>توضیح <small>اختیاری</small><textarea disabled={saving} value={report} onChange={event=>setReport(event.target.value)} placeholder="توضیح اختیاری"/></label><button type="button" className="save-task-result" disabled={saving||!result} onClick={save}>{saving?"در حال ثبت...":activeTask?.result?"ذخیره اصلاح نتیجه":"ثبت نتیجه این کار"}</button></div>}
     </article>)}</div>
     <button className="primary-wide" type="button" disabled={tasks.some(task=>task.status==="open")} onClick={finishList}>ادامه و مرور نهایی مأموریت</button>
     {tasks.some(task=>task.status==="open")&&<small className="task-list-help">برای ادامه، وضعیت همه کارها را مشخص کنید. تا ثبت نهایی مأموریت می‌توانید نتیجه هر کار را اصلاح کنید.</small>}
@@ -514,7 +513,7 @@ function EmployeeApp() {
   const [expenseEnabled, setExpenseEnabled] = useState(false);
   const [expenseAmount, setExpenseAmount] = useState("");
   const [workResult, setWorkResult] = useState("");
-  const [workReport, setWorkReport] = useState<string>(workResultOptions[0].defaultReport);
+  const [workReport, setWorkReport] = useState("");
   const [followUpCategory, setFollowUpCategory] = useState("missing_documents");
   const [requestSupervisorAction, setRequestSupervisorAction] = useState(false);
   const [cancelStartOpen, setCancelStartOpen] = useState(false);
@@ -946,7 +945,7 @@ function EmployeeApp() {
 
   const finishWork = async () => {
     if(missionFinishRequest.current)return;
-    if (!workResult || !workReport.trim()) return notify("انتخاب نتیجه و نوشتن توضیح الزامی است");
+    if (!workResult) return notify("انتخاب نتیجه الزامی است");
     if (!latestGps || Date.now() - Date.parse(latestGps.recordedAt) > 2 * 60_000) return notify("برای ثبت نقطه پایان، منتظر موقعیت تازه GPS بمانید و دوباره بزنید");
     missionFinishRequest.current=true;setMissionFinishing(true);
     try {
@@ -1326,10 +1325,10 @@ function EmployeeApp() {
               </section>}
               {workStep === 1 && (selectedMission.workflowType==="task_list" ? <MissionTaskChecklist accountId={employeeUserId} mission={selectedMission} location={latestGps} onUpdate={updateMissionTask} onMessage={notify} onQueued={async()=>setPendingSync(await getOutboxCount(employeeUserId).catch(()=>1))} onContinue={(overall,summary)=>{setWorkResult(overall);setWorkReport(summary);setRequestSupervisorAction(false);setWorkStep(2)}}/> : <section className="flow-panel">
                 <span className="flow-icon">✓</span><h2>نتیجه کار چه بود؟</h2><p>یکی از گزینه‌ها را برای ثبت گزارش انتخاب کنید.</p>
-                <div className="result-grid">{workResultOptions.map((option) => <button type="button" aria-pressed={workResult === option.label} className={workResult === option.label ? "selected" : ""} key={option.label} onClick={()=>{setWorkResult(option.label);setWorkReport(option.defaultReport);if(option.label === "انجام شد")setRequestSupervisorAction(false)}}><Icon>{option.icon}</Icon>{option.label}</button>)}</div>
-                <label>توضیح نتیجه <b>*</b><textarea value={workReport} onChange={event=>setWorkReport(event.target.value)} placeholder={workResult === "سایر" ? "نتیجه کار را کامل توضیح دهید..." : "جزئیات نتیجه را بنویسید..."} required /></label>
+                <div className="result-grid">{workResultOptions.map((option) => <button type="button" aria-pressed={workResult === option.label} className={workResult === option.label ? "selected" : ""} key={option.label} onClick={()=>{setWorkResult(option.label);if(option.label === "انجام شد")setRequestSupervisorAction(false)}}><Icon>{option.icon}</Icon>{option.label}</button>)}</div>
+                <label>توضیح نتیجه <small>اختیاری</small><textarea value={workReport} onChange={event=>setWorkReport(event.target.value)} placeholder="جزئیات نتیجه را در صورت نیاز بنویسید..." /></label>
                 {workResult !== "انجام شد" && <><div className="toggle-label supervisor-action-toggle"><span><b>این پیگیری نیاز به اقدام سرپرست دارد</b><small>پیش‌فرض خاموش است؛ اگر خودتان باید دوباره مراجعه کنید، فعالش نکنید.</small></span><input aria-label="ارجاع پیگیری به سرپرست" type="checkbox" checked={requestSupervisorAction} onChange={event=>setRequestSupervisorAction(event.target.checked)} /></div>{requestSupervisorAction && <div className="compact-follow-up-field"><label htmlFor="follow-up-category"><b>نوع اقدام سرپرست</b><small>توضیحات نتیجه و مدارک این مأموریت برای سرپرست ارسال می‌شود.</small></label><select id="follow-up-category" value={followUpCategory} onChange={event=>setFollowUpCategory(event.target.value)}><option value="missing_documents">آماده‌کردن یا تکمیل مدارک</option><option value="coordination">تأیید یا هماهنگی</option><option value="payment">پرداخت</option><option value="administrative">اقدام اداری</option><option value="other">سایر</option></select></div>}</>}
-                <button className="primary-wide" disabled={!workResult||!workReport.trim()} onClick={() => workResult&&workReport.trim() ? setWorkStep(2) : notify("نتیجه و توضیح آن را مشخص کنید")}>ادامه</button>
+                <button className="primary-wide" disabled={!workResult} onClick={() => workResult ? setWorkStep(2) : notify("نتیجه را مشخص کنید")}>ادامه</button>
               </section>)}
               {workStep === 2 && <section className="flow-panel">
                 <span className="flow-icon">⊕</span><h2>مدارک و هزینه</h2><p>افزودن ضمیمه اختیاری است اما به اعتبار گزارش کمک می‌کند.</p>
@@ -1341,7 +1340,7 @@ function EmployeeApp() {
               </section>}
               {workStep === 3 && <section className="flow-panel review-panel">
                 <span className="flow-icon">◈</span><h2>مرور و ارسال گزارش</h2><p>{requestSupervisorAction ? "این پیگیری برای اقدام سرپرست ارسال می‌شود." : workResult !== "انجام شد" ? "این مأموریت برای پیگیری بعدی خودتان ذخیره می‌شود." : "گزارش نهایی مأموریت ثبت می‌شود."}</p>
-                <div className="review-card"><span>مأموریت</span><b>{selectedMission?.title}</b><span>مقصد</span><b>{selectedMission?.destinationName ?? "مقصد ثبت‌شده"}</b><span>نتیجه</span><b className={workResult === "انجام شد" ? "green" : "amber"}>{workResult === "انجام شد" ? "✓" : "◷"} {workResult}</b><span>توضیحات</span><b>{workReport}</b>{workResult !== "انجام شد" && <><span>مسئول اقدام بعدی</span><b>{requestSupervisorAction ? "سرپرست" : "خودم"}</b></>}<span>مدارک</span><b>{attachments.length ? `${attachments.length.toLocaleString("fa-IR")} فایل` : "بدون فایل"}</b>{expenseEnabled && <><span>هزینه انجام‌شده</span><b>{parseExpenseAmount(expenseAmount).toLocaleString("fa-IR")} تومان</b></>}</div>
+                <div className="review-card"><span>مأموریت</span><b>{selectedMission?.title}</b><span>مقصد</span><b>{selectedMission?.destinationName ?? "مقصد ثبت‌شده"}</b><span>نتیجه</span><b className={workResult === "انجام شد" ? "green" : "amber"}>{workResult === "انجام شد" ? "✓" : "◷"} {workResult}</b><span>توضیحات</span><b>{workReport.trim() || "بدون توضیح"}</b>{workResult !== "انجام شد" && <><span>مسئول اقدام بعدی</span><b>{requestSupervisorAction ? "سرپرست" : "خودم"}</b></>}<span>مدارک</span><b>{attachments.length ? `${attachments.length.toLocaleString("fa-IR")} فایل` : "بدون فایل"}</b>{expenseEnabled && <><span>هزینه انجام‌شده</span><b>{parseExpenseAmount(expenseAmount).toLocaleString("fa-IR")} تومان</b></>}</div>
                 {requestSupervisorAction ? <div className="pending-callout"><Icon>◷</Icon><p><b>در انتظار اقدام سرپرست</b><small>بعد از اقدام و ارجاع مجدد سرپرست، مأموریت برای شما فعال می‌شود.</small></p></div> : workResult === "انجام شد" && (selectedMission.source === "employee" || selectedMission.type === "خودم") ? <div className="pending-callout"><Icon>◷</Icon><p><b>امتیاز در وضعیت Pending می‌ماند</b><small>پس از تأیید گزارش نهایی توسط سرپرست، امتیاز قطعی خواهد شد.</small></p></div> : null}
                 <button className="primary-wide" disabled={missionFinishing} onClick={finishWork}>{missionFinishing ? "در حال ثبت گزارش..." : requestSupervisorAction ? "پایان مراجعه و ارجاع به سرپرست" : "پایان مأموریت و ثبت گزارش"}</button>
               </section>}

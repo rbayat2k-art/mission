@@ -31,8 +31,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     ? await db.prepare("SELECT id FROM work_sessions WHERE user_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1").bind(auth.user.id).first<{ id: string }>()
     : null;
   if (auth.user.role === "employee" && !activeSession) return Response.json({ error: "فعالیت روزانه پایان یافته است؛ برای ادامه مأموریت ابتدا فعالیت جدیدی شروع کنید." }, { status: 409 });
-  const body = await request.json().catch(() => ({})) as { destinationName?: string; result?: string; report?: string; expenseAmount?: number; endLocation?: unknown; requestSupervisorAction?: boolean; followUpCategory?: string };
-  if (!body.result?.trim() || !body.report?.trim()) return Response.json({ error: "نتیجه و توضیح گزارش الزامی است." }, { status: 400 });
+  const body = await request.json().catch(() => ({})) as { destinationName?: string; result?: unknown; report?: unknown; expenseAmount?: number; endLocation?: unknown; requestSupervisorAction?: boolean; followUpCategory?: string } | null;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({ error: "اطلاعات نتیجه معتبر نیست." }, { status: 400 });
+  if (typeof body.result !== "string" || !body.result.trim()) return Response.json({ error: "انتخاب نتیجه الزامی است." }, { status: 400 });
+  if (body.report != null && typeof body.report !== "string") return Response.json({ error: "توضیح نتیجه باید متن باشد." }, { status: 400 });
+  const workReport = typeof body.report === "string" ? body.report.trim() : "";
   const endLocation = parseMissionLocation(body.endLocation);
   if (!endLocation) return Response.json({ error: "برای تعیین وضعیت مرحله، موقعیت GPS معتبر لازم است." }, { status: 400 });
   const allowedResults = ["انجام شد", "نیاز به پیگیری", "مسئول نبود", "تعطیل بود", "موکول شد", "سایر"];
@@ -79,29 +82,29 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const confirmedScore = needsFinalApproval ? 0 : baseScore;
     const nextStepNo = hasNextStep ? step.stepNo + 1 : step.stepNo;
     const followUpRequestId = requestSupervisorAction ? crypto.randomUUID() : null;
-    const followUpMessageId = requestSupervisorAction ? crypto.randomUUID() : null;
+    const followUpMessageId = requestSupervisorAction && workReport ? crypto.randomUUID() : null;
     const attemptId = crypto.randomUUID();
     const statusEvent = prepareMissionStatusEvent(db, { missionId:id, attemptNo, actorId:auth.user.id, actorRole:auth.user.role,
       eventType:"status_set", fromStatus:mission.status, toStatus:finalStatus, result:workResult, serverRecordedAt:now, location:endLocation,
-      metadata:{ stepNo:step.stepNo, stepId:step.id, stepTitle:step.title, report:body.report.trim(), hasNextStep, requestSupervisorAction } });
+      metadata:{ stepNo:step.stepNo, stepId:step.id, stepTitle:step.title, report:workReport, hasNextStep, requestSupervisorAction } });
     const statements = [
       db.prepare(`UPDATE mission_steps SET status=?, result=?, report=?, expense_amount=?, completed_at=?, end_latitude_e6=?,
         end_longitude_e6=?, end_accuracy_cm=?, end_location_recorded_at=?, updated_at=? WHERE id=? AND status=?`)
-        .bind(needsFollowUp ? "follow_up" : "completed", workResult, body.report.trim(), expenseAmount, now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, now, step.id, step.status),
+        .bind(needsFollowUp ? "follow_up" : "completed", workResult, workReport, expenseAmount, now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, now, step.id, step.status),
       db.prepare(`UPDATE mission_step_segments SET ended_at=COALESCE(ended_at, ?), end_reason=COALESCE(end_reason, ?),
         end_latitude_e6=COALESCE(end_latitude_e6, ?), end_longitude_e6=COALESCE(end_longitude_e6, ?),
         end_accuracy_cm=COALESCE(end_accuracy_cm, ?), end_location_recorded_at=COALESCE(end_location_recorded_at, ?) WHERE mission_step_id=? AND ended_at IS NULL`)
         .bind(now, needsFollowUp ? "follow_up" : "completed", endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, step.id),
       db.prepare(`UPDATE missions SET status=?, current_step_no=?, result=?, report=?, expense_amount=expense_amount+?,
         score_pending=?, score_confirmed=?, completed_at=?, end_latitude_e6=?, end_longitude_e6=?, end_accuracy_cm=?, end_location_recorded_at=? WHERE id=? AND status=? AND current_step_no=?`)
-        .bind(finalStatus, nextStepNo, hasNextStep ? null : workResult, hasNextStep ? null : body.report.trim(), expenseAmount,
+        .bind(finalStatus, nextStepNo, hasNextStep ? null : workResult, hasNextStep ? null : workReport, expenseAmount,
           pendingScore, confirmedScore, hasNextStep || needsFollowUp ? null : now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, id, mission.status, mission.currentStepNo),
       db.prepare(`INSERT INTO mission_attempts (id, mission_id, mission_step_id, attempt_no, result, report, destination_name,
         expense_amount, score_awarded, score_penalty, started_at, completed_at, start_latitude_e6, start_longitude_e6,
         start_accuracy_cm, start_location_recorded_at, destination_latitude_e6, destination_longitude_e6,
         destination_accuracy_cm, destination_recorded_at, end_latitude_e6, end_longitude_e6, end_accuracy_cm,
         end_location_recorded_at, approval_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(attemptId, id, step.id, attemptNo, workResult, body.report.trim(), step.destinationName, expenseAmount,
+        .bind(attemptId, id, step.id, attemptNo, workResult, workReport, step.destinationName, expenseAmount,
           baseScore, step.startedAt, now, step.startLatitudeE6, step.startLongitudeE6, step.startAccuracyCm, step.startLocationRecordedAt,
           step.destinationLatitudeE6, step.destinationLongitudeE6, step.destinationAccuracyCm, step.destinationRecordedAt,
           endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, needsFinalApproval ? "pending" : "not_required", now),
@@ -116,12 +119,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       pointsDelta:scoreDelta(Number(mission.scoreConfirmed ?? 0), confirmedScore), bucket:"confirmed", reasonCode:"mission_step_completed",
       source:"mission_complete", sourceEventId:statusEvent.id, occurredAt:now, metadata:{ attemptNo, stepNo:step.stepNo } });
     if (needsFinalApproval) statements.push(db.prepare("INSERT INTO approvals (id, mission_id, status, created_at) VALUES (?, ?, 'pending', ?) ON DUPLICATE KEY UPDATE status='pending', reason=NULL, decided_at=NULL").bind(crypto.randomUUID(), id, now));
-    if (followUpRequestId && followUpMessageId && mission.supervisorId) {
+    if (followUpRequestId && mission.supervisorId) {
       const category = normalizeFollowUpCategory(body.followUpCategory);
       statements.push(
-        db.prepare("INSERT INTO mission_follow_up_requests (id, mission_id, attempt_no, created_by, supervisor_id, assigned_to, category, request_text, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_supervisor', ?, ?)").bind(followUpRequestId, id, attemptNo, auth.user.id, mission.supervisorId, mission.supervisorId, category, body.report.trim(), now, now),
-        db.prepare("INSERT INTO mission_follow_up_messages (id, request_id, sender_id, message_type, body, created_at) VALUES (?, ?, ?, 'text', ?, ?)").bind(followUpMessageId, followUpRequestId, auth.user.id, body.report.trim(), now),
+        db.prepare("INSERT INTO mission_follow_up_requests (id, mission_id, attempt_no, created_by, supervisor_id, assigned_to, category, request_text, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_supervisor', ?, ?)").bind(followUpRequestId, id, attemptNo, auth.user.id, mission.supervisorId, mission.supervisorId, category, workReport, now, now),
       );
+      if (followUpMessageId) statements.push(db.prepare("INSERT INTO mission_follow_up_messages (id, request_id, sender_id, message_type, body, created_at) VALUES (?, ?, ?, 'text', ?, ?)").bind(followUpMessageId, followUpRequestId, auth.user.id, workReport, now));
     }
     try {
       await db.transaction(async transaction=>{
@@ -168,13 +171,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     .bind(id).first<{ attemptNo: number }>();
   const attemptNo = Number(attempt?.attemptNo ?? 1);
   const followUpRequestId = requestSupervisorAction ? crypto.randomUUID() : null;
-  const followUpMessageId = requestSupervisorAction ? crypto.randomUUID() : null;
+  const followUpMessageId = requestSupervisorAction && workReport ? crypto.randomUUID() : null;
   const attemptId = crypto.randomUUID();
   const statusEvent = prepareMissionStatusEvent(db, { missionId:id, attemptNo, actorId:auth.user.id, actorRole:auth.user.role,
     eventType:"status_set", fromStatus:mission.status, toStatus:status, result:workResult, serverRecordedAt:now,
-    location:endLocation, metadata:{ report:body.report.trim(), requestSupervisorAction, destinationName:registeredDestination.destinationName } });
+    location:endLocation, metadata:{ report:workReport, requestSupervisorAction, destinationName:registeredDestination.destinationName } });
   const statements = [
-    db.prepare("UPDATE missions SET status = ?, destination_name = ?, result = ?, report = ?, expense_amount = ?, score_pending = ?, score_confirmed = ?, score_penalty = ?, score_note = ?, completed_at = ?, end_latitude_e6 = ?, end_longitude_e6 = ?, end_accuracy_cm = ?, end_location_recorded_at = ? WHERE id = ? AND status = ?").bind(status, registeredDestination.destinationName, workResult, body.report.trim(), expenseAmount, pendingScore, confirmedScore, scorePenalty, scoreNote, now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, id, mission.status),
+    db.prepare("UPDATE missions SET status = ?, destination_name = ?, result = ?, report = ?, expense_amount = ?, score_pending = ?, score_confirmed = ?, score_penalty = ?, score_note = ?, completed_at = ?, end_latitude_e6 = ?, end_longitude_e6 = ?, end_accuracy_cm = ?, end_location_recorded_at = ? WHERE id = ? AND status = ?").bind(status, registeredDestination.destinationName, workResult, workReport, expenseAmount, pendingScore, confirmedScore, scorePenalty, scoreNote, now, endLatitudeE6, endLongitudeE6, endAccuracyCm, endLocationRecordedAt, id, mission.status),
     db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'mission.completed', 'mission', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, id, JSON.stringify({ status, baseScore, awardedScore, scorePenalty, scoreNote, completedWithoutStart, result: workResult, expenseAmount, requestSupervisorAction, endLocationRecordedAt, endAccuracy: Math.round(endLocation.accuracy) }), now),
     db.prepare(`INSERT INTO mission_attempts (
       id, mission_id, attempt_no, result, report, destination_name, expense_amount, score_awarded, score_penalty,
@@ -182,7 +185,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       destination_latitude_e6, destination_longitude_e6, destination_accuracy_cm, destination_recorded_at,
       end_latitude_e6, end_longitude_e6, end_accuracy_cm, end_location_recorded_at, approval_status, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
-      attemptId, id, attemptNo, workResult, body.report.trim(), registeredDestination.destinationName, expenseAmount,
+      attemptId, id, attemptNo, workResult, workReport, registeredDestination.destinationName, expenseAmount,
       awardedScore, scorePenalty, mission.startedAt, now, mission.startLatitudeE6, mission.startLongitudeE6,
       mission.startAccuracyCm, mission.startLocationRecordedAt, registeredDestination.latitudeE6,
       registeredDestination.longitudeE6, registeredDestination.accuracyCm, registeredDestination.recordedAt,
@@ -205,13 +208,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     ));
   }
   if (needsFinalApproval) statements.push(db.prepare("INSERT INTO approvals (id, mission_id, status, created_at) VALUES (?, ?, 'pending', ?) ON DUPLICATE KEY UPDATE status = 'pending', reason = NULL, decided_at = NULL").bind(crypto.randomUUID(), id, now));
-  if (followUpRequestId && followUpMessageId && mission.supervisorId) {
+  if (followUpRequestId && mission.supervisorId) {
     const category = normalizeFollowUpCategory(body.followUpCategory);
     statements.push(
-      db.prepare("INSERT INTO mission_follow_up_requests (id, mission_id, attempt_no, created_by, supervisor_id, assigned_to, category, request_text, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_supervisor', ?, ?)").bind(followUpRequestId, id, attemptNo, auth.user.id, mission.supervisorId, mission.supervisorId, category, body.report.trim(), now, now),
-      db.prepare("INSERT INTO mission_follow_up_messages (id, request_id, sender_id, message_type, body, created_at) VALUES (?, ?, ?, 'text', ?, ?)").bind(followUpMessageId, followUpRequestId, auth.user.id, body.report.trim(), now),
+      db.prepare("INSERT INTO mission_follow_up_requests (id, mission_id, attempt_no, created_by, supervisor_id, assigned_to, category, request_text, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_supervisor', ?, ?)").bind(followUpRequestId, id, attemptNo, auth.user.id, mission.supervisorId, mission.supervisorId, category, workReport, now, now),
       db.prepare("INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'follow_up.created', 'follow_up_request', ?, ?, ?)").bind(crypto.randomUUID(), auth.user.id, followUpRequestId, JSON.stringify({ missionId:id, attemptNo, category }), now),
     );
+    if (followUpMessageId) statements.push(db.prepare("INSERT INTO mission_follow_up_messages (id, request_id, sender_id, message_type, body, created_at) VALUES (?, ?, ?, 'text', ?, ?)").bind(followUpMessageId, followUpRequestId, auth.user.id, workReport, now));
   }
   try {
     await db.transaction(async transaction=>{
