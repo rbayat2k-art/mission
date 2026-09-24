@@ -732,7 +732,7 @@ test("rotates login sessions atomically and supports cached legacy password form
 });
 
 test("detects new releases without interrupting authenticated field work", async () => {
-  const [versionSource, versionRoute, versionGuard, page, styles, worker, health, nextConfig, packageJson, versionFile] = await Promise.all([
+  const [versionSource, versionRoute, versionGuard, page, styles, worker, health, identitySource, nextConfig, packageJson, versionFile] = await Promise.all([
     readFile(new URL("../lib/app-version.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/version/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/components/AppVersionGuard.tsx", import.meta.url), "utf8"),
@@ -740,6 +740,7 @@ test("detects new releases without interrupting authenticated field work", async
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
     readFile(new URL("../app/api/health/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/deployment-identity.ts", import.meta.url), "utf8"),
     readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../VERSION", import.meta.url), "utf8"),
@@ -759,7 +760,10 @@ test("detects new releases without interrupting authenticated field work", async
   assert.match(styles, /\.app-update-banner/);
   assert.match(worker, /self\.skipWaiting\(\)/);
   assert.match(worker, /self\.clients\.claim\(\)/);
-  assert.match(health, /APP_VERSION/);
+  assert.match(health, /getDeploymentIdentity/);
+  assert.match(identitySource, /APP_VERSION/);
+  assert.match(identitySource, /APP_COMMIT_SHA/);
+  assert.match(identitySource, /APP_ENVIRONMENT/);
   assert.match(nextConfig, /source: "\/"[\s\S]*Cache-Control[\s\S]*no-store/);
 });
 
