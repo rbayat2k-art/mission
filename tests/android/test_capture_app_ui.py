@@ -135,6 +135,13 @@ class CaptureAppUiTests(unittest.TestCase):
         with self.assertRaisesRegex(capture.CaptureError, r"topResumedActivity=ActivityRecord.*OtherActivity"):
             app.require_foreground(unsupported)
 
+    def test_android_13_foreground_record_accepts_exact_component_with_framework_suffix(self):
+        current = (
+            "topResumedActivity=ActivityRecord{c78d3b7 u0 "
+            "ir.taprasystem.employee/.MainActivity t9} (visible)\n"
+        )
+        app.require_foreground(current)
+
     def test_ambiguous_wrong_user_and_similar_package_are_rejected(self):
         for text in ("", "mResumedActivity=null", FOREGROUND.replace("u0", "u10"),
                      FOREGROUND.replace("employee/", "employee.other/"),

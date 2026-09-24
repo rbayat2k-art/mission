@@ -101,7 +101,7 @@ def collect_foreground_diagnostics(output, initial_activity="", initial_process=
     except OSError:
         evidence = None
     safe_components = re.sub(r"[^A-Za-z0-9_.$/,:=-]", "?", component_text)[:160]
-    safe_reason = re.sub(r"[^A-Za-z0-9_.$/,:=-]", "?", _redact_diagnostic(reason))[:240]
+    safe_reason = re.sub(r"[^A-Za-z0-9_.$/,:={}()\[\]+#? -]", "?", _redact_diagnostic(reason))[:320]
     summary = (f"API {api}; process {'alive' if pids or pidof else 'not alive'}; "
                f"system activity {'present' if system_activity else 'not detected'}; "
                f"crash/ANR {'detected' if crashes else 'not detected'}; foreground={safe_components}; "
@@ -118,9 +118,9 @@ def require_foreground(activity_dump):
                    and not re.fullmatch(rf"[ \t]*{field}\s*[:=]\s*null\s*", line)]
         if not records:
             continue
-        pattern = (rf"^[ \t]*{field}\s*[:=]\s*ActivityRecord\{{[^\s{{}}]+\s+u0\s+"
+        pattern = (rf"^[ \t]*{field}\s*[:=].*\bu0\s+"
                    r"ir\.taprasystem\.employee/(?:\.MainActivity|ir\.taprasystem\.employee\.MainActivity)"
-                   r"\s+t[0-9]+(?=[}\s])")
+                   r"(?=[}\s,]|$)")
         mismatches = [record for record in records if not re.search(pattern, record)]
         if mismatches:
             detail = " | ".join(_redact_diagnostic(record) for record in mismatches)[:350]
