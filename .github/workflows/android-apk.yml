@@ -245,11 +245,13 @@ jobs:
         working-directory: android
         shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           apk="app/build/outputs/apk/debug/app-debug.apk"
-          config="app/build/generated/source/buildConfig/debug/ir/taprasystem/employee/BuildConfig.java"
           test -s "$apk"
-          grep -Fq 'public static final boolean DEBUG = true;' "$config"
+          config="$(find app/build/generated/source/buildConfig -type f -path '*/debug/ir/taprasystem/employee/BuildConfig.java' -print -quit)"
+          test -n "$config"
+          grep -E 'public static final (boolean DEBUG|String BASE_URL|String APPLICATION_ID|int VERSION_CODE|String VERSION_NAME)' "$config"
+          grep -Eq 'public static final boolean DEBUG = (true|Boolean\.parseBoolean\("true"));' "$config"
           grep -Fq 'public static final String BASE_URL = "http://127.0.0.1:3215";' "$config"
           grep -Fq 'public static final String APPLICATION_ID = "ir.taprasystem.employee";' "$config"
           grep -Fq 'public static final int VERSION_CODE = 23;' "$config"
