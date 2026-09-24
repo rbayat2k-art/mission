@@ -125,27 +125,49 @@ jobs:
           profile: pixel_2
           disable-animations: true
           script: |
+            api_level=${{ matrix.api-level }}
+            ci_stage=emulator-startup
+            on_exit() {
+              result=$?
+              trap - EXIT
+              if [ "$result" -ne 0 ]; then
+                echo "::error title=Android emulator step::API ${api_level}; stage=${ci_stage}; exit=${result}"
+                python3 -B scripts/android/capture_app_ui.py "tapra-emulator-api-${api_level}.xml" --diagnostics-only || true
+              fi
+              exit "$result"
+            }
+            trap on_exit EXIT
+            ci_stage=apk-install
             adb install -r apk/tapra-employee-ci-debug.apk
+            ci_stage=precise-location-permission-grant
             adb shell pm grant ir.taprasystem.employee android.permission.ACCESS_FINE_LOCATION
+            ci_stage=notification-permission-grant
             adb shell pm grant ir.taprasystem.employee android.permission.POST_NOTIFICATIONS || true
+            ci_stage=first-activity-launch
             adb shell am start -W -n ir.taprasystem.employee/.MainActivity
             sleep 2
+            ci_stage=first-battery-gate-capture
             python3 -B scripts/android/capture_app_ui.py tapra-battery-gate-api-${{ matrix.api-level }}.xml --expect battery
+            ci_stage=battery-gate-assertion
             grep -q "تنظیم باتری برای ورود الزامی است" tapra-battery-gate-api-${{ matrix.api-level }}.xml
+            ci_stage=battery-exemption-and-relaunch
             adb shell dumpsys deviceidle whitelist +ir.taprasystem.employee
             adb shell am force-stop ir.taprasystem.employee
             adb shell am start -W -n ir.taprasystem.employee/.MainActivity
             sleep 15
+            ci_stage=post-relaunch-ui-capture
             adb shell dumpsys webviewupdate > android-webview-api-${{ matrix.api-level }}.txt
             adb logcat -d -t 800 > android-logcat-api-${{ matrix.api-level }}.txt
             if grep -A 20 "FATAL EXCEPTION" android-logcat-api-${{ matrix.api-level }}.txt | grep -q "ir.taprasystem.employee"; then cat android-logcat-api-${{ matrix.api-level }}.txt; exit 1; fi
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
             python3 -B scripts/android/capture_app_ui.py tapra-ui-api-${{ matrix.api-level }}.xml --expect page
             if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" tapra-ui-api-${{ matrix.api-level }}.xml; then cat tapra-ui-api-${{ matrix.api-level }}.xml; exit 1; fi
+            ci_stage=fresh-screen-verification
             python3 -B scripts/android/verify_login_screen.py --xml tapra-ui-api-${{ matrix.api-level }}.xml --png android-screen-api-${{ matrix.api-level }}.png --expect "${{ matrix.api-level >= 31 && 'login' || 'obsolete-webview' }}"
             adb logcat -d -t 800 > android-logcat-post-capture-api-${{ matrix.api-level }}.txt
             if grep -A 20 "FATAL EXCEPTION" android-logcat-post-capture-api-${{ matrix.api-level }}.txt | grep -q "ir.taprasystem.employee"; then cat android-logcat-post-capture-api-${{ matrix.api-level }}.txt; exit 1; fi
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
+            trap - EXIT
       - name: Preserve emulator UI evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -302,15 +324,29 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
           script: |
+            ci_stage=emulator-verification
+            on_exit() {
+              result=$?
+              trap - EXIT
+              if [ "$result" -ne 0 ]; then
+                echo "::error title=Signed APK emulator step::API ${TEST_API_LEVEL}; stage=${ci_stage}; exit=${result}"
+                python3 -B scripts/android/capture_app_ui.py apk/signed-release-emulator.xml --diagnostics-only || true
+              fi
+              exit "$result"
+            }
+            trap on_exit EXIT
             test "$(adb shell getprop ro.kernel.qemu | tr -d '\r')" = "1"
             adb shell pm list packages ir.taprasystem.employee > apk/signed-release-preinstalled.txt
             if grep -q 'package:ir.taprasystem.employee' apk/signed-release-preinstalled.txt; then echo "Expected a fresh emulator with no TAPRA installation" >&2; exit 1; fi
+            ci_stage=apk-install
             adb install apk/final.apk
             adb shell pm grant ir.taprasystem.employee android.permission.ACCESS_COARSE_LOCATION
             adb shell pm grant ir.taprasystem.employee android.permission.ACCESS_FINE_LOCATION
             if [ "$TEST_API_LEVEL" -ge 33 ]; then adb shell pm grant ir.taprasystem.employee android.permission.POST_NOTIFICATIONS; fi
+            ci_stage=first-activity-launch
             adb shell am start -W -n ir.taprasystem.employee/.MainActivity
             sleep 2
+            ci_stage=first-battery-gate-capture
             python3 -B scripts/android/capture_app_ui.py apk/signed-release-battery.xml --expect battery
             grep -q "تنظیم باتری برای ورود الزامی است" apk/signed-release-battery.xml
             adb shell dumpsys deviceidle whitelist +ir.taprasystem.employee
@@ -359,6 +395,7 @@ jobs:
             python3 -B scripts/android/package_identity.py apk/signed-release-package-after.txt apk/signed-release-android-user-after.txt > apk/signed-release-uid-after.txt
             cmp apk/signed-release-uid-before.txt apk/signed-release-uid-after.txt
             printf '%s  apk/final.apk\n' "$SIGNED_RELEASE_SHA256" | sha256sum --check --strict
+            trap - EXIT
       - name: Retain non-secret signed-release verification evidence
         if: always()
         uses: actions/upload-artifact@v4

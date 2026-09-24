@@ -128,6 +128,12 @@ class CaptureAppUiTests(unittest.TestCase):
             for component in (".MainActivity", "ir.taprasystem.employee.MainActivity"):
                 app.require_foreground(f"  {field}{separator} ActivityRecord{{abc u0 ir.taprasystem.employee/{component} t1}}")
         app.require_foreground("topResumedActivity=null\n" + FOREGROUND)
+        app.require_foreground(FOREGROUND + " state=RESUMED")
+
+    def test_foreground_failure_reports_the_record_shape_without_relaxing_the_check(self):
+        unsupported = "topResumedActivity=ActivityRecord{abc u0 ir.taprasystem.employee/.OtherActivity t42}\n"
+        with self.assertRaisesRegex(capture.CaptureError, r"topResumedActivity=ActivityRecord.*OtherActivity"):
+            app.require_foreground(unsupported)
 
     def test_ambiguous_wrong_user_and_similar_package_are_rejected(self):
         for text in ("", "mResumedActivity=null", FOREGROUND.replace("u0", "u10"),
@@ -156,6 +162,13 @@ class CaptureAppUiTests(unittest.TestCase):
         self.assertNotIn("secret-value", content)
         self.assertNotIn("trailing-private", content)
         self.assertNotIn("?token=private", content)
+
+    def test_diagnostics_only_collects_state_without_running_ui_assertions(self):
+        errors = io.StringIO()
+        with self.adb(post_activity=FOREGROUND), contextlib.redirect_stderr(errors):
+            self.assertEqual(app.main([str(self.output), "--diagnostics-only"]), 0)
+        self.assertTrue(self.output.with_suffix(".foreground-diagnostics.txt").is_file())
+        self.assertIn("Android emulator state", errors.getvalue())
 
     def test_cli_returns_failure_without_printing_application_data(self):
         errors = io.StringIO()

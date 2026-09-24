@@ -50,7 +50,7 @@ def _foreground_components(activity_dump):
     return result
 
 
-def collect_foreground_diagnostics(output, initial_activity="", initial_process=""):
+def collect_foreground_diagnostics(output, initial_activity="", initial_process="", reason=""):
     """Save sanitized Android state if TAPRA is not the current foreground activity."""
     api = diagnostic_adb("shell", "getprop", "ro.build.version.sdk").strip() or "unknown"
     activity = diagnostic_adb("shell", "dumpsys", "activity", "activities") or initial_activity
@@ -77,6 +77,7 @@ def collect_foreground_diagnostics(output, initial_activity="", initial_process=
     sections = [
         "TAPRA emulator foreground diagnostics (sanitized)",
         f"Android API level: {api}",
+        f"Foreground assertion detail: {reason or '<not provided>'}",
         f"Current foreground activity fields: {component_text}",
         f"System/settings/permission activity detected: {'yes' if system_activity else 'no'}",
         f"TAPRA process alive: {'yes' if pids or pidof else 'no'}",
@@ -99,10 +100,12 @@ def collect_foreground_diagnostics(output, initial_activity="", initial_process=
         evidence.write_text("\n".join(_redact_diagnostic(line) for line in sections) + "\n", encoding="utf-8")
     except OSError:
         evidence = None
-    safe_components = re.sub(r"[^A-Za-z0-9_.$/,:=-]", "?", component_text)[:250]
+    safe_components = re.sub(r"[^A-Za-z0-9_.$/,:=-]", "?", component_text)[:160]
+    safe_reason = re.sub(r"[^A-Za-z0-9_.$/,:=-]", "?", _redact_diagnostic(reason))[:240]
     summary = (f"API {api}; process {'alive' if pids or pidof else 'not alive'}; "
                f"system activity {'present' if system_activity else 'not detected'}; "
-               f"crash/ANR {'detected' if crashes else 'not detected'}; foreground={safe_components}")
+               f"crash/ANR {'detected' if crashes else 'not detected'}; foreground={safe_components}; "
+               f"assertion={safe_reason}")
     return evidence, summary
 
 
@@ -115,11 +118,13 @@ def require_foreground(activity_dump):
                    and not re.fullmatch(rf"[ \t]*{field}\s*[:=]\s*null\s*", line)]
         if not records:
             continue
-        pattern = (rf"[ \t]*{field}\s*[:=]\s*ActivityRecord\{{[^\s{{}}]+\s+u0\s+"
+        pattern = (rf"^[ \t]*{field}\s*[:=]\s*ActivityRecord\{{[^\s{{}}]+\s+u0\s+"
                    r"ir\.taprasystem\.employee/(?:\.MainActivity|ir\.taprasystem\.employee\.MainActivity)"
-                   r"\s+t[0-9]+(?:\s+[^{}]*)?\}\s*")
-        if not all(re.fullmatch(pattern, record) for record in records):
-            raise CaptureError("TAPRA MainActivity is not the foreground activity for user zero")
+                   r"\s+t[0-9]+(?=[}\s])")
+        mismatches = [record for record in records if not re.search(pattern, record)]
+        if mismatches:
+            detail = " | ".join(_redact_diagnostic(record) for record in mismatches)[:350]
+            raise CaptureError("TAPRA MainActivity is not the foreground activity for user zero; " + detail)
         return
     raise CaptureError("Current foreground TAPRA activity evidence is missing")
 
@@ -139,7 +144,8 @@ def require_live_app(diagnostic_output=None):
     if len(pids) != 1 or foreground_error:
         reason = "TAPRA application process is not running or is ambiguous" if len(pids) != 1 else str(foreground_error)
         if diagnostic_output is not None:
-            evidence, summary = collect_foreground_diagnostics(diagnostic_output, activity_dump, processes)
+            evidence, summary = collect_foreground_diagnostics(
+                diagnostic_output, activity_dump, processes, str(foreground_error or "process state mismatch"))
             evidence_name = evidence.name if evidence else "unavailable"
             print(f"::error title=Android foreground diagnosis::{summary}; evidence={evidence_name}", file=sys.stderr)
             if evidence:
@@ -181,9 +187,18 @@ def verify_capture(output, expect):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--expect", choices=("battery", "page"), required=True)
+    parser.add_argument("--expect", choices=("battery", "page"))
+    parser.add_argument("--diagnostics-only", action="store_true",
+                        help="write sanitized current emulator state after another CI command fails")
     args = parser.parse_args(argv)
     try:
+        if args.diagnostics_only:
+            evidence, summary = collect_foreground_diagnostics(args.output)
+            evidence_name = evidence.name if evidence else "unavailable"
+            print(f"::error title=Android emulator state::{summary}; evidence={evidence_name}", file=sys.stderr)
+            return 0 if evidence else 1
+        if not args.expect:
+            parser.error("--expect is required unless --diagnostics-only is used")
         verify_capture(args.output, args.expect)
     except CaptureError as error:
         print(f"Application UI verification failed: {error}", file=sys.stderr)

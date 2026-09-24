@@ -63,10 +63,15 @@ test("Android UI tooling recovery cannot bypass application assertions", async (
   assert.match(workflow, /python3 -B -m unittest discover -s tests\/android -p 'test_capture\*\.py' -v/);
   assert.match(workflow, /capture_app_ui\.py tapra-battery-gate-api-.* --expect battery/);
   assert.match(workflow, /capture_app_ui\.py tapra-ui-api-.* --expect page/);
-  assert.doesNotMatch(workflow, /adb shell uiautomator dump|capture_app_ui[^\n]*\|\| true|continue-on-error/);
+  assert.doesNotMatch(workflow, /adb shell uiautomator dump|capture_app_ui\.py[^\n]*--expect (?:battery|page)[^\n]*\|\| true|continue-on-error/);
   assert.match(workflow, /grep -q "تنظیم باتری برای ورود الزامی است"/);
   assert.match(workflow, /FATAL EXCEPTION/);
   assert.match(workflow, /if grep -Eq "صفحه سامانه بارگذاری نشد\|در حال بازکردن راهکار"/);
+  assert.match(workflow,/stage=\$\{ci_stage\}/);
+  assert.match(workflow,/capture_app_ui\.py "tapra-emulator-api-\$\{api_level\}\.xml" --diagnostics-only/);
+  assert.match(workflow,/apk\/signed-release-emulator\.xml --diagnostics-only/);
+  assert.match(workflow,/tapra-\*\.foreground-diagnostics\.txt/);
+  assert.match(workflow,/apk\/signed-release-\*\.foreground-diagnostics\.txt/);
   assert.match(workflow, /Preserve emulator UI evidence\s+if: always\(\)/);
 });
 
@@ -74,7 +79,7 @@ test("Android UI capture preserves battery and startup gates after recovered too
   const source=await read("../.github/workflows/android-apk.yml");
   const workflow=source.slice(source.indexOf("  build-debug:"),source.indexOf("  release-build:"));
   assert.match(workflow,/python3 -B -m unittest discover -s tests\/android -p 'test_capture\*\.py' -v/);
-  assert.equal((workflow.match(/python3 -B scripts\/android\/capture_app_ui\.py /g)||[]).length,2);
+  assert.equal((workflow.match(/python3 -B scripts\/android\/capture_app_ui\.py /g)||[]).length,3);
   assert.match(workflow,/capture_app_ui\.py tapra-battery-gate-api-.* --expect battery/);
   assert.match(workflow,/grep -q "تنظیم باتری برای ورود الزامی است" tapra-battery-gate-api/);
   assert.match(workflow,/deviceidle whitelist \+ir\.taprasystem\.employee/);
