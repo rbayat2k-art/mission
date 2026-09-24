@@ -1,7 +1,7 @@
 import { ensureDatabase } from "../../../db/runtime";
 import { requireRole } from "../../../lib/auth";
 import { getEmployeeDailySummary } from "../../../lib/employee-daily-summary";
-import { parseMissionLocation } from "../../../lib/mission-location";
+import { parseMissionLocation, validateTrustedLocation } from "../../../lib/mission-location";
 import { getDailyWorkMetrics, GPS_GAP_GRACE_MINUTES, OVERTIME_START_MINUTES, reconcileNineHourLimit, SELF_REPORTED_START_PENALTY, tehranDayBounds, tehranTimeTodayToIso } from "../../../lib/work-session-policy";
 import { pushScoreLedgerEntry } from "../../../lib/score-ledger";
 
@@ -17,10 +17,35 @@ type WorkSessionBody = {
   endTime?: string;
 };
 
+const privateNoStoreHeaders = { "Cache-Control":"private, no-store, max-age=0", "Pragma":"no-cache", "Vary":"Cookie" };
+
 function freshLocation(input: unknown, now = new Date()) {
   const location = parseMissionLocation(input);
   if (!location || now.getTime() - Date.parse(location.recordedAt) > 2 * 60_000 || location.accuracy > 100) return null;
   return location;
+}
+
+function clientTimeFromRequest(request: Request) {
+  const value = request.headers.get("x-tapra-client-time");
+  if (!value || value.length > 64) return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : null;
+}
+
+function locationRejection(input: unknown, nowDate: Date, clientTimeMs: number | null) {
+  const validation = validateTrustedLocation(input, { nowMs: nowDate.getTime(), maxAgeMs: 2 * 60_000, clientTimeMs });
+  if (!validation.code) return null;
+  const messages: Record<typeof validation.code, string> = {
+    LOCATION_MISSING: "موقعیت GPS دریافت نشد؛ Location گوشی را روشن کنید و دوباره تلاش کنید.",
+    LOCATION_INVALID_COORDINATES: "مختصات GPS معتبر نیست؛ چند لحظه در فضای باز منتظر بمانید و دوباره بزنید.",
+    LOCATION_INVALID_ACCURACY: "دقت موقعیت GPS معتبر نیست؛ دوباره برای دریافت موقعیت تلاش کنید.",
+    LOCATION_ACCURACY_TOO_LOW: "دقت GPS برای شروع کافی نیست؛ دسترسی موقعیت دقیق را فعال کنید و چند لحظه منتظر بمانید.",
+    LOCATION_INVALID_TIMESTAMP: "زمان موقعیت GPS معتبر نیست؛ تاریخ و ساعت خودکار گوشی را فعال کنید.",
+    LOCATION_STALE: "موقعیت GPS قدیمی است؛ چند لحظه برای دریافت یک موقعیت تازه منتظر بمانید و دوباره تلاش کنید.",
+    LOCATION_CLOCK_SKEW: "ساعت گوشی با سرور هماهنگ نیست؛ تاریخ و ساعت خودکار را فعال کنید و دوباره تلاش کنید.",
+    LOCATION_FUTURE_TIMESTAMP: "زمان GPS از ساعت سرور جلوتر است؛ تاریخ و ساعت خودکار گوشی را فعال کنید.",
+  };
+  return Response.json({ error: messages[validation.code], code: validation.code, diagnostics: validation.diagnostics }, { status: 400, headers: privateNoStoreHeaders });
 }
 
 function locationInsert(db: Awaited<ReturnType<typeof ensureDatabase>>, userId: string, sessionId: string, location: NonNullable<ReturnType<typeof freshLocation>>, receivedAt: string) {
@@ -45,7 +70,7 @@ export async function GET(request: Request) {
       overtimeMinutes: today.overtimeMinutes, unverifiedGpsMinutes: today.unverifiedGpsMinutes,
       pendingCorrectionMinutes: today.pendingCorrectionMinutes,
     },
-  });
+  }, { headers:privateNoStoreHeaders });
 }
 
 export async function POST(request: Request) {
@@ -55,25 +80,34 @@ export async function POST(request: Request) {
   const db = await ensureDatabase();
   const nowDate = new Date();
   const now = nowDate.toISOString();
-  if (body.action !== "end") await reconcileNineHourLimit(auth.user.id, nowDate);
+  if (body.action !== "end" && body.action !== "start") await reconcileNineHourLimit(auth.user.id, nowDate);
 
   if (body.action === "start") {
-    const location = freshLocation(body.location, nowDate);
     const requestedSessionId = body.clientSessionId?.trim() ?? "";
     const clientSessionId = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedSessionId)
       ? requestedSessionId
       : null;
-    if (!location) return Response.json({ error: "شروع فعالیت فقط با GPS روشن، موقعیت تازه و دقت حداکثر ۱۰۰ متر امکان‌پذیر است." }, { status: 400 });
     if (clientSessionId) {
       const replay = await db.prepare("SELECT id, user_id AS userId, status, started_at AS startedAt, COALESCE(work_type, 'regular') AS workType FROM work_sessions WHERE id = ?")
         .bind(clientSessionId).first<{id:string;userId:string;status:string;startedAt:string;workType:string}>();
       if (replay) {
         if (replay.userId !== auth.user.id) return Response.json({ error:"شناسه فعالیت معتبر نیست." }, { status:409 });
-        return Response.json({ session:{ id:replay.id, status:replay.status, startedAt:replay.startedAt, workType:replay.workType }, replayed:true });
+        if (replay.status !== "active") return Response.json({ error:"این شناسه فعالیت قبلاً پایان یافته است؛ صفحه را تازه‌سازی کنید.", code:"WORK_SESSION_ALREADY_ENDED" }, { status:409, headers:{"Cache-Control":"private, no-store"} });
+        return Response.json({ session:{ id:replay.id, status:replay.status, startedAt:replay.startedAt, workType:replay.workType }, replayed:true }, { headers:privateNoStoreHeaders });
       }
     }
-    const existing = await db.prepare("SELECT id FROM work_sessions WHERE user_id = ? AND status = 'active'").bind(auth.user.id).first<{ id: string }>();
-    if (existing) return Response.json({ error: "فعالیت باز وجود دارد." }, { status: 409 });
+    // Existing active work is an idempotent recovery path; this read-only
+    // check must happen before GPS validation so the employee can recover it.
+    const alreadyActive = await db.prepare("SELECT id, started_at AS startedAt, COALESCE(work_type, 'regular') AS workType FROM work_sessions WHERE user_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1").bind(auth.user.id).first<{ id: string; startedAt:string; workType:string }>();
+    if (alreadyActive) return Response.json({ error: "یک فعالیت باز برای حساب شما پیدا شد و بازیابی می‌شود.", code:"ACTIVE_WORK_SESSION_EXISTS", session:{ id:alreadyActive.id, status:"active", startedAt:alreadyActive.startedAt, workType:alreadyActive.workType } }, { status: 409, headers:privateNoStoreHeaders });
+    const locationError = locationRejection(body.location, nowDate, clientTimeFromRequest(request));
+    if (locationError) return locationError;
+    const location = freshLocation(body.location, nowDate);
+    if (!location) return Response.json({ error:"موقعیت GPS برای شروع معتبر نیست.", code:"LOCATION_MISSING" }, { status:400, headers:privateNoStoreHeaders });
+    // Invalid/stale GPS must not trigger reconciliation side effects.
+    await reconcileNineHourLimit(auth.user.id, nowDate);
+    const existing = await db.prepare("SELECT id, started_at AS startedAt, COALESCE(work_type, 'regular') AS workType FROM work_sessions WHERE user_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1").bind(auth.user.id).first<{ id: string; startedAt:string; workType:string }>();
+    if (existing) return Response.json({ error: "یک فعالیت باز برای حساب شما پیدا شد و بازیابی می‌شود.", code:"ACTIVE_WORK_SESSION_EXISTS", session:{ id:existing.id, status:"active", startedAt:existing.startedAt, workType:existing.workType } }, { status: 409, headers:privateNoStoreHeaders });
     const metrics = await getDailyWorkMetrics(auth.user.id, nowDate);
     const workType = metrics.regularMinutes >= OVERTIME_START_MINUTES ? "overtime" : "regular";
     const sessionId = clientSessionId ?? crypto.randomUUID();
@@ -85,7 +119,7 @@ export async function POST(request: Request) {
         .bind(crypto.randomUUID(), auth.user.id, session.id, JSON.stringify({ workType, accuracy: Math.round(location.accuracy), recordedAt: location.recordedAt }), now),
     ];
     await db.batch(statements);
-    return Response.json({ session, policy: { overtime: workType === "overtime" } }, { status: 201 });
+    return Response.json({ session, policy: { overtime: workType === "overtime" } }, { status: 201, headers:privateNoStoreHeaders });
   }
 
   if (body.action === "self_report_start") {

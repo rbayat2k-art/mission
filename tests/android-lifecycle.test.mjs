@@ -17,6 +17,7 @@ test("native lifecycle rejects late replies after account/shift changes and proc
   const output = await mkdtemp(join(tmpdir(),"tapra-native-lifecycle-"));
   const compiled = spawnSync(executable("javac"),["-encoding","UTF-8","-d",output,
     fileURLToPath(new URL("TrackingRequestScope.java",native)),
+    fileURLToPath(new URL("TrustedLocationPolicy.java",native)),
     fileURLToPath(new URL("android/TrackingRequestScopeTest.java",import.meta.url)),
   ],{encoding:"utf8"});
   assert.equal(compiled.status,0,compiled.stderr);
@@ -31,7 +32,11 @@ test("Android runtime asks for paired location permissions and registers disable
   assert.match(activity,/permissions\.add\(Manifest\.permission\.ACCESS_FINE_LOCATION\);\s*permissions\.add\(Manifest\.permission\.ACCESS_COARSE_LOCATION\)/);
   const registration = service.slice(service.indexOf("private void startTracking()"),service.indexOf("public void onLocationChanged"));
   assert.match(registration,/getAllProviders\(\)\.contains\(LocationManager\.GPS_PROVIDER\)/);
-  assert.doesNotMatch(registration,/isProviderEnabled/);
+  assert.match(activity,/hasPreciseLocationPermission/);
+  assert.match(activity,/callback\.invoke\(origin, true, hasPreciseLocationPermission\(\)\)/);
+  assert.match(registration,/isProviderEnabled/);
+  assert.match(registration,/publishTrackingState\("degraded", "location_disabled"\)/);
+  assert.match(registration,/requestLocationUpdates\(LocationManager\.GPS_PROVIDER/);
 });
 
 test("native network replies preserve dispatch identity through headers, queue acknowledgements and notifications", async () => {

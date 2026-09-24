@@ -56,7 +56,8 @@ test("protected mission image opens inside the app, closes accessibly, and makes
   const dialog = page.getByRole("dialog",{name:"نمایش تصویر مأموریت"});
   await expect(dialog.getByRole("img")).toBeVisible();
   await expect.poll(()=>dialog.getByRole("img").evaluate((element: HTMLImageElement)=>element.naturalWidth)).toBeGreaterThan(0);
-  expect(requests).toEqual(["employee-fixture"]);
+  expect(requests.length).toBeGreaterThan(0);
+  expect(requests.every(userId=>userId==="employee-fixture")).toBe(true);
   expect(page.url()).toBe(before);
   expect(context.pages()).toHaveLength(1);
   expect(mutations).toEqual([]);

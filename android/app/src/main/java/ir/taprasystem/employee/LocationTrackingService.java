@@ -41,8 +41,12 @@ public class LocationTrackingService extends Service implements LocationListener
     public static final String ACTION_START = "ir.taprasystem.employee.action.START_TRACKING";
     public static final String ACTION_STOP = "ir.taprasystem.employee.action.STOP_TRACKING";
     public static final String ACTION_SESSION_ENDED = "ir.taprasystem.employee.action.SESSION_ENDED";
+    public static final String ACTION_TRACKING_STATE = "ir.taprasystem.employee.action.TRACKING_STATE";
     public static final String EXTRA_USER_ID = "ir.taprasystem.employee.extra.USER_ID";
     public static final String EXTRA_WORK_SESSION_ID = "ir.taprasystem.employee.extra.WORK_SESSION_ID";
+    public static final String EXTRA_STATE_SESSION_ID = "ir.taprasystem.employee.extra.STATE_SESSION_ID";
+    public static final String EXTRA_STATE = "ir.taprasystem.employee.extra.STATE";
+    public static final String EXTRA_STATE_REASON = "ir.taprasystem.employee.extra.STATE_REASON";
 
     private static final String BASE_URL = BuildConfig.BASE_URL.replaceAll("/+$", "");
     private static final String LOCATION_ENDPOINT = BASE_URL + "/api/locations";
@@ -110,32 +114,59 @@ public class LocationTrackingService extends Service implements LocationListener
         preferences.edit().putBoolean("tracking_requested", true)
             .putString("tracking_user_id", trackingUserId)
             .putString("tracking_work_session_id", trackingWorkSessionId).apply();
-        startForeground(NOTIFICATION_ID, buildNotification("در انتظار دریافت موقعیت دقیق…"));
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification("در انتظار دریافت موقعیت دقیق…"));
+        } catch (RuntimeException foregroundFailure) {
+            publishTrackingState("error", "service_start_failed");
+            stopTracking(false);
+            return START_NOT_STICKY;
+        }
         startTracking();
         return START_STICKY;
     }
 
     private void startTracking() {
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
-            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        boolean precise = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        if (!precise && checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             updateNotification("دسترسی موقعیت داده نشده است");
+            publishTrackingState("degraded", "location_permission");
             return;
         }
         acquireWakeLock();
+        boolean updatesRequested = false;
         try {
             // Register even while disabled so enabling GPS later resumes this
             // activity without needing to close and reopen the application.
             if (locationManager.getAllProviders().contains(LocationManager.GPS_PROVIDER)) {
                 locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER,
                     UPDATE_INTERVAL_MS, UPDATE_DISTANCE_METERS, this, Looper.getMainLooper());
+                updatesRequested = true;
             }
-        } catch (Exception ignored) { }
+        } catch (SecurityException permissionRevoked) { publishTrackingState("degraded", "location_permission"); }
+        catch (Exception ignored) { }
         try {
             if (locationManager.getAllProviders().contains(LocationManager.NETWORK_PROVIDER)) {
                 locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER,
                     UPDATE_INTERVAL_MS, UPDATE_DISTANCE_METERS, this, Looper.getMainLooper());
+                updatesRequested = true;
             }
-        } catch (Exception ignored) { }
+        } catch (SecurityException permissionRevoked) { publishTrackingState("degraded", "location_permission"); }
+        catch (Exception ignored) { }
+        boolean anyEnabled = false;
+        try { anyEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) || locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER); }
+        catch (Exception ignored) { }
+        if (!anyEnabled) {
+            updateNotification("Location گوشی خاموش است؛ فعالیت ثبت است و با روشن‌شدن مکان‌یابی ادامه می‌یابد");
+            publishTrackingState("degraded", "location_disabled");
+        } else if (!precise) {
+            updateNotification("دسترسی موقعیت تقریبی است؛ برای ثبت دقیق، Precise را فعال کنید");
+            publishTrackingState("degraded", "approximate_location");
+        } else if (updatesRequested) {
+            publishTrackingState("starting", "");
+        } else {
+            updateNotification("ثبت GPS شروع نشد؛ مجوز و سرویس Location را بررسی کنید");
+            publishTrackingState("degraded", "no_provider");
+        }
         mainHandler.removeCallbacks(periodicFlush);
         mainHandler.post(periodicFlush);
     }
@@ -162,6 +193,10 @@ public class LocationTrackingService extends Service implements LocationListener
             else point.put("heading", JSONObject.NULL);
             point.put("recordedAt", isoTimestamp(location.getTime()));
             appendPoint(point);
+            boolean precise = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+            String rejectionReason = TrustedLocationPolicy.rejectionReason(precise, mocked, location.getAccuracy());
+            if (rejectionReason != null) publishTrackingState("degraded", rejectionReason);
+            else publishTrackingState("active", "");
             updateNotification(mocked
                 ? "موقعیت غیرواقعی شناسایی شد؛ این نقطه در کارکرد پذیرفته نمی‌شود"
                 : "آخرین موقعیت ثبت شد · دقت " + Math.round(location.getAccuracy()) + " متر");
@@ -178,11 +213,13 @@ public class LocationTrackingService extends Service implements LocationListener
     @Override
     public void onProviderDisabled(String provider) {
         updateNotification("GPS خاموش است؛ برای ادامه ثبت آن را روشن کنید");
+        publishTrackingState("degraded", "location_disabled");
     }
 
     @Override
     public void onProviderEnabled(String provider) {
         updateNotification("GPS روشن است؛ در حال دریافت موقعیت…");
+        publishTrackingState("starting", "");
     }
 
     @Override
@@ -507,6 +544,14 @@ public class LocationTrackingService extends Service implements LocationListener
     private void stopTrackingForServerEnd() {
         stopTracking(false);
         Intent intent = new Intent(ACTION_SESSION_ENDED).setPackage(getPackageName());
+        sendBroadcast(intent, INTERNAL_BROADCAST_PERMISSION);
+    }
+
+    private void publishTrackingState(String state, String reason) {
+        Intent intent = new Intent(ACTION_TRACKING_STATE).setPackage(getPackageName())
+            .putExtra(EXTRA_STATE_SESSION_ID, trackingWorkSessionId)
+            .putExtra(EXTRA_STATE, state)
+            .putExtra(EXTRA_STATE_REASON, reason == null ? "" : reason);
         sendBroadcast(intent, INTERNAL_BROADCAST_PERMISSION);
     }
 

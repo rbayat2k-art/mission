@@ -40,6 +40,8 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+
+import org.json.JSONObject;
 import android.widget.Toast;
 
 import java.util.ArrayList;
@@ -86,7 +88,12 @@ public class MainActivity extends Activity {
     private final BroadcastReceiver trackingReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (LocationTrackingService.ACTION_SESSION_ENDED.equals(intent.getAction()) && webView != null) {
+            if (LocationTrackingService.ACTION_TRACKING_STATE.equals(intent.getAction())) {
+                String sessionId = intent.getStringExtra(LocationTrackingService.EXTRA_STATE_SESSION_ID);
+                String state = intent.getStringExtra(LocationTrackingService.EXTRA_STATE);
+                String reason = intent.getStringExtra(LocationTrackingService.EXTRA_STATE_REASON);
+                dispatchTrackingState(true, sessionId, state, reason);
+            } else if (LocationTrackingService.ACTION_SESSION_ENDED.equals(intent.getAction()) && webView != null) {
                 webView.post(() -> {
                     if (canUseWebContent(webView)) webView.evaluateJavascript("window.location.reload()", null);
                 });
@@ -351,7 +358,7 @@ public class MainActivity extends Activity {
                 super.onPageFinished(view, url);
                 if (!canUseWebContent(view) || mainFrameFailed) return;
                 CookieManager.getInstance().flush();
-                if (isTrustedWebOrigin(url) && hasLocationPermission()) {
+                if (isTrustedWebOrigin(url) && hasAnyLocationPermission()) {
                     Uri pageUri = Uri.parse(url);
                     String origin = pageUri.getScheme() + "://" + pageUri.getAuthority();
                     GeolocationPermissions.getInstance().allow(origin);
@@ -414,12 +421,12 @@ public class MainActivity extends Activity {
                     callback.invoke(origin, false, false);
                     return;
                 }
-                if (hasLocationPermission()) {
+                if (hasAnyLocationPermission()) {
                     GeolocationPermissions.getInstance().allow(origin);
-                    callback.invoke(origin, true, true);
+                    callback.invoke(origin, true, hasPreciseLocationPermission());
                     return;
                 }
-                resolvePendingGeolocation(false);
+                resolvePendingGeolocation(false, false);
                 pendingGeolocationOrigin = origin;
                 pendingGeolocationCallback = callback;
                 requestRuntimePermissions();
@@ -561,21 +568,21 @@ public class MainActivity extends Activity {
             backend.getPort() == uri.getPort();
     }
 
-    private void resolvePendingGeolocation(boolean granted) {
+    private void resolvePendingGeolocation(boolean granted, boolean precise) {
         if (pendingGeolocationCallback == null || pendingGeolocationOrigin == null) return;
         GeolocationPermissions.Callback callback = pendingGeolocationCallback;
         String origin = pendingGeolocationOrigin;
         pendingGeolocationCallback = null;
         pendingGeolocationOrigin = null;
         if (granted) GeolocationPermissions.getInstance().allow(origin);
-        callback.invoke(origin, granted, granted);
+        callback.invoke(origin, granted, granted && precise);
     }
 
     private void requestRuntimePermissions() {
         if (permissionRequestInFlight) return;
         List<String> permissions = new ArrayList<>();
-        if (!hasLocationPermission()) {
-            // Android 12+ can ignore a fine-only runtime request.
+        if (!hasPreciseLocationPermission()) {
+            // Android 12+ presents precise and approximate choices when both are requested.
             permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
             permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION);
         }
@@ -589,9 +596,13 @@ public class MainActivity extends Activity {
         }
     }
 
-    private boolean hasLocationPermission() {
+    private boolean hasAnyLocationPermission() {
         return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean hasPreciseLocationPermission() {
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
     }
 
     private boolean hasNotificationPermission() {
@@ -641,13 +652,14 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode != PERMISSION_REQUEST) return;
         permissionRequestInFlight = false;
-        boolean locationGranted = hasLocationPermission();
-        resolvePendingGeolocation(locationGranted);
+        boolean locationGranted = hasAnyLocationPermission();
+        boolean preciseLocationGranted = hasPreciseLocationPermission();
+        resolvePendingGeolocation(locationGranted, preciseLocationGranted);
         dispatchNativeNotificationPermissionState();
         if (locationGranted && webView != null) {
             webView.post(() -> {
                 if (canUseWebContent(webView)) webView.evaluateJavascript(
-                    "window.dispatchEvent(new CustomEvent('tapra-location-permission-granted'))", null);
+                    "window.dispatchEvent(new CustomEvent('tapra-location-permission-granted',{detail:{precise:" + preciseLocationGranted + "}}))", null);
             });
         }
     }
@@ -655,19 +667,22 @@ public class MainActivity extends Activity {
     private void setTrackingActive(boolean active, String workSessionId) {
         String activeUserId = NativeNotificationHelper.activeUserId(this);
         String safeWorkSessionId = workSessionId == null ? "" : workSessionId.trim();
+        dispatchTrackingState(active, safeWorkSessionId, active ? "starting" : "stopped", "");
         if (active && activeUserId.isEmpty()) {
             Toast.makeText(this,
                 "برای شروع فعالیت دوباره وارد حساب کاربری شوید", Toast.LENGTH_LONG).show();
+            dispatchTrackingState(true, safeWorkSessionId, "error", "missing_user");
             return;
         }
         if (active && safeWorkSessionId.isEmpty()) {
             Toast.makeText(this, "شناسه فعالیت دریافت نشد؛ برنامه را تازه‌سازی کنید", Toast.LENGTH_LONG).show();
+            dispatchTrackingState(true, safeWorkSessionId, "error", "missing_session");
             return;
         }
-        if (active && !hasLocationPermission()) {
+        if (active && !hasPreciseLocationPermission()) {
             requestRuntimePermissions();
-            Toast.makeText(this,
-                "برای ثبت فعالیت، دسترسی موقعیت دقیق را مجاز کنید", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "دسترسی موقعیت دقیق لازم است؛ موقعیت تقریبی برای شروع کافی نیست", Toast.LENGTH_LONG).show();
+            dispatchTrackingState(true, safeWorkSessionId, "degraded", hasAnyLocationPermission() ? "approximate_location" : "location_permission");
             return;
         }
         if (active && !isBatteryOptimizationExempt()) {
@@ -675,14 +690,30 @@ public class MainActivity extends Activity {
             Toast.makeText(this,
                 "برای ادامه ردیابی پس‌زمینه، مصرف باتری راهکار را روی بدون محدودیت قرار دهید",
                 Toast.LENGTH_LONG).show();
+            dispatchTrackingState(true, safeWorkSessionId, "degraded", "battery_restricted");
             return;
         }
         Intent serviceIntent = new Intent(this, LocationTrackingService.class)
             .setAction(active ? LocationTrackingService.ACTION_START : LocationTrackingService.ACTION_STOP)
             .putExtra(LocationTrackingService.EXTRA_USER_ID, activeUserId)
             .putExtra(LocationTrackingService.EXTRA_WORK_SESSION_ID, safeWorkSessionId);
-        if (active && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent);
-        else startService(serviceIntent);
+        try {
+            if (active && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent);
+            else startService(serviceIntent);
+            if (active) dispatchTrackingState(true, safeWorkSessionId, "starting", "");
+        } catch (RuntimeException serviceUnavailable) {
+            if (active) dispatchTrackingState(true, safeWorkSessionId, "error", "service_start_failed");
+        }
+    }
+
+    private void dispatchTrackingState(boolean active, String workSessionId, String state, String reason) {
+        if (!canUseWebContent(webView)) return;
+        String safeSession = workSessionId == null || !workSessionId.matches("[0-9a-fA-F-]{1,64}") ? "" : workSessionId;
+        String detail = "{active:" + active + ",workSessionId:" + JSONObject.quote(safeSession) + ",state:" + JSONObject.quote(state == null ? "error" : state) + ",reason:" + JSONObject.quote(reason == null ? "" : reason) + "}";
+        webView.post(() -> {
+            if (canUseWebContent(webView)) webView.evaluateJavascript(
+                "window.dispatchEvent(new CustomEvent('tapra-tracking-state',{detail:" + detail + "}))", null);
+        });
     }
 
     private void setAuthenticatedUser(String userId) {
@@ -721,7 +752,9 @@ public class MainActivity extends Activity {
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     private void registerTrackingReceiver() {
-        IntentFilter filter = new IntentFilter(LocationTrackingService.ACTION_SESSION_ENDED);
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(LocationTrackingService.ACTION_SESSION_ENDED);
+        filter.addAction(LocationTrackingService.ACTION_TRACKING_STATE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(trackingReceiver, filter, INTERNAL_BROADCAST_PERMISSION, null,
                 Context.RECEIVER_NOT_EXPORTED);
@@ -764,6 +797,10 @@ public class MainActivity extends Activity {
             if (!enforceBatteryAccessGate()) return;
             webView.onResume();
             dispatchNativeNotificationPermissionState();
+            if (canUseWebContent(webView)) webView.post(() -> {
+                if (canUseWebContent(webView)) webView.evaluateJavascript(
+                    "window.dispatchEvent(new Event('tapra-native-resumed'))", null);
+            });
             if (webView.getUrl() == null || webView.getUrl().trim().isEmpty()) loadApplication(APP_URL, false);
             else if (recheckRestoredPage) recheckPageAfterBatteryGate();
         }
@@ -805,7 +842,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         mainHandler.removeCallbacks(loadWatchdog);
-        resolvePendingGeolocation(false);
+        resolvePendingGeolocation(false, false);
         if (receiverRegistered) unregisterReceiver(trackingReceiver);
         if (webView != null) {
             webView.removeJavascriptInterface("TapraAndroid");
@@ -838,7 +875,17 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public boolean isLocationPermissionGranted() {
-            return hasLocationPermission();
+            return hasAnyLocationPermission();
+        }
+
+        @JavascriptInterface
+        public boolean isPreciseLocationPermissionGranted() {
+            return hasPreciseLocationPermission();
+        }
+
+        @JavascriptInterface
+        public void requestPreciseLocationPermission() {
+            runOnUiThread(MainActivity.this::requestRuntimePermissions);
         }
 
         @JavascriptInterface

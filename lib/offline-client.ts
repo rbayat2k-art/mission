@@ -69,6 +69,17 @@ type LocationAck = {
 const databaseName = "rahkar-offline-v1";
 const storeName = "outbox";
 
+export class ApiResponseError extends Error {
+  readonly status: number;
+  readonly code: string | undefined;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = "ApiResponseError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 function validAccountId(accountId: string) {
   const normalized = accountId.trim();
   if (!normalized || normalized.length > 64) throw new Error("حساب فعال برای ذخیره اطلاعات آفلاین مشخص نیست");
@@ -232,9 +243,19 @@ export async function getOutboxCount(accountId: string) {
 }
 
 async function responseBody<T>(response: Response): Promise<T> {
-  const body = await response.json().catch(() => ({})) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error ?? "خطا در ارتباط با سرور");
+  const body = await response.json().catch(() => ({})) as T & { error?: string; code?: string };
+  if (!response.ok) throw new ApiResponseError(body.error ?? "خطا در ارتباط با سرور", response.status, safeServerCode(body.code));
   return body;
+}
+
+function requestHeaders(accountId: string, body?: unknown) {
+  const isWorkStart = Boolean(body && typeof body === "object" && !Array.isArray(body) &&
+    (body as Record<string, unknown>).action === "start");
+  return {
+    "Content-Type": "application/json",
+    "X-Tapra-User-Id": accountId,
+    ...(isWorkStart ? { "X-Tapra-Client-Time": new Date().toISOString() } : {}),
+  };
 }
 
 function isLocationEntry(entry:JsonEntry) {
@@ -273,7 +294,7 @@ export async function sendJsonOrQueue<T>(accountId: string, url: string, method:
   const entry: Omit<JsonEntry, "accountId"> = { kind: "json", url, method, body, createdAt: new Date().toISOString() };
   if (!navigator.onLine) { const queueId = await enqueue(accountId, entry); return { queued: true, queueId }; }
   try {
-    const response = await fetch(url, { method, headers: { "Content-Type": "application/json", "X-Tapra-User-Id": currentAccountId }, body: JSON.stringify(body) });
+    const response = await fetch(url, { method, headers: requestHeaders(currentAccountId, body), body: JSON.stringify(body) });
     const data = await responseBody<T>(response);
     if (isLocationEntry(entry) && !locationEntryHasFinalAck(entry, data as LocationAck)) {
       const queueId = await enqueue(accountId, entry);
@@ -381,7 +402,7 @@ async function flushOwnedOutbox(accountId: string) {
     try {
       let response: Response;
       if (entry.kind === "json") {
-        response = await fetch(entry.url, { method: entry.method, headers: { "Content-Type": "application/json", "X-Tapra-User-Id": currentAccountId }, body: JSON.stringify(entry.body) });
+        response = await fetch(entry.url, { method: entry.method, headers: requestHeaders(currentAccountId, entry.body), body: JSON.stringify(entry.body) });
       } else {
         const form = new FormData();
         Object.entries(entry.fields).forEach(([key, value]) => form.set(key, value));
@@ -393,6 +414,21 @@ async function flushOwnedOutbox(accountId: string) {
         // A different session is not a version conflict. Leave this account's
         // queue intact so it can resume after the correct account signs in.
         if (body.code === "ACCOUNT_CONTEXT_CHANGED") break;
+        if (body.code === "ACTIVE_WORK_SESSION_EXISTS" && outboxOperation(entry) === "work_start") {
+          // The intended outcome (an active session for this authenticated account)
+          // already exists. Adopt that state before retiring only this queued start.
+          const current = await fetch("/api/work-sessions", {
+            headers: { "X-Tapra-User-Id": currentAccountId, "Cache-Control": "no-store" },
+            cache: "no-store",
+          });
+          const currentBody = current.ok ? await current.json().catch(() => null) as { current?: { id?: unknown } | null } | null : null;
+          if (typeof currentBody?.current?.id === "string" && currentBody.current.id) {
+            await remove(entry.id);
+            sent += 1;
+            continue;
+          }
+          break;
+        }
         const operation = outboxOperation(entry);
         const persisted:OutboxEntry = {
           ...entry,

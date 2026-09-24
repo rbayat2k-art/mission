@@ -33,6 +33,7 @@ async function install(page:Page,role:"admin"|"employee"|"supervisor",state:Retu
       return json({missions:[{id:"mission-a",title:"پیگیری آزمایشی a",status:"follow_up",source:"admin",priority:"normal",createdAt:"2026-09-09T08:00:00Z",description:"راهنمای آزمایشی",workflowType:"single",scoreConfirmed:0,scorePending:0,followUpRequestStatus:state.status,result:"نیاز به پیگیری"}]});
     }
     if(path==="/api/work-sessions")return json({current:null,today:{activeSeconds:0,activeMinutes:0,unverifiedGpsMinutes:0,pendingCorrectionMinutes:0,firstStartAt:null,lastEndAt:null}});
+    if(path==="/api/employee/daily-summary")return json({summary:{period:"daily",date:"2026-09-24",completed:[],incomplete:[],destinations:[],locationSummary:{pointCount:0,firstAt:null,lastAt:null},sessions:[],firstStartAt:null,lastEndAt:null,activeMinutes:0,rawSessionMinutes:0,unverifiedGpsMinutes:0,pendingCorrectionMinutes:0,requiredMinutes:510,overtimeStartsAtMinutes:540,overtimeMinutes:0,confirmedScore:0,pendingScore:0,confirmationMissionIds:[],performance:null,policy:{standardStart:"08:00",standardDailyMinutes:510,note:"داده آزمایشی"}}});
     if(path==="/api/follow-up-requests")return json({requests:[request(),request("b")]});
     if(/^\/api\/follow-up-requests\/request-[ab]$/.test(path))return json({request:request(path.endsWith("b")?"b":"a"),messages:state.messages,attachments:state.attachments});
     if(path.endsWith("/messages")){
@@ -201,7 +202,7 @@ test("mission start, destination, every task and completion survive rapid repeat
   });
   const twice=async(locator:ReturnType<Page["getByRole"]>)=>locator.evaluate(element=>{(element as HTMLButtonElement).click();(element as HTMLButtonElement).click()});
   await page.goto("/?panel=employee&screen=home");
-  await expect(page.locator(".connection-row")).toContainText("GPS · دقت 5 متر");
+  await expect(page.locator(".connection-row")).toContainText("GPS تازه · دقت 5 متر");
   await page.getByRole("button",{name:/مأموریت‌ها/}).last().click();
   await page.getByRole("heading",{name:mission.title,exact:true}).click();
   await twice(page.getByRole("button",{name:"شروع این مأموریت",exact:true}));
@@ -301,6 +302,106 @@ test("simplified employee action still respects active-shift and three-mission l
   await focusedMission(page,{capacity:true});
   await expect(page.locator(".capacity-lock")).toContainText("ظرفیت مأموریت‌های هم‌زمان تکمیل است");
   await expect(page.locator(".mission-main-action")).toBeDisabled();
+});
+
+test("fresh precise 49m GPS starts exactly one work session and enters the active state",async({page,context})=>{
+  await context.grantPermissions(["geolocation"]);
+  await context.setGeolocation({latitude:35.7,longitude:51.4,accuracy:49});
+  await install(page,"employee",workflowState());
+  const posts:Record<string,unknown>[]=[];
+  const startedAt=new Date().toISOString();
+  await page.route("**/api/work-sessions",async route=>{
+    if(route.request().method()==="POST"){
+      const body=route.request().postDataJSON() as Record<string,unknown>;posts.push(body);
+      return route.fulfill({status:201,contentType:"application/json",body:JSON.stringify({session:{id:"session-gps-49",status:"active",startedAt,workType:"regular"}})});
+    }
+    return route.fulfill({contentType:"application/json",body:JSON.stringify({current:null,today:{activeSeconds:0,activeMinutes:0,unverifiedGpsMinutes:0,pendingCorrectionMinutes:0,firstStartAt:null,lastEndAt:null}})});
+  });
+  await page.goto("/?panel=employee&screen=home");
+  const start=page.locator(".work-toggle");
+  await expect(start).toBeEnabled();
+  await start.evaluate(button=>{
+    button.dispatchEvent(new MouseEvent("click",{bubbles:true}));
+    button.dispatchEvent(new MouseEvent("click",{bubbles:true}));
+  });
+  await expect(page.locator(".work-toggle")).toContainText("پایان فعالیت");
+  expect(posts).toHaveLength(1);
+  expect(posts[0]).toMatchObject({action:"start"});
+  expect(posts[0].clientSessionId).toMatch(/^[0-9a-f-]{36}$/i);
+  expect(posts[0].location).toMatchObject({latitude:35.7,longitude:51.4,accuracy:49});
+  expect(Number.isFinite(Date.parse(String((posts[0].location as Record<string,unknown>).recordedAt)))).toBe(true);
+});
+
+test("stale accurate GPS is not submitted; a fresh fix from the same start attempt succeeds",async({page})=>{
+  await page.addInitScript(()=>{
+    Object.defineProperty(navigator,"geolocation",{configurable:true,value:{
+      watchPosition:(success:PositionCallback)=>{(window as unknown as {gpsSuccess?:PositionCallback}).gpsSuccess=success;return 17},
+      clearWatch:()=>{},
+    }});
+  });
+  await install(page,"employee",workflowState());
+  const posts:Record<string,unknown>[]=[];
+  const startedAt=new Date().toISOString();
+  await page.route("**/api/work-sessions",async route=>{
+    if(route.request().method()==="POST"){
+      const body=route.request().postDataJSON() as Record<string,unknown>;posts.push(body);
+      return route.fulfill({status:201,contentType:"application/json",body:JSON.stringify({session:{id:"session-fresh-after-stale",status:"active",startedAt,workType:"regular"}})});
+    }
+    return route.fulfill({contentType:"application/json",body:JSON.stringify({current:null,today:{activeSeconds:0,activeMinutes:0,unverifiedGpsMinutes:0,pendingCorrectionMinutes:0,firstStartAt:null,lastEndAt:null}})});
+  });
+  await page.goto("/?panel=employee&screen=home");
+  await page.locator(".work-toggle").click();
+  await expect.poll(()=>page.evaluate(()=>(window as unknown as {gpsSuccess?:PositionCallback}).gpsSuccess!==undefined)).toBe(true);
+  const deliver=(timestamp:number)=>page.evaluate((when)=>{
+    const success=(window as unknown as {gpsSuccess?:PositionCallback}).gpsSuccess;
+    success?.({coords:{latitude:35.7,longitude:51.4,accuracy:49,altitude:null,altitudeAccuracy:null,heading:null,speed:null},timestamp:when} as GeolocationPosition);
+  },timestamp);
+  await deliver(Date.now()-3*60_000);
+  await expect(page.getByText(/موقعیت قبلی قدیمی است/)).toBeVisible();
+  expect(posts).toHaveLength(0);
+  await deliver(Date.now());
+  await expect(page.locator(".work-toggle")).toContainText("پایان فعالیت");
+  expect(posts).toHaveLength(1);
+  expect((posts[0].location as Record<string,unknown>).accuracy).toBe(49);
+});
+
+test("an active-session 409 recovers authoritative session instead of starting a second one",async({page,context})=>{
+  await context.grantPermissions(["geolocation"]);
+  await context.setGeolocation({latitude:35.7,longitude:51.4,accuracy:49});
+  await install(page,"employee",workflowState());
+  const startedAt=new Date().toISOString();let posts=0;
+  await page.route("**/api/work-sessions",async route=>{
+    if(route.request().method()==="POST"){
+      posts+=1;
+      return route.fulfill({status:409,contentType:"application/json",body:JSON.stringify({code:"ACTIVE_WORK_SESSION_EXISTS",error:"یک فعالیت باز وجود دارد",session:{id:"existing-session",status:"active",startedAt}})});
+    }
+    return route.fulfill({contentType:"application/json",body:JSON.stringify({current:posts?{id:"existing-session",status:"active",startedAt,endedAt:null,workType:"regular"}:null,today:{activeSeconds:posts?30:0,activeMinutes:posts?1:0,unverifiedGpsMinutes:0,pendingCorrectionMinutes:0,firstStartAt:posts?startedAt:null,lastEndAt:null}})});
+  });
+  await page.goto("/?panel=employee&screen=home");
+  await page.locator(".work-toggle").click();
+  await expect(page.locator(".work-toggle")).toContainText("پایان فعالیت");
+  await expect(page.getByText("فعالیت باز شما از سرور بازیابی شد؛ فعالیت دیگری ساخته نشد.")).toBeVisible();
+  expect(posts).toBe(1);
+});
+
+test("notification failure does not prevent restoring the active work-session card",async({page})=>{
+  const state=workflowState();state.notificationFailure=true;await install(page,"employee",state);
+  const startedAt=new Date().toISOString();
+  await page.route("**/api/work-sessions",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({current:{id:"existing-session",status:"active",startedAt,endedAt:null,workType:"regular"},today:{activeSeconds:120,activeMinutes:2,unverifiedGpsMinutes:0,pendingCorrectionMinutes:0,firstStartAt:startedAt,lastEndAt:null}})}));
+  await page.goto("/?panel=employee&screen=home");
+  await expect(page.locator(".work-toggle")).toContainText("پایان فعالیت");
+  await expect(page.locator(".timer")).not.toHaveText("۰:۰۰");
+});
+
+test("incomplete notification counts neither crash employee UI nor hide an active session",async({page})=>{
+  const errors:string[]=[];page.on("pageerror",error=>errors.push(error.message));
+  await install(page,"employee",workflowState());
+  await page.route("**/api/notifications",route=>route.fulfill({contentType:"application/json",body:"{}"}));
+  const startedAt=new Date().toISOString();
+  await page.route("**/api/work-sessions",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({current:{id:"existing-session",status:"active",startedAt,endedAt:null,workType:"regular"},today:{activeSeconds:120,activeMinutes:2,unverifiedGpsMinutes:0,pendingCorrectionMinutes:0,firstStartAt:startedAt,lastEndAt:null}})}));
+  await page.goto("/?panel=employee&screen=home");
+  await expect(page.locator(".work-toggle")).toContainText("پایان فعالیت");
+  expect(errors).toEqual([]);
 });
 
 test("continuing an arrived second stage preserves arrival and selects that stage's result",async({page})=>{

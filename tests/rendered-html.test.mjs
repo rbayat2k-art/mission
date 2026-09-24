@@ -70,7 +70,7 @@ test("keeps employee work start compatible with older Android Chrome", async () 
   assert.match(page, /function createClientId\(\)/);
   assert.doesNotMatch(page, /clientEventId: crypto\.randomUUID\(\)/);
   assert.match(page, /navigator\.geolocation\.watchPosition/);
-  assert.match(page, /timeout:45_000/);
+  assert.match(page, /maximumAge:0, timeout:20_000/);
   assert.match(page, /در حال دریافت موقعیت دقیق/);
 });
 
@@ -482,7 +482,7 @@ test("stores numbered daily mission destinations and maps them only in managemen
   assert.match(destinations, /sequence = \(counters\.get\(counterKey\) \?\? 0\) \+ 1/);
   assert.match(destinations, /u\.supervisor_id = \?/);
   assert.match(completeRoute, /FROM mission_destinations WHERE mission_id = \?/);
-  assert.match(page, /setLatestGps\(\{ latitude:position\.coords\.latitude/);
+  assert.match(page, /validateTrustedLocation\(location, \{ maxAgeMs:60_000 \}\)/);
   assert.match(page, /\(employeeUserId, "\/api\/destinations", "POST"/);
   assert.match(page, /نقشه فقط در پنل مدیر نمایش داده می‌شود/);
   assert.match(page, /موقعیت زنده و مقصدهای امروز/);
@@ -525,7 +525,7 @@ test("captures and audits mission start destination and end points for manager s
   assert.match(page, /نقطه شروع کار/);
   assert.match(page, /نقطه پایان کار/);
   assert.match(page, /ثبت نمره مدیر یا سرپرست/);
-  assert.match(page, /endLocation:latestGps/);
+  assert.match(page, /endLocation:trustedLocation/);
   assert.match(page, /location:latestGps/);
   assert.match(map, /tracePoints/);
   assert.match(map, /markerLabel/);
@@ -787,7 +787,7 @@ test("ends shifts without GPS blocking and deducts only beyond the 30 minute gra
   assert.match(page, /currentTehranDayKey/);
   assert.match(page, /nextDayKey === displayDayKey/);
   assert.match(page, /endTime, confirmDailySummary:true/);
-  assert.match(page, /latestGps && Date\.now\(\) - Date\.parse\(latestGps\.recordedAt\) <= 2 \* 60_000/);
+  assert.match(page, /validateTrustedLocation\(latestGps, \{ maxAgeMs:2 \* 60_000 \}\)\.location/);
   assert.match(page, /موقعیت پایان در دسترس نبود و برای بررسی ثبت شد/);
   assert.match(performance, /برای هر قطعی پیوسته GPS، ۳۰ دقیقه مهلت وجود دارد/);
   assert.match(exportRoute, /زمان اضافه بر مهلت ۳۰ دقیقه بدون GPS/);
@@ -1029,7 +1029,8 @@ test("prepares an upgrade-numbered Android wrapper with account-isolated GPS and
   assert.match(nativeNotifications, /ACTIVE_USER_ID/);
   assert.match(nativeNotifications, /cancelPostedNotifications/);
   assert.match(nativeNotifications, /activeUserId \+ ":" \+ safeId/);
-  assert.match(page, /ensureNativeBackgroundTrackingReady/);
+  assert.doesNotMatch(page, /ensureNativeBackgroundTrackingReady/);
+  assert.match(page, /tapra-tracking-state/);
   assert.match(page, /nativeOnly/);
   assert.match(page, /clearNativeAuthenticatedUser\(\);await detachPushDevice\(\);await api\("\/api\/auth\/logout"/);
   assert.match(page, /setNativeAuthenticatedUser\(result\.user\.id\)/);
@@ -1053,7 +1054,7 @@ test("prepares an upgrade-numbered Android wrapper with account-isolated GPS and
   assert.match(gradle, /versionCode 23/);
   assert.ok(Number(gradle.match(/^\s*versionCode (\d+)/m)?.[1]) > 22, "must exceed the last published APK code");
   assert.match(gradle, /versionName '1\.2\.4'/);
-  assert.match(workflow, /matrix:\s*\n\s*api-level: \[23, 29, 35\]/);
+  assert.match(workflow, /matrix:\s*\n\s*api-level: \[23, 29, 31, 33, 34, 35\]/);
   assert.match(workflow, /scripts\/android\/capture_app_ui\.py/);
   assert.match(await readFile(new URL("../scripts/android/capture_ui.py", import.meta.url), "utf8"), /run_adb\("shell", "uiautomator", "dump", remote\)/);
   assert.match(workflow, /python3 -B scripts\/android\/capture_app_ui\.py tapra-ui-api/);

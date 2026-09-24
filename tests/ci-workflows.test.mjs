@@ -42,7 +42,7 @@ test("Android CI is read-only, branch-complete, local-backend-only and never pub
   assert.match(workflow,/permissions:\s+contents: read/);
   assert.doesNotMatch(workflow,/gh release|contents: write|\bpublish:/);
   const automatic=workflow.slice(workflow.indexOf("  build-debug:"),workflow.indexOf("  release-build:"));
-  assert.match(automatic,/api-level: \[23, 29, 35\]/);
+  assert.match(automatic,/api-level: \[23, 29, 31, 33, 34, 35\]/);
   assert.match(automatic,/tapraDebugBackendUrl=http:\/\/10\.0\.2\.2:3000/);
   assert.match(automatic,/mariadb:10\.11/);
   assert.equal((automatic.match(/inputs\.signed_release_asset_id == '' && inputs\.signed_release_apk_base64 == '' && inputs\.signed_release_sha256 == ''/g)||[]).length,2);
@@ -81,7 +81,7 @@ test("Android UI capture preserves battery and startup gates after recovered too
   const finalCapture=workflow.slice(workflow.indexOf("capture_app_ui.py tapra-ui-api"));
   assert.match(finalCapture,/صفحه سامانه بارگذاری نشد\|در حال بازکردن راهکار/);
   assert.match(finalCapture,/verify_login_screen\.py --xml tapra-ui-api/);
-  assert.match(finalCapture,/--expect "\$\{\{ matrix\.api-level == 35 && 'login' \|\| 'obsolete-webview' \}\}"/);
+  assert.match(finalCapture,/--expect "\$\{\{ matrix\.api-level >= 31 && 'login' \|\| 'obsolete-webview' \}\}"/);
   assert.match(finalCapture,/adb logcat -d -t 800 > android-logcat-post-capture-api/);
   assert.match(finalCapture,/FATAL EXCEPTION/);
   assert.match(finalCapture,/adb shell dumpsys activity activities \| grep -q "ir\.taprasystem\.employee\/\.MainActivity"/);
@@ -175,7 +175,7 @@ test("signed release smoke checks exact final manifest, signature, and packaged 
 test("signed APK smoke is disposable-emulator-only and preserves identity and grants on same-key replacement",async()=>{
   const workflow=await read("../.github/workflows/android-apk.yml");
   const release=workflow.slice(workflow.indexOf("  signed-release-smoke:"));
-  assert.match(release,/api-level: \[23, 29, 35\]/);
+  assert.match(release,/api-level: \[23, 29, 31, 33, 34, 35\]/);
   assert.match(release,/force-avd-creation: true/);
   assert.match(release,/-no-snapshot/);
   assert.match(release,/getprop ro\.kernel\.qemu/);
@@ -221,17 +221,18 @@ test("signed APK smoke is disposable-emulator-only and preserves identity and gr
   assert.equal((release.match(/adb shell dumpsys activity activities \| grep -q "ir\.taprasystem\.employee\/\.MainActivity"/g)||[]).length,2);
 });
 
-test("screen verification distinguishes actual API35 login from stock obsolete-WebView rejection",async()=>{
+test("screen verification distinguishes API31+ login from stock obsolete-WebView rejection",async()=>{
   const [workflow,helper]=await Promise.all([read("../.github/workflows/android-apk.yml"),read("../scripts/android/verify_login_screen.py")]);
   assert.equal((workflow.match(/verify_login_screen\.py --xml /g)||[]).length,3);
-  assert.equal((workflow.match(/--expect "\$\{\{ matrix\.api-level == 35 && 'login' \|\| 'obsolete-webview' \}\}"/g)||[]).length,3);
+  assert.equal((workflow.match(/--expect "\$\{\{ matrix\.api-level >= 31 && 'login' \|\| 'obsolete-webview' \}\}"/g)||[]).length,3);
   assert.equal((workflow.match(/stock obsolete-WebView rejection/g)||[]).length,2);
   assert.equal((workflow.match(/python3 -B -m unittest discover -s tests\/android -p 'test_verify_login_screen\.py' -v/g)||[]).length,2);
   assert.equal((workflow.match(/adb shell dumpsys webviewupdate/g)||[]).length,3);
-  assert.match(workflow,/if: matrix\.api-level == 35\s+run: sudo apt-get update && sudo apt-get install --no-install-recommends -y tesseract-ocr tesseract-ocr-fas tesseract-ocr-eng/);
+  assert.equal((workflow.match(/if: matrix\.api-level >= 31\s+run: sudo apt-get update && sudo apt-get install --no-install-recommends -y tesseract-ocr tesseract-ocr-fas tesseract-ocr-eng/g)||[]).length,2);
   assert.match(workflow,/android-screen-api-\*\.ocr\.txt/);
   for(const label of ["ورود به پنل کارمند","نام کاربری","رمز عبور","ورود به پنل","نمایشگر وب گوشی نیاز به به‌روزرسانی دارد"])assert.ok(helper.includes(label));
   assert.match(helper,/"fas\+eng", "--psm", "11"/);
   assert.match(helper,/successful login compatibility is NOT established/);
-  assert.doesNotMatch(workflow,/adb exec-out screencap -p >/);
+  assert.match(workflow,/adb exec-out screencap -p > android-screen-api-\$\{\{ matrix\.api-level \}\}\.png/);
+  assert.match(workflow,/verify_login_screen\.py --xml tapra-ui-api-\$\{\{ matrix\.api-level \}\}\.xml --png android-screen-api-\$\{\{ matrix\.api-level \}\}\.png/);
 });

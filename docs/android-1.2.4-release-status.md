@@ -227,3 +227,15 @@ loading screens and SSL failures must never be accepted as successful login.
   queue-safe migration still require a controlled device check. A slight API35
   status-bar overlap with the website header was observed in diagnostic images;
   no broad layout redesign or website/production change is part of this release.
+
+## GPS start repair — 2026-09-24 isolated branch
+
+The follow-up repair and its decision record are tracked separately in
+[`android-gps-start-repair-2026-09-24.md`](./android-gps-start-repair-2026-09-24.md)
+and [ADR-005](./decisions/005-trusted-android-gps-start.md). The branch changes
+fresh-fix validation, permission precision reporting, native-service
+acknowledgement, and active-session restoration; it does not publish an APK or
+modify `main`, the website deployment, production data, or the release signing
+identity. Android emulator CI is expanded to API 23, 29, 31, 33, 34 and 35.
+Passing source/browser checks is not a substitute for the real-phone background
+GPS and controlled installation checks listed in the repair record.

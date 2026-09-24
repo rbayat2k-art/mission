@@ -65,7 +65,7 @@ jobs:
           retention-days: 14
 
   emulator-smoke:
-    name: Debug API ${{ matrix.api-level }} / ${{ matrix.api-level == 35 && 'login rendering' || 'stock obsolete-WebView rejection only' }}
+    name: Debug API ${{ matrix.api-level }} / ${{ matrix.api-level >= 31 && 'login rendering' || 'stock obsolete-WebView rejection only' }}
     if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_apk_base64 == '' && inputs.signed_release_sha256 == '' }}
     needs: build-debug
     runs-on: ubuntu-latest
@@ -73,7 +73,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        api-level: [23, 29, 35]
+        api-level: [23, 29, 31, 33, 34, 35]
     services:
       mariadb:
         image: mariadb:10.11
@@ -114,7 +114,7 @@ jobs:
           name: tapra-employee-ci-debug-${{ github.sha }}
           path: apk
       - name: Install OCR for positive login rendering evidence
-        if: matrix.api-level == 35
+        if: matrix.api-level >= 31
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y tesseract-ocr tesseract-ocr-fas tesseract-ocr-eng
       - run: sudo chmod 666 /dev/kvm
       - name: Install and launch against the ephemeral backend
@@ -143,7 +143,7 @@ jobs:
             python3 -B scripts/android/capture_app_ui.py tapra-ui-api-${{ matrix.api-level }}.xml --expect page
             if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" tapra-ui-api-${{ matrix.api-level }}.xml; then cat tapra-ui-api-${{ matrix.api-level }}.xml; exit 1; fi
             adb exec-out screencap -p > android-screen-api-${{ matrix.api-level }}.png
-            python3 -B scripts/android/verify_login_screen.py --xml tapra-ui-api-${{ matrix.api-level }}.xml --png android-screen-api-${{ matrix.api-level }}.png --expect "${{ matrix.api-level == 35 && 'login' || 'obsolete-webview' }}"
+            python3 -B scripts/android/verify_login_screen.py --xml tapra-ui-api-${{ matrix.api-level }}.xml --png android-screen-api-${{ matrix.api-level }}.png --expect "${{ matrix.api-level >= 31 && 'login' || 'obsolete-webview' }}"
             adb logcat -d -t 800 > android-logcat-post-capture-api-${{ matrix.api-level }}.txt
             if grep -A 20 "FATAL EXCEPTION" android-logcat-post-capture-api-${{ matrix.api-level }}.txt | grep -q "ir.taprasystem.employee"; then cat android-logcat-post-capture-api-${{ matrix.api-level }}.txt; exit 1; fi
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
@@ -219,14 +219,14 @@ jobs:
           retention-days: 14
 
   signed-release-smoke:
-    name: Signed API ${{ matrix.api-level }} / ${{ matrix.api-level == 35 && 'login and same-key replacement' || 'stock obsolete-WebView rejection and same-key replacement only' }}
+    name: Signed API ${{ matrix.api-level }} / ${{ matrix.api-level >= 31 && 'login and same-key replacement' || 'stock obsolete-WebView rejection and same-key replacement only' }}
     if: ${{ github.event_name == 'workflow_dispatch' && (inputs.signed_release_asset_id != '' || inputs.signed_release_apk_base64 != '' || inputs.signed_release_sha256 != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
-        api-level: [23, 29, 35]
+        api-level: [23, 29, 31, 33, 34, 35]
     env:
       SIGNED_RELEASE_SHA256: ${{ inputs.signed_release_sha256 }}
       TEST_API_LEVEL: ${{ matrix.api-level }}
@@ -289,7 +289,7 @@ jobs:
       - name: Test strict public screen verification
         run: python3 -B -m unittest discover -s tests/android -p 'test_verify_login_screen.py' -v
       - name: Install OCR for positive login rendering evidence
-        if: matrix.api-level == 35
+        if: matrix.api-level >= 31
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y tesseract-ocr tesseract-ocr-fas tesseract-ocr-eng
       - name: Clean install and same-key replacement on a fresh disposable emulator
         uses: reactivecircus/android-emulator-runner@v2
@@ -323,7 +323,7 @@ jobs:
             adb logcat -d -t 1500 > apk/signed-release-logcat-before.txt
             if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" apk/signed-release-login-before.xml; then cat apk/signed-release-login-before.xml; exit 1; fi
             if grep -A 20 "FATAL EXCEPTION" apk/signed-release-logcat-before.txt | grep -q "ir.taprasystem.employee"; then cat apk/signed-release-logcat-before.txt; exit 1; fi
-            python3 -B scripts/android/verify_login_screen.py --xml apk/signed-release-login-before.xml --png apk/signed-release-screen-before.png --expect "${{ matrix.api-level == 35 && 'login' || 'obsolete-webview' }}"
+            python3 -B scripts/android/verify_login_screen.py --xml apk/signed-release-login-before.xml --png apk/signed-release-screen-before.png --expect "${{ matrix.api-level >= 31 && 'login' || 'obsolete-webview' }}"
             adb logcat -d -t 1500 > apk/signed-release-logcat-before.txt
             if grep -A 20 "FATAL EXCEPTION" apk/signed-release-logcat-before.txt | grep -q "ir.taprasystem.employee"; then cat apk/signed-release-logcat-before.txt; exit 1; fi
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
@@ -353,7 +353,7 @@ jobs:
             adb logcat -d -t 1500 > apk/signed-release-logcat-after.txt
             if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" apk/signed-release-login-after.xml; then cat apk/signed-release-login-after.xml; exit 1; fi
             if grep -A 20 "FATAL EXCEPTION" apk/signed-release-logcat-after.txt | grep -q "ir.taprasystem.employee"; then cat apk/signed-release-logcat-after.txt; exit 1; fi
-            python3 -B scripts/android/verify_login_screen.py --xml apk/signed-release-login-after.xml --png apk/signed-release-screen-after.png --expect "${{ matrix.api-level == 35 && 'login' || 'obsolete-webview' }}"
+            python3 -B scripts/android/verify_login_screen.py --xml apk/signed-release-login-after.xml --png apk/signed-release-screen-after.png --expect "${{ matrix.api-level >= 31 && 'login' || 'obsolete-webview' }}"
             adb logcat -d -t 1500 > apk/signed-release-logcat-after.txt
             if grep -A 20 "FATAL EXCEPTION" apk/signed-release-logcat-after.txt | grep -q "ir.taprasystem.employee"; then cat apk/signed-release-logcat-after.txt; exit 1; fi
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"

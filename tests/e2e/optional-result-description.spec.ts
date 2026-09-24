@@ -37,6 +37,7 @@ async function openResult(page:Page,workflowType:Workflow="single") {
     if(path==="/api/auth/me")return json({user:{id:"employee-fixture",role:"employee",fullName:"کارمند آزمایشی",username:"fixture",mustChangePassword:false,notificationEnabled:false}});
     if(path==="/api/missions")return json({missions:[mission]});
     if(path==="/api/work-sessions")return json({current:{id:"session-fixture",startedAt:now,endedAt:null},today:{activeSeconds:30,activeMinutes:0,unverifiedGpsMinutes:0,pendingCorrectionMinutes:0,firstStartAt:now,lastEndAt:null}});
+    if(path==="/api/employee/daily-summary")return json({summary:{period:"daily",date:"2026-09-24",completed:[],incomplete:[],destinations:[],locationSummary:{pointCount:0,firstAt:null,lastAt:null},sessions:[],firstStartAt:now,lastEndAt:null,activeMinutes:0,rawSessionMinutes:0,unverifiedGpsMinutes:0,pendingCorrectionMinutes:0,requiredMinutes:510,overtimeStartsAtMinutes:540,overtimeMinutes:0,confirmedScore:0,pendingScore:0,confirmationMissionIds:[],performance:null,policy:{standardStart:"08:00",standardDailyMinutes:510,note:"داده آزمایشی"}}});
     if(path==="/api/attachments")return json({attachments:[]});
     if(path===`/api/missions/${mission.id}/complete`){
       expect(request.method()).toBe("POST");
@@ -59,7 +60,7 @@ async function openResult(page:Page,workflowType:Workflow="single") {
     return json({ok:true,autoEnded:false,events:[],notifications:[],unreadCount:0,openRequestCount:0});
   });
   await page.goto("/?panel=employee&screen=home");
-  await expect(page.locator(".connection-row")).toContainText("GPS · دقت 5 متر");
+  await expect(page.locator(".connection-row")).toContainText("GPS تازه · دقت 5 متر");
   await page.getByRole("button",{name:/مأموریت‌ها/}).last().click();
   await page.locator(".mission-tabs").getByRole("button",{name:/در حال انجام/}).click();
   await page.getByRole("heading",{name:mission.title,exact:true}).click();

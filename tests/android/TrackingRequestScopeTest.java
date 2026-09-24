@@ -6,6 +6,7 @@ public final class TrackingRequestScopeTest {
     }
 
     public static void main(String[] args) {
+        verifyTrustedLocationPolicy();
         TrackingRequestScope scope = new TrackingRequestScope();
         check(!scope.isCurrent(null, "a"), "stopped service accepted work");
         scope.start("a", "shift-1");
@@ -28,5 +29,15 @@ public final class TrackingRequestScopeTest {
         check(!scope.isCurrent(restarted, "a"), "stop/restart reused the same identity");
         check(scope.isCurrent(scope.capture(), "a"), "new session failed");
         System.out.println("Tracking request lifecycle assertions passed");
+    }
+
+    private static void verifyTrustedLocationPolicy() {
+        check(TrustedLocationPolicy.isTrusted(true, false, 49f), "fresh precise 49m fix is trusted");
+        check(TrustedLocationPolicy.isTrusted(true, false, 100f), "100m boundary is trusted");
+        check(!TrustedLocationPolicy.isTrusted(true, false, 100.1f), "over-100m fix is degraded");
+        check(!TrustedLocationPolicy.isTrusted(false, false, 5f), "approximate permission is degraded");
+        check(!TrustedLocationPolicy.isTrusted(true, true, 5f), "mock fix is degraded");
+        check(!TrustedLocationPolicy.isTrusted(true, false, Float.NaN), "invalid accuracy is rejected");
+        check(!TrustedLocationPolicy.isTrusted(true, false, -1f), "negative accuracy is rejected");
     }
 }
