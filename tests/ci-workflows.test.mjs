@@ -233,6 +233,29 @@ test("screen verification distinguishes API31+ login from stock obsolete-WebView
   for(const label of ["ورود به پنل کارمند","نام کاربری","رمز عبور","ورود به پنل","نمایشگر وب گوشی نیاز به به‌روزرسانی دارد"])assert.ok(helper.includes(label));
   assert.match(helper,/"fas\+eng", "--psm", "11"/);
   assert.match(helper,/successful login compatibility is NOT established/);
-  assert.match(workflow,/adb exec-out screencap -p > android-screen-api-\$\{\{ matrix\.api-level \}\}\.png/);
   assert.match(workflow,/verify_login_screen\.py --xml tapra-ui-api-\$\{\{ matrix\.api-level \}\}\.xml --png android-screen-api-\$\{\{ matrix\.api-level \}\}\.png/);
+});
+
+test("every Android screen verifier owns its fresh screenshot and CI retains the evidence",async()=>{
+  const [workflow,helper]=await Promise.all([read("../.github/workflows/android-apk.yml"),read("../scripts/android/verify_login_screen.py")]);
+  const invocations=workflow.split(/\r?\n/).filter(line=>line.includes("verify_login_screen.py --xml "));
+  assert.equal(invocations.length,3,"cover debug plus signed-release before/after verification");
+  const verifierTargets=invocations.map(line=>line.match(/--png\s+(\S+)/)?.[1]).filter(Boolean);
+  assert.equal(verifierTargets.length,3,"each verifier call must declare its screenshot output");
+  const precreatedTargets=[...workflow.matchAll(/^\s*adb\s+exec-out\s+screencap\s+-p\s+>\s+(\S+)\s*$/gm)].map(([,target])=>target);
+  for(const target of verifierTargets){
+    assert.ok(!precreatedTargets.includes(target),`verifier PNG target must not be pre-created: ${target}`);
+  }
+  assert.match(helper,/screenshot\s*=\s*run_command\(\["adb",\s*"exec-out",\s*"screencap",\s*"-p"\]\)/,
+    "the verifier itself must take the fresh screenshot");
+  assert.match(helper,/with\s+png_path\.open\("xb"\)/,
+    "exclusive file creation must reject reused screenshot evidence");
+  assert.match(workflow,/android-screen-api-\$\{\{ matrix\.api-level \}\}\.png/,
+    "debug screenshots must remain retained as artifacts");
+  assert.match(workflow,/android-screen-api-\*\.ocr\.txt/,
+    "debug OCR evidence must remain retained as artifacts");
+  assert.match(workflow,/apk\/signed-release-screen-\*\.png/,
+    "signed-release before/after screenshots must remain retained as artifacts");
+  assert.match(workflow,/apk\/signed-release-\*\.txt/,
+    "signed-release OCR text must remain retained as artifacts");
 });

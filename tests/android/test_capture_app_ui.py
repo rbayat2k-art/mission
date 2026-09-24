@@ -45,6 +45,16 @@ class CaptureAppUiTests(unittest.TestCase):
             elif args == ["shell", "dumpsys", "activity", "activities"]:
                 activity_reads += 1
                 stdout = FOREGROUND if activity_reads == 1 else post_activity
+            elif args == ["shell", "getprop", "ro.build.version.sdk"]:
+                stdout = "33\n"
+            elif args == ["shell", "dumpsys", "activity", "top"]:
+                stdout = "ACTIVITY ir.taprasystem.employee/.MainActivity state=PAUSED\n"
+            elif args == ["shell", "dumpsys", "window", "windows"]:
+                stdout = "mCurrentFocus=Window{a u0 com.android.permissioncontroller/.GrantPermissionsActivity}\n"
+            elif args == ["shell", "dumpsys", "package", app.PACKAGE_NAME]:
+                stdout = "Package [ir.taprasystem.employee] userId=10123\n  android.permission.ACCESS_FINE_LOCATION: granted=true\n"
+            elif args == ["shell", "pidof", app.PACKAGE_NAME]:
+                stdout = "1234\n"
             elif args[:3] == ["shell", "uiautomator", "dump"]:
                 stdout = f"UI hierchary dumped to: {args[3]}\n"
                 result_status = status
@@ -53,7 +63,7 @@ class CaptureAppUiTests(unittest.TestCase):
                     f'<hierarchy><node package="{app.PACKAGE_NAME}" text="{text}"/></hierarchy>',
                     encoding="utf-8",
                 )
-            elif args == ["logcat", "-d", "-t", "800"]:
+            elif args[:3] == ["logcat", "-d", "-t"]:
                 stdout = logcat
             else:
                 self.fail(f"Unexpected ADB command: {args}")
@@ -125,6 +135,27 @@ class CaptureAppUiTests(unittest.TestCase):
                      FOREGROUND + "\n" + FOREGROUND.replace("employee/", "other/")):
             with self.subTest(text=text), self.assertRaises(capture.CaptureError):
                 app.require_foreground(text)
+
+    def test_foreground_failure_preserves_sanitized_diagnostics(self):
+        activity = "topResumedActivity=ActivityRecord{sys u0 com.android.permissioncontroller/.GrantPermissionsActivity t2}\n"
+        logcat = "ActivityTaskManager: MainActivity paused\nAndroidRuntime: FATAL EXCEPTION: main\nActivityManager: token=secret-value trailing-private https://taprasystem.ir/path?token=private\n"
+        with self.adb(post_activity=activity, logcat=logcat), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(capture.CaptureError, "diagnostics saved"):
+                app.verify_capture(self.output, "page")
+        evidence = self.output.with_suffix(".foreground-diagnostics.txt")
+        self.assertTrue(evidence.is_file())
+        content = evidence.read_text(encoding="utf-8")
+        self.assertIn("Android API level: 33", content)
+        self.assertIn("com.android.permissioncontroller/.GrantPermissionsActivity", content)
+        self.assertIn("System/settings/permission activity detected: yes", content)
+        self.assertIn("mCurrentFocus=com.android.permissioncontroller/.GrantPermissionsActivity", content)
+        self.assertIn("TAPRA process alive: yes", content)
+        self.assertIn("Crash/ANR evidence: yes", content)
+        self.assertIn("MainActivity paused", content)
+        self.assertIn("<REDACTED>", content)
+        self.assertNotIn("secret-value", content)
+        self.assertNotIn("trailing-private", content)
+        self.assertNotIn("?token=private", content)
 
     def test_cli_returns_failure_without_printing_application_data(self):
         errors = io.StringIO()

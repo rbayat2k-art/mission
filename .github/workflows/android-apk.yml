@@ -142,7 +142,6 @@ jobs:
             adb shell dumpsys activity activities | grep -q "ir.taprasystem.employee/.MainActivity"
             python3 -B scripts/android/capture_app_ui.py tapra-ui-api-${{ matrix.api-level }}.xml --expect page
             if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" tapra-ui-api-${{ matrix.api-level }}.xml; then cat tapra-ui-api-${{ matrix.api-level }}.xml; exit 1; fi
-            adb exec-out screencap -p > android-screen-api-${{ matrix.api-level }}.png
             python3 -B scripts/android/verify_login_screen.py --xml tapra-ui-api-${{ matrix.api-level }}.xml --png android-screen-api-${{ matrix.api-level }}.png --expect "${{ matrix.api-level >= 31 && 'login' || 'obsolete-webview' }}"
             adb logcat -d -t 800 > android-logcat-post-capture-api-${{ matrix.api-level }}.txt
             if grep -A 20 "FATAL EXCEPTION" android-logcat-post-capture-api-${{ matrix.api-level }}.txt | grep -q "ir.taprasystem.employee"; then cat android-logcat-post-capture-api-${{ matrix.api-level }}.txt; exit 1; fi
@@ -160,6 +159,7 @@ jobs:
             android-logcat-post-capture-api-${{ matrix.api-level }}.txt
             android-screen-api-*.ocr.txt
             android-webview-api-*.txt
+            tapra-*.foreground-diagnostics.txt
           if-no-files-found: warn
           retention-days: 14
 
@@ -319,7 +319,6 @@ jobs:
             sleep 15
             python3 -B scripts/android/capture_app_ui.py apk/signed-release-login-before.xml --expect page
             adb shell dumpsys webviewupdate > apk/signed-release-webview-before.txt
-            adb exec-out screencap -p > apk/signed-release-screen-before.png
             adb logcat -d -t 1500 > apk/signed-release-logcat-before.txt
             if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" apk/signed-release-login-before.xml; then cat apk/signed-release-login-before.xml; exit 1; fi
             if grep -A 20 "FATAL EXCEPTION" apk/signed-release-logcat-before.txt | grep -q "ir.taprasystem.employee"; then cat apk/signed-release-logcat-before.txt; exit 1; fi
@@ -349,7 +348,6 @@ jobs:
             sleep 15
             python3 -B scripts/android/capture_app_ui.py apk/signed-release-login-after.xml --expect page
             adb shell dumpsys webviewupdate > apk/signed-release-webview-after.txt
-            adb exec-out screencap -p > apk/signed-release-screen-after.png
             adb logcat -d -t 1500 > apk/signed-release-logcat-after.txt
             if grep -Eq "صفحه سامانه بارگذاری نشد|در حال بازکردن راهکار" apk/signed-release-login-after.xml; then cat apk/signed-release-login-after.xml; exit 1; fi
             if grep -A 20 "FATAL EXCEPTION" apk/signed-release-logcat-after.txt | grep -q "ir.taprasystem.employee"; then cat apk/signed-release-logcat-after.txt; exit 1; fi
@@ -370,6 +368,7 @@ jobs:
             apk/signed-release-*.txt
             apk/signed-release-*.xml
             apk/signed-release-screen-*.png
+            apk/signed-release-*.foreground-diagnostics.txt
           if-no-files-found: warn
           retention-days: 14
 

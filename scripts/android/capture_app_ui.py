@@ -16,6 +16,96 @@ def checked_adb(*arguments):
     return result.stdout
 
 
+def diagnostic_adb(*arguments):
+    """Collect bounded evidence without allowing a diagnostic failure to hide the original one."""
+    try:
+        result = run_adb(*arguments)
+    except CaptureError:
+        return "<unavailable>"
+    return result.stdout if result.returncode == 0 else "<unavailable>"
+
+
+def _diagnostic_matches(text, pattern, maximum=100):
+    return [line.strip() for line in text.splitlines()
+            if re.search(pattern, line, re.IGNORECASE)][:maximum]
+
+
+def _redact_diagnostic(line):
+    line = re.sub(r"(?i)https?://\S+", "<URL>", line)
+    line = re.sub(r"(?i)(authorization|cookie|password|passwd|token|session|secret)(\s*[:=]\s*).+",
+                  r"\1\2<REDACTED>", line)
+    line = re.sub(r"(?<![\w.])-?\d{1,3}\.\d{4,}(?![\w.])", "<LOCATION_OR_DECIMAL>", line)
+    return line[:500]
+
+
+def _foreground_components(activity_dump):
+    result = []
+    for field in ("topResumedActivity", "mFocusedActivity", "mResumedActivity", "mCurrentFocus", "mFocusedApp"):
+        for line in activity_dump.splitlines():
+            if not re.match(rf"^[ \t]*{field}\s*[:=]", line):
+                continue
+            match = re.search(r"\bu\d+\s+([A-Za-z0-9_.$]+/[A-Za-z0-9_.$]+)", line)
+            if match:
+                result.append((field, match.group(1)))
+    return result
+
+
+def collect_foreground_diagnostics(output, initial_activity="", initial_process=""):
+    """Save sanitized Android state if TAPRA is not the current foreground activity."""
+    api = diagnostic_adb("shell", "getprop", "ro.build.version.sdk").strip() or "unknown"
+    activity = diagnostic_adb("shell", "dumpsys", "activity", "activities") or initial_activity
+    activity_top = diagnostic_adb("shell", "dumpsys", "activity", "top")
+    windows = diagnostic_adb("shell", "dumpsys", "window", "windows")
+    package = diagnostic_adb("shell", "dumpsys", "package", PACKAGE_NAME)
+    pidof = diagnostic_adb("shell", "pidof", PACKAGE_NAME).strip()
+    process = diagnostic_adb("shell", "ps") or initial_process
+    logcat = diagnostic_adb("logcat", "-d", "-t", "1200")
+
+    pids = [fields[1] for fields in (line.split() for line in process.splitlines())
+            if len(fields) > 2 and fields[1].isdigit() and int(fields[1]) > 0
+            and fields[-1] == PACKAGE_NAME]
+    components = _foreground_components(activity + "\n" + windows)
+    component_text = ", ".join(f"{field}={name}" for field, name in components) or "none"
+    system_markers = ("permissioncontroller", "packageinstaller", "settings/", "systemui/", "launcher/")
+    system_activity = any(any(marker in name.lower() for marker in system_markers)
+                          for _, name in components)
+    crashes = _diagnostic_matches(logcat, r"FATAL EXCEPTION|Fatal signal|ANR in")
+    relevant_logs = _diagnostic_matches(
+        logcat, rf"{re.escape(PACKAGE_NAME)}|AndroidRuntime|ActivityTaskManager|ActivityManager|PermissionController|permissioncontroller", 180)
+    lifecycle = _diagnostic_matches(activity + "\n" + activity_top,
+        r"MainActivity.*(pause|stop|finishing|destroy)|(?:pause|stop|finishing|destroy).*MainActivity|mLastPausedActivity|mStoppingActivities")
+    sections = [
+        "TAPRA emulator foreground diagnostics (sanitized)",
+        f"Android API level: {api}",
+        f"Current foreground activity fields: {component_text}",
+        f"System/settings/permission activity detected: {'yes' if system_activity else 'no'}",
+        f"TAPRA process alive: {'yes' if pids or pidof else 'no'}",
+        f"TAPRA PID evidence: {', '.join(pids) if pids else (pidof or 'none')}",
+        f"Crash/ANR evidence: {'yes' if crashes else 'no'}",
+        "MainActivity pause/stop lifecycle clues:", *(lifecycle or ["<none>"]),
+        "dumpsys activity activities:", *(_diagnostic_matches(activity,
+            r"topResumedActivity|mFocusedActivity|mResumedActivity|MainActivity|permissioncontroller|packageinstaller|settings/|launcher/|mLastPausedActivity|mStoppingActivities") or ["<none>"]),
+        "dumpsys activity top:", *(_diagnostic_matches(activity_top,
+            r"ACTIVITY|TASK|MainActivity|Resumed|Paused|Stopped|Stopping|Finishing|permissioncontroller|packageinstaller|settings/|launcher/") or ["<none>"]),
+        "dumpsys window windows:", *(_diagnostic_matches(windows,
+            r"mCurrentFocus|mFocusedApp|Window\{|MainActivity|permissioncontroller|packageinstaller|settings/|launcher/") or ["<none>"]),
+        "dumpsys package ir.taprasystem.employee:", *(_diagnostic_matches(package,
+            r"Package \[|userId=|versionCode=|versionName=|requested permissions:|install permissions:|runtime permissions:|android\.permission\.(ACCESS_FINE_LOCATION|ACCESS_COARSE_LOCATION|POST_NOTIFICATIONS)|granted=", 80) or ["<none>"]),
+        "Relevant recent logcat:", *(relevant_logs or ["<none>"]),
+        "Crash/ANR log lines:", *(crashes or ["<none>"]),
+    ]
+    evidence = Path(output).with_suffix(".foreground-diagnostics.txt")
+    try:
+        evidence.write_text("\n".join(_redact_diagnostic(line) for line in sections) + "\n", encoding="utf-8")
+    except OSError:
+        evidence = None
+    safe_components = re.sub(r"[^A-Za-z0-9_.$/,:=-]", "?", component_text)[:250]
+    summary = (f"API {api}; process {'alive' if pids or pidof else 'not alive'}; "
+               f"system activity {'present' if system_activity else 'not detected'}; "
+               f"crash/ANR {'detected' if crashes else 'not detected'}; foreground={safe_components}")
+    return evidence, summary
+
+
 def require_foreground(activity_dump):
     # Prefer the current/top activity to historical records further down dumpsys.
     # Both ':' (Android 6) and '=' (newer Android) are supported.
@@ -34,15 +124,27 @@ def require_foreground(activity_dump):
     raise CaptureError("Current foreground TAPRA activity evidence is missing")
 
 
-def require_live_app():
+def require_live_app(diagnostic_output=None):
     # Plain ps is available on API 23 too; avoid the newer-only ps -A option.
     processes = checked_adb("shell", "ps")
     pids = [fields[1] for fields in (line.split() for line in processes.splitlines())
             if len(fields) > 2 and fields[1].isdigit() and int(fields[1]) > 0
             and fields[-1] == PACKAGE_NAME]
-    if len(pids) != 1:
-        raise CaptureError("TAPRA application process is not running or is ambiguous")
-    require_foreground(checked_adb("shell", "dumpsys", "activity", "activities"))
+    activity_dump = checked_adb("shell", "dumpsys", "activity", "activities")
+    foreground_error = None
+    try:
+        require_foreground(activity_dump)
+    except CaptureError as error:
+        foreground_error = error
+    if len(pids) != 1 or foreground_error:
+        reason = "TAPRA application process is not running or is ambiguous" if len(pids) != 1 else str(foreground_error)
+        if diagnostic_output is not None:
+            evidence, summary = collect_foreground_diagnostics(diagnostic_output, activity_dump, processes)
+            evidence_name = evidence.name if evidence else "unavailable"
+            print(f"::error title=Android foreground diagnosis::{summary}; evidence={evidence_name}", file=sys.stderr)
+            if evidence:
+                reason += f"; diagnostics saved as {evidence_name}"
+        raise CaptureError(reason)
     return pids[0]
 
 
@@ -55,10 +157,11 @@ def require_no_crash():
 
 
 def verify_capture(output, expect):
-    original_pid = require_live_app()
+    output = Path(output)
+    original_pid = require_live_app(output)
     original_status = capture_ui(output)
     # These gates still run after a recovered 137, with no app restart or retry.
-    if require_live_app() != original_pid:
+    if require_live_app(output) != original_pid:
         raise CaptureError("TAPRA application restarted during UI capture")
     require_no_crash()
     try:
