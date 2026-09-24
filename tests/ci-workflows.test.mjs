@@ -50,6 +50,19 @@ test("Android CI is read-only, branch-complete, local-backend-only and never pub
   assert.match(manifest,/usesCleartextTraffic="\$\{usesCleartextTraffic\}"/);
   for(const source of [main,service,notifications])assert.match(source,/BuildConfig\.BASE_URL/);
   assert.match(readme,/APK گردش‌کار CI یک خروجی Debug آزمایشی است/);
+  const usb=workflow.slice(workflow.indexOf("  usb-loopback-debug:"),workflow.indexOf("  signed-release-smoke:"));
+  assert.match(workflow,/build_usb_loopback:[\s\S]*type: boolean[\s\S]*default: false/);
+  assert.match(usb,/github\.event_name == 'workflow_dispatch' && inputs\.build_usb_loopback == true/);
+  assert.match(usb,/-PtapraDebugBackendUrl=http:\/\/127\.0\.0\.1:3215 :app:lintDebug :app:testDebugUnitTest :app:assembleDebug/);
+  assert.match(usb,/BASE_URL = "http:\/\/127\.0\.0\.1:3215"/);
+  assert.match(usb,/APPLICATION_ID = "ir\.taprasystem\.employee"/);
+  assert.match(usb,/VERSION_CODE = 23/);
+  assert.match(usb,/VERSION_NAME = "1\.2\.4"/);
+  assert.match(usb,/apksigner" verify --verbose --print-certs/);
+  assert.match(usb,/sha256sum tapra-employee-usb-debug\.apk/);
+  assert.match(usb,/baseUrl=http:\/\/127\.0\.0\.1:3215/);
+  assert.match(usb,/name: tapra-employee-usb-loopback-\$\{\{ github\.sha \}\}-\$\{\{ github\.run_id \}\}/);
+  assert.doesNotMatch(usb,/\$\{\{\s*secrets\.|gh release|contents: write|10\.0\.2\.2|https:\/\/taprasystem\.ir/);
 });
 
 test("automatic runtime migration is disabled in deployment examples",async()=>{

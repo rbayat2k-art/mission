@@ -15,6 +15,11 @@ on:
         description: "Required SHA-256 when testing either signed APK source"
         required: false
         type: string
+      build_usb_loopback:
+        description: "Build a separate debug APK for a USB-reversed local backend at 127.0.0.1:3215"
+        required: false
+        type: boolean
+        default: false
   push:
     branches: [main, "codex/**"]
   pull_request:
@@ -25,7 +30,7 @@ permissions:
 
 jobs:
   build-debug:
-    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_apk_base64 == '' && inputs.signed_release_sha256 == '' }}
+    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_apk_base64 == '' && inputs.signed_release_sha256 == '' && inputs.build_usb_loopback != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -66,7 +71,7 @@ jobs:
 
   emulator-smoke:
     name: Debug API ${{ matrix.api-level }} / ${{ matrix.api-level >= 31 && 'login rendering' || 'stock obsolete-WebView rejection only' }}
-    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_apk_base64 == '' && inputs.signed_release_sha256 == '' }}
+    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_apk_base64 == '' && inputs.signed_release_sha256 == '' && inputs.build_usb_loopback != true }}
     needs: build-debug
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -166,7 +171,7 @@ jobs:
 
 
   release-build:
-    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_apk_base64 == '' && inputs.signed_release_sha256 == '' }}
+    if: ${{ inputs.signed_release_asset_id == '' && inputs.signed_release_apk_base64 == '' && inputs.signed_release_sha256 == '' && inputs.build_usb_loopback != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -216,6 +221,60 @@ jobs:
             android/tapra-release-build-metadata.txt
             android/tapra-release-badging.txt
             android/tapra-release-manifest-tree.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  usb-loopback-debug:
+    name: USB loopback debug APK
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_usb_loopback == true && inputs.signed_release_asset_id == '' && inputs.signed_release_apk_base64 == '' && inputs.signed_release_sha256 == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+      - name: Lint, unit test and build isolated USB-loopback debug APK
+        working-directory: android
+        run: gradle --no-daemon -PtapraDebugBackendUrl=http://127.0.0.1:3215 :app:lintDebug :app:testDebugUnitTest :app:assembleDebug
+      - name: Verify exact debug identity, local backend, certificate and checksum
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/debug/app-debug.apk"
+          config="app/build/generated/source/buildConfig/debug/ir/taprasystem/employee/BuildConfig.java"
+          test -s "$apk"
+          grep -Fq 'public static final boolean DEBUG = true;' "$config"
+          grep -Fq 'public static final String BASE_URL = "http://127.0.0.1:3215";' "$config"
+          grep -Fq 'public static final String APPLICATION_ID = "ir.taprasystem.employee";' "$config"
+          grep -Fq 'public static final int VERSION_CODE = 23;' "$config"
+          grep -Fq 'public static final String VERSION_NAME = "1.2.4";' "$config"
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          test -x "$build_tools/apksigner"
+          test -x "$build_tools/aapt"
+          "$build_tools/apksigner" verify --verbose --print-certs "$apk" > usb-debug-signature.txt
+          "$build_tools/aapt" dump badging "$apk" > usb-debug-badging.txt
+          grep -q "^package: name='ir.taprasystem.employee' versionCode='23' versionName='1.2.4'" usb-debug-badging.txt
+          grep -q "^sdkVersion:'23'" usb-debug-badging.txt
+          grep -q "^targetSdkVersion:'35'" usb-debug-badging.txt
+          cp "$apk" tapra-employee-usb-debug.apk
+          sha256sum tapra-employee-usb-debug.apk > tapra-employee-usb-debug.apk.sha256
+          printf 'commit=%s\nbuildType=debug\napplicationId=ir.taprasystem.employee\nversionName=1.2.4\nversionCode=23\nminSdk=23\ntargetSdk=35\nbaseUrl=http://127.0.0.1:3215\n' "$GITHUB_SHA" > tapra-employee-usb-debug-metadata.txt
+          cat usb-debug-signature.txt
+          cat tapra-employee-usb-debug.apk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tapra-employee-usb-loopback-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            android/tapra-employee-usb-debug.apk
+            android/tapra-employee-usb-debug.apk.sha256
+            android/tapra-employee-usb-debug-metadata.txt
+            android/usb-debug-signature.txt
           if-no-files-found: error
           retention-days: 14
 
