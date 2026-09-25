@@ -11,6 +11,7 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.location.LocationManager;
 import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Build;
@@ -19,6 +20,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -417,6 +419,8 @@ public class MainActivity extends Activity {
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
+                Log.i("TapraGps", "webviewPermissionPrompt=true trustedOrigin=" + isTrustedWebOrigin(origin)
+                    + " permissionAny=" + hasAnyLocationPermission() + " permissionPrecise=" + hasPreciseLocationPermission());
                 if (!isTrustedWebOrigin(origin)) {
                     callback.invoke(origin, false, false);
                     return;
@@ -881,6 +885,31 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean isPreciseLocationPermissionGranted() {
             return hasPreciseLocationPermission();
+        }
+
+        @JavascriptInterface
+        public String getLocationServiceState() {
+            try {
+                LocationManager manager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+                if (manager == null) return "unknown";
+                boolean enabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                    ? manager.isLocationEnabled()
+                    : manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                        || manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+                return enabled ? "enabled" : "disabled";
+            } catch (RuntimeException error) {
+                return "unknown";
+            }
+        }
+
+        @JavascriptInterface
+        public void openDeviceLocationSettings() {
+            runOnUiThread(() -> {
+                try { startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)); }
+                catch (RuntimeException error) {
+                    Toast.makeText(MainActivity.this, "Location را از تنظیمات گوشی روشن کنید", Toast.LENGTH_LONG).show();
+                }
+            });
         }
 
         @JavascriptInterface

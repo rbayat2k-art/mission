@@ -70,7 +70,8 @@ test("keeps employee work start compatible with older Android Chrome", async () 
   assert.match(page, /function createClientId\(\)/);
   assert.doesNotMatch(page, /clientEventId: crypto\.randomUUID\(\)/);
   assert.match(page, /navigator\.geolocation\.watchPosition/);
-  assert.match(page, /maximumAge:0, timeout:20_000/);
+  const acquisition = await readFile(new URL("../lib/gps-acquisition.ts", import.meta.url), "utf8");
+  assert.match(acquisition, /maximumAge: 0, timeout: 20_000/);
   assert.match(page, /در حال دریافت موقعیت دقیق/);
 });
 
@@ -1036,7 +1037,7 @@ test("prepares an upgrade-numbered Android wrapper with account-isolated GPS and
   assert.doesNotMatch(page, /ensureNativeBackgroundTrackingReady/);
   assert.match(page, /tapra-tracking-state/);
   assert.match(page, /nativeOnly/);
-  assert.match(page, /clearNativeAuthenticatedUser\(\);await detachPushDevice\(\);await api\("\/api\/auth\/logout"/);
+  assert.match(page, /clearNativeAuthenticatedUser\(\);\s*await detachPushDevice\(\);\s*await api\("\/api\/auth\/logout"/);
   assert.match(page, /setNativeAuthenticatedUser\(result\.user\.id\)/);
   assert.match(page, /موقعیت غیرواقعی شناسایی شد/);
   assert.match(locations, /mock_location_detected/);

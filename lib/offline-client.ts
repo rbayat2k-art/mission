@@ -289,12 +289,13 @@ function locationEntryHasFinalAck(entry:JsonEntry, body:LocationAck) {
   return locationBatchHasFinalAck(points, body);
 }
 
-export async function sendJsonOrQueue<T>(accountId: string, url: string, method: string, body: unknown): Promise<OutboxResult<T>> {
+export async function sendJsonOrQueue<T>(accountId: string, url: string, method: string, body: unknown, options?: { signal?: AbortSignal }): Promise<OutboxResult<T>> {
   const currentAccountId = validAccountId(accountId);
+  if (options?.signal?.aborted) throw new Error("درخواست متوقف شد");
   const entry: Omit<JsonEntry, "accountId"> = { kind: "json", url, method, body, createdAt: new Date().toISOString() };
   if (!navigator.onLine) { const queueId = await enqueue(accountId, entry); return { queued: true, queueId }; }
   try {
-    const response = await fetch(url, { method, headers: requestHeaders(currentAccountId, body), body: JSON.stringify(body) });
+    const response = await fetch(url, { method, headers: requestHeaders(currentAccountId, body), body: JSON.stringify(body), ...(options?.signal ? { signal: options.signal } : {}) });
     const data = await responseBody<T>(response);
     if (isLocationEntry(entry) && !locationEntryHasFinalAck(entry, data as LocationAck)) {
       const queueId = await enqueue(accountId, entry);
@@ -302,6 +303,7 @@ export async function sendJsonOrQueue<T>(accountId: string, url: string, method:
     }
     return { queued: false, data };
   } catch (error) {
+    if (options?.signal?.aborted) throw error;
     if (error instanceof TypeError) { const queueId = await enqueue(accountId, entry); return { queued: true, queueId }; }
     throw error;
   }

@@ -76,3 +76,15 @@ The Android entry gate remains authoritative, with defensive service checks.
 - A real Android phone test remains necessary before distributing a release.
 - No schema migration is required and existing sessions, GPS history, missions
   or reports are not modified by this change.
+
+## Acquisition incident addendum — 2026-09-25
+
+Keep the trusted-location and native tracking policy above. The web acquisition
+uses its existing stricter 60-second capture freshness threshold. Require a
+new watch and an exception-safe 25-second application deadline; treat the
+subsequent work-start response as a separate bounded 15-second operation.
+Preserve its client session id for uncertain-response retries and cancel on
+account changes. Native test acquisition now requires HTTPS, rather than
+depending on different WebView interpretations of HTTP loopback trustworthiness.
+No platform security requirement is bypassed. See the
+[incident evidence and retest limitations](../android-gps-acquisition-incident-2026-09-25.md).

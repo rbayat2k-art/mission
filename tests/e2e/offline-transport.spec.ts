@@ -36,6 +36,20 @@ async function seed(page:Page, accountId="account-a") {
 
 test.beforeEach(async ({ page }) => installHarness(page));
 
+test("cancelled work-start never becomes an offline queued operation", async ({page}) => {
+  const result = await page.evaluate(async () => {
+    const controller = new AbortController();
+    window.fetch = (_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new TypeError("aborted transport")));
+    });
+    const operation = window.auditOutbox.sendJsonOrQueue("account-a", "/api/work-sessions", "POST", {action:"start",clientSessionId:"synthetic-cancel"}, {signal:controller.signal});
+    controller.abort();
+    const rejected = await operation.then(() => false, () => true);
+    return {rejected, count:await window.auditOutbox.getOutboxCount("account-a")};
+  });
+  expect(result).toEqual({rejected:true,count:0});
+});
+
 test("429 retains the exact queue item across reload and a manual retry can finish it", async ({ page }) => {
   let status = 429;
   const headers:string[] = [];

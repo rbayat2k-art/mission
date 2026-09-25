@@ -32,6 +32,8 @@ import { detachPushDevice } from "../lib/push-client";
 import type { MissionAssigneesResponse } from "../lib/mission-assignee-order";
 import { createMissionRefresh } from "../lib/mission-refresh";
 import { validateTrustedLocation } from "../lib/mission-location";
+import { createGpsAcquisition, gpsProgressMessage, type GpsProgress } from "../lib/gps-acquisition";
+import { createWorkStartDeadline } from "../lib/work-start-deadline";
 
 type EmployeeScreen = "home" | "missions" | "new" | "work" | "report" | "mission-detail" | "end-review" | "profile" | "notifications" | "notification-settings" | "account-settings";
 type AdminScreen = "dashboard" | "live" | "missions" | "actions" | "access" | "approvals" | "integrity" | "reports" | "notifications" | "account";
@@ -53,6 +55,8 @@ type TapraAndroidBridge = {
   isLocationPermissionGranted: () => boolean;
   isPreciseLocationPermissionGranted?: () => boolean;
   requestPreciseLocationPermission?: () => void;
+  getLocationServiceState?: () => string;
+  openDeviceLocationSettings?: () => void;
   openLocationSettings: () => void;
 };
 
@@ -486,6 +490,8 @@ function EmployeeApp() {
   const [screen, setScreen] = useState<EmployeeScreen>(restoreEmployeeScreen);
   const [working, setWorking] = useState(false);
   const [workToggleBusy, setWorkToggleBusy] = useState(false);
+  const [workSubmitting, setWorkSubmitting] = useState(false);
+  const [workGpsProgress, setWorkGpsProgress] = useState<GpsProgress | null>(null);
   const [workSessionStartAt, setWorkSessionStartAt] = useState<string | null>(null);
   const [workSessionId, setWorkSessionId] = useState<string | null>(null);
   const [todayWorkSeconds, setTodayWorkSeconds] = useState(0);
@@ -518,6 +524,26 @@ function EmployeeApp() {
   const missionStartRequest=useRef(false);
   const missionFinishRequest=useRef(false);
   const workStartRequest=useRef(false);
+  const workStartOperation = useRef<{ cancel: () => void; checkDeadline: () => boolean } | null>(null);
+  const workStartGeneration = useRef(0);
+  const pendingWorkStartId = useRef<string | null>(null);
+  useEffect(() => {
+    const generation = workStartGeneration;
+    const reset = window.setTimeout(() => { setWorkToggleBusy(false); setWorkSubmitting(false); setMissedStartSaving(false); setWorkGpsProgress(null); }, 0);
+    const resume = () => { workStartOperation.current?.checkDeadline(); };
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", resume);
+    return () => {
+      window.clearTimeout(reset);
+      window.removeEventListener("focus", resume);
+      document.removeEventListener("visibilitychange", resume);
+      generation.current++;
+      workStartOperation.current?.cancel();
+      workStartOperation.current = null;
+      pendingWorkStartId.current = null;
+      workStartRequest.current = false;
+    };
+  }, [employeeUserId, signedIn]);
   const [missionStarting,setMissionStarting]=useState(false);
   const [missionFinishing,setMissionFinishing]=useState(false);
   const [attachments, setAttachments] = useState<UiAttachment[]>([]);
@@ -1163,62 +1189,39 @@ function EmployeeApp() {
   };
 
   const captureFreshGps = async () => {
-    const cached = validateTrustedLocation(latestGps, { maxAgeMs:60_000 });
-    if (cached.location) { setGpsAccuracy(Math.round(cached.location.accuracy)); setGpsStatus("ready"); return cached.location; }
-    if (!navigator.geolocation) throw new Error("GPS در این دستگاه در دسترس نیست");
-    if (!window.isSecureContext) throw new Error("برای دریافت GPS باید سامانه با اتصال امن HTTPS باز شود");
-    setGpsStatus("requesting");
-    return await new Promise<{latitude:number;longitude:number;accuracy:number;recordedAt:string}>((resolve, reject) => {
-      let settled = false;
-      let bestAccuracy: number | null = null;
-      let lastIssue: string | null = cached.code;
-      const finish = (action: () => void) => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(waitTimer);
-        navigator.geolocation.clearWatch(watchId);
-        action();
-      };
-      const watchId = navigator.geolocation.watchPosition(position => {
-        const recordedAt = Number.isFinite(position.timestamp) ? new Date(position.timestamp).toISOString() : "";
-        const location = { latitude:position.coords.latitude, longitude:position.coords.longitude, accuracy:position.coords.accuracy, recordedAt };
-        if (Number.isFinite(location.accuracy)) bestAccuracy = bestAccuracy === null ? location.accuracy : Math.min(bestAccuracy, location.accuracy);
-        setGpsAccuracy(bestAccuracy === null ? null : Math.round(bestAccuracy));
-        const validation = validateTrustedLocation(location, { maxAgeMs:60_000 });
-        if (validation.code === "LOCATION_STALE" || validation.code === "LOCATION_FUTURE_TIMESTAMP" || validation.code === "LOCATION_INVALID_TIMESTAMP") {
-          lastIssue = validation.code;
-          setGpsStatus("stale");
-          return;
-        }
-        if (validation.code === "LOCATION_ACCURACY_TOO_LOW") { lastIssue = validation.code; setGpsStatus("approximate"); return; }
-        if (validation.code || !validation.location) { lastIssue = validation.code; setGpsStatus("unavailable"); return; }
-        setLatestGps(validation.location); setGpsStatus("ready");
-        finish(() => resolve(validation.location!));
-      }, error => {
-        if (error.code === error.PERMISSION_DENIED) {
-          setGpsStatus("denied");
-          finish(() => reject(new Error("مجوز موقعیت مسدود است؛ در تنظیمات برنامه Location را روی Allow و Precise قرار دهید")));
-          return;
-        }
-        lastIssue = error.code === error.TIMEOUT ? "TIMEOUT" : "POSITION_UNAVAILABLE";
-        setGpsStatus(error.code === error.TIMEOUT ? "timeout" : "unavailable");
-        // Some WebViews report a transient timeout before producing a valid fix.
-        // Keep the bounded watch alive; the final message will name the last condition.
-      }, { enableHighAccuracy:true, maximumAge:0, timeout:20_000 });
-      const waitTimer = window.setTimeout(() => {
-        const status = lastIssue === "LOCATION_STALE" ? "stale" : bestAccuracy !== null && bestAccuracy > 100 ? "approximate" : lastIssue === "TIMEOUT" ? "timeout" : "unavailable";
-        setGpsStatus(status);
-        finish(() => reject(new Error(lastIssue === "LOCATION_STALE" ? "موقعیت قبلی قدیمی است؛ Location را روشن نگه دارید تا موقعیت تازه برسد، سپس دوباره تلاش کنید."
-          : lastIssue === "LOCATION_CLOCK_SKEW" ? "ساعت گوشی هماهنگ نیست؛ تاریخ و ساعت خودکار را فعال کنید و دوباره تلاش کنید."
-          : bestAccuracy !== null && bestAccuracy > 100 ? `موقعیت تازه با دقت کافی دریافت نشد؛ بهترین دقت ${Math.round(bestAccuracy).toLocaleString("fa-IR")} متر بود. دسترسی Precise را روشن کنید و دوباره تلاش کنید.`
-          : lastIssue === "TIMEOUT" ? "تا ۲۰ ثانیه موقعیت تازه نرسید؛ Location گوشی و فضای باز را بررسی و دوباره تلاش کنید."
-          : "سرویس Location موقعیت تازه نداد؛ Location گوشی را روشن کنید و دوباره تلاش کنید.")));
-      }, 25_000);
+    const generation = workStartGeneration.current;
+    const acquisition = createGpsAcquisition({
+      geolocation: navigator.geolocation,
+      secureContext: window.isSecureContext,
+      protocol: window.location.protocol,
+      bridge: androidBridge(),
+      onProgress: progress => {
+        if (generation !== workStartGeneration.current) return;
+        setWorkGpsProgress(progress);
+        setGpsAccuracy(progress.accuracy);
+        setGpsStatus(progress.phase === "READY" ? "ready" : progress.phase === "ACQUIRING" ? "requesting"
+          : progress.phase === "WAITING_FRESH" || progress.phase === "STALE" ? "stale"
+          : ["WAITING_ACCURACY", "LOW_ACCURACY", "PRECISE_REQUIRED"].includes(progress.phase) ? "approximate"
+          : progress.phase === "PERMISSION_DENIED" ? "denied" : progress.phase === "TIMEOUT" ? "timeout" : "unavailable");
+      },
+      onDiagnostic: event => console.info("[tapra:gps-acquisition]", event),
     });
+    workStartOperation.current = acquisition;
+    try {
+      const location = await acquisition.promise;
+      if (generation !== workStartGeneration.current) throw new Error("دریافت موقعیت متوقف شد");
+      setLatestGps(location);
+      return location;
+    } finally {
+      if (workStartOperation.current === acquisition) workStartOperation.current = null;
+    }
   };
 
-  const adoptActiveWorkSession = async () => {
-    const state = await api<ApiWorkState>("/api/work-sessions", { cache:"no-store" });
+  const adoptActiveWorkSession = async (generation: number) => {
+    const request = createWorkStartDeadline(signal => api<ApiWorkState>("/api/work-sessions", { cache:"no-store", signal }));
+    workStartOperation.current = request;
+    const state = await request.promise;
+    if (generation !== workStartGeneration.current) return false;
     if (!state.current?.id || !state.current.startedAt) return false;
     setWorking(true);
     setWorkSessionId(state.current.id);
@@ -1227,6 +1230,7 @@ function EmployeeApp() {
     setTodayLastEndAt(null);
     setWorkMinutesSyncedAt(Date.now());
     syncNativeTracking(true, state.current.id);
+    pendingWorkStartId.current = null;
     notify("فعالیت باز شما از سرور بازیابی شد؛ فعالیت دیگری ساخته نشد.");
     return true;
   };
@@ -1234,50 +1238,83 @@ function EmployeeApp() {
   const toggleWork = async () => {
     if (working) return openEndReview();
     if (workToggleBusy || workStartRequest.current) return;
-    const bridge = androidBridge();
-    if (bridge && isNativeAndroidApp() && bridge.isPreciseLocationPermissionGranted && !bridge.isPreciseLocationPermissionGranted()) {
-      bridge.requestPreciseLocationPermission?.();
-      setGpsStatus(bridge.isLocationPermissionGranted() ? "approximate" : "denied");
-      notify("برای شروع با دقت لازم، دسترسی Location را روی «موقعیت دقیق / Precise» بگذارید؛ موقعیت تقریبی کافی نیست.");
-      return;
-    }
+    const generation = workStartGeneration.current;
     workStartRequest.current = true;
     setWorkToggleBusy(true);
+    setWorkSubmitting(false);
     try {
       const location = await captureFreshGps();
-      const clientSessionId = createClientId();
-      const result = await sendJsonOrQueue<{session:{id:string;startedAt:string;workType?:string}}>(employeeUserId, "/api/work-sessions", "POST", { action: "start", clientSessionId, location });
+      if (generation !== workStartGeneration.current) return;
+      setWorkSubmitting(true);
+      // Preserve the id across uncertain responses. Retrying cannot create a second session.
+      const clientSessionId = pendingWorkStartId.current ?? createClientId();
+      pendingWorkStartId.current = clientSessionId;
+      const request = createWorkStartDeadline(signal => sendJsonOrQueue<{session:{id:string;startedAt:string;workType?:string;status?:string}}>(employeeUserId, "/api/work-sessions", "POST", { action: "start", clientSessionId, location }, { signal }));
+      workStartOperation.current = request;
+      const result = await request.promise;
+      if (generation !== workStartGeneration.current) return;
+      if (result.data?.session.status === "ended") {
+        pendingWorkStartId.current = null;
+        throw new Error("درخواست قبلی مربوط به فعالیت پایان‌یافته بود؛ برای شروع فعالیت جدید دوباره تلاش کنید.");
+      }
       const startedAt = result.data?.session.startedAt ?? new Date().toISOString();
       const sessionId = result.data?.session.id ?? clientSessionId;
       setWorking(true); setWorkSessionStartAt(startedAt); setWorkSessionId(sessionId); setTodayFirstStartAt(current=>current ?? startedAt); setTodayLastEndAt(null); setClockTick(Date.now()); setWorkMinutesSyncedAt(Date.now());
       syncNativeTracking(true, sessionId);
-      setPendingSync(await getOutboxCount(employeeUserId).catch(() => 0));
+      pendingWorkStartId.current = null;
+      void getOutboxCount(employeeUserId).then(count => { if (generation === workStartGeneration.current) setPendingSync(count); }).catch(() => undefined);
       notify(result.queued ? "شروع فعالیت همراه GPS روی گوشی ذخیره شد" : result.data?.session.workType === "overtime" ? "اضافه‌کاری و ثبت GPS آغاز شد" : "فعالیت و ثبت GPS آغاز شد");
     } catch (error) {
+      if (generation !== workStartGeneration.current) return;
       if (error instanceof ApiResponseError && error.status === 409 && error.code === "ACTIVE_WORK_SESSION_EXISTS") {
-        try { if (await adoptActiveWorkSession()) return; }
+        try { if (await adoptActiveWorkSession(generation)) return; }
         catch { /* Preserve the original conflict message if authoritative state cannot be read. */ }
       }
-      notify(error instanceof Error ? error.message : "عملیات ناموفق بود");
+      if (generation === workStartGeneration.current) notify(error instanceof Error ? error.message : "عملیات ناموفق بود");
     }
-    finally { workStartRequest.current = false; setWorkToggleBusy(false); }
+    finally {
+      if (generation === workStartGeneration.current) {
+        workStartOperation.current = null;
+        workStartRequest.current = false; setWorkToggleBusy(false); setWorkSubmitting(false);
+      }
+    }
+  };
+
+  const logoutEmployee = async () => {
+    // Cancel before awaiting logout: a late GPS fix must not send a new start meanwhile.
+    workStartGeneration.current++;
+    workStartOperation.current?.cancel();
+    workStartOperation.current = null;
+    workStartRequest.current = false;
+    pendingWorkStartId.current = null;
+    setWorkToggleBusy(false); setWorkSubmitting(false); setMissedStartSaving(false); setWorkGpsProgress(null);
+    syncNativeTracking(false); clearNativeAuthenticatedUser();
+    await detachPushDevice();
+    await api("/api/auth/logout", {method:"POST"});
+    setEmployeeUserId(""); setPendingSync(0); setSyncConflicts([]); setSyncQuarantined([]);
+    setScreen("home"); setPassword(""); setSignedIn(false);
   };
 
   const submitMissedStart = async (event: FormEvent) => {
     event.preventDefault();
+    if (workStartRequest.current) return;
     if (!missedStartTime) return notify("ساعت شروع فراموش‌شده را انتخاب کنید");
     if (missedStartReason.trim().length < 10) return notify("دلیل خوداظهاری را کامل‌تر بنویسید");
     setMissedStartSaving(true);
+    workStartRequest.current = true;
+    const generation = workStartGeneration.current;
     try {
       const location = await captureFreshGps();
+      if (generation !== workStartGeneration.current) return;
       const result = await api<{correction:{claimedMinutes:number;scorePenalty:number};session:{id:string;startedAt:string;workType:string}}>("/api/work-sessions", { method:"POST", body:JSON.stringify({ action:"self_report_start", startTime:missedStartTime, reason:missedStartReason.trim(), location }) });
+      if (generation !== workStartGeneration.current) return;
       setWorking(true); setWorkSessionStartAt(result.session.startedAt); setWorkSessionId(result.session.id); setWorkMinutesSyncedAt(Date.now()); setTodayFirstStartAt(current=>current ?? result.session.startedAt); setTodayLastEndAt(null);
       syncNativeTracking(true, result.session.id);
       setMissedStartOpen(false); setMissedStartTime(""); setMissedStartReason("");
       await loadEmployeeData();
       notify(`${result.correction.claimedMinutes.toLocaleString("fa-IR")} دقیقه خوداظهاری با کسر ${result.correction.scorePenalty.toLocaleString("fa-IR")} امتیاز، در انتظار تأیید سرپرست ثبت شد`);
-    } catch (error) { notify(error instanceof Error ? error.message : "ثبت خوداظهاری ناموفق بود"); }
-    finally { setMissedStartSaving(false); }
+    } catch (error) { if (generation === workStartGeneration.current) notify(error instanceof Error ? error.message : "ثبت خوداظهاری ناموفق بود"); }
+    finally { if (generation === workStartGeneration.current) { workStartRequest.current = false; setMissedStartSaving(false); } }
   };
 
   const confirmEndWork = async () => {
@@ -1384,7 +1421,18 @@ function EmployeeApp() {
                 <div className="work-card-top"><span className="live-dot"><i />{working ? gpsStatus === "ready" ? "فعالیت و GPS در حال ثبت" : "فعالیت در حال ثبت" : "آماده شروع"}</span><button onClick={() => syncQueued().catch(() => undefined)}>↻</button></div>
                 <div className="timer">{formatDurationSeconds(todayWorkSeconds+(working?Math.max(0,(clockTick-workMinutesSyncedAt)/1000):0))}</div>
                 <p>{working ? `شروع این نوبت، ${formatPersianTime(workSessionStartAt)} · کارکرد واقعی امروز` : todayLastEndAt ? `ورود ${formatPersianTime(todayFirstStartAt)} · خروج ${formatPersianTime(todayLastEndAt)} · کارکرد واقعی امروز` : "حداقل روزانه ۸:۳۰ · اضافه‌کاری فقط پس از ۹:۰۰"}</p>
-                <button className={`work-toggle ${working ? "stop" : "start"}`} onClick={toggleWork} disabled={workToggleBusy}><span>{working ? "■" : workToggleBusy ? "⌖" : "▶"}</span>{working ? "پایان فعالیت" : workToggleBusy ? "در حال دریافت موقعیت دقیق..." : "شروع فعالیت"}</button>
+                <button className={`work-toggle ${working ? "stop" : "start"}`} onClick={toggleWork} disabled={workToggleBusy || missedStartSaving}><span>{working ? "■" : workToggleBusy ? "⌖" : "▶"}</span>{working ? "پایان فعالیت" : workToggleBusy ? workSubmitting ? "در حال ثبت فعالیت..." : "در حال دریافت موقعیت دقیق..." : "شروع فعالیت"}</button>
+                {!working && workGpsProgress && <div className="work-gps-feedback" role="status" aria-live="polite">
+                  <p>{workSubmitting ? "موقعیت دریافت شد؛ در انتظار پاسخ ثبت فعالیت هستیم." : gpsProgressMessage(workGpsProgress)}</p>
+                  {!workToggleBusy && !missedStartSaving && isNativeAndroidApp() && ["PERMISSION_DENIED", "PRECISE_REQUIRED", "LOCATION_DISABLED"].includes(workGpsProgress.phase) && <button type="button" onClick={() => {
+                    try {
+                      const bridge = androidBridge();
+                      if (workGpsProgress.phase === "LOCATION_DISABLED" && bridge?.openDeviceLocationSettings) bridge.openDeviceLocationSettings();
+                      else if (workGpsProgress.phase === "PRECISE_REQUIRED" && bridge?.requestPreciseLocationPermission) bridge.requestPreciseLocationPermission();
+                      else bridge?.openLocationSettings();
+                    } catch { notify("تنظیمات Location گوشی را باز کنید و پس از اصلاح، دوباره تلاش کنید."); }
+                  }}>تنظیمات موقعیت</button>}
+                </div>}
               </section>
               {working && isNativeAndroidApp() && nativeTrackingState?.workSessionId === workSessionId && nativeTrackingState.state !== "active" && <div className={`offline-banner ${nativeTrackingState.state === "starting" ? "" : "gps-tracking-warning"}`} role="status"><Icon>⌖</Icon><span><b>{nativeTrackingState.state === "starting" ? "در حال راه‌اندازی GPS پس‌زمینه" : "فعالیت ثبت است؛ وضعیت ردیابی پس‌زمینه"}</b><small>{nativeTrackingMessage(nativeTrackingState)}</small></span>{nativeTrackingState.state !== "starting" && <button onClick={() => syncNativeTracking(true, workSessionId ?? "")}>بررسی و تلاش دوباره</button>}</div>}
               {!working&&<button className="missed-start-trigger" onClick={()=>setMissedStartOpen(current=>!current)}>◷ شروع فعالیت را فراموش کرده‌ام</button>}
@@ -1537,7 +1585,7 @@ function EmployeeApp() {
           {screen === "notifications" && <NotificationCenter key={employeeUserId} accountId={employeeUserId} onOpenMissions={()=>{loadEmployeeData().catch(()=>undefined);setScreen("missions")}} onOpenFollowUps={()=>{loadEmployeeData().catch(()=>undefined);setMissionTab("follow_up");setScreen("missions")}} onCounts={setNotificationCounts}/>}
           {screen === "notification-settings" && <NotificationSettings onMessage={notify} onEnabledChange={setEmployeeNotificationEnabled}/>}
           {screen === "account-settings" && <AccountSettings initialFullName={employeeDisplayName} initialUsername={username} onSaved={user=>{setEmployeeDisplayName(user.fullName);setUsername(user.username)}} onMessage={notify}/>}
-          {screen === "profile" && <div className="profile-screen"><div className="avatar large">{employeeDisplayName.slice(0,2)}</div><h2>{employeeDisplayName}</h2><p>کارشناس امور اداری</p><div className="profile-list"><button onClick={()=>setScreen("account-settings")}><span>نام کاربری، رمز و اطلاعات حساب</span>←</button><button onClick={()=>setScreen("notification-settings")}><span>تنظیمات اعلان‌ها</span><b>{employeeNotificationEnabled?"فعال":"غیرفعال"}</b></button><button onClick={()=>setScreen("notifications")}><span>درخواست‌های باز</span><b>{notificationCounts.open.toLocaleString("fa-IR")}</b></button><button onClick={() => syncQueued().catch(() => undefined)}><span>همگام‌سازی اطلاعات</span><b>{pendingSync ? `${pendingSync.toLocaleString("fa-IR")} مورد` : "همگام"}</b></button><button><span>راهنمای استفاده</span>←</button><button className="logout" onClick={async () => {syncNativeTracking(false);clearNativeAuthenticatedUser();await detachPushDevice();await api("/api/auth/logout",{method:"POST"});setEmployeeUserId("");setPendingSync(0);setSyncConflicts([]);setSyncQuarantined([]);setScreen("home");setPassword("");setSignedIn(false);}}><span>خروج از حساب</span>←</button></div></div>}
+          {screen === "profile" && <div className="profile-screen"><div className="avatar large">{employeeDisplayName.slice(0,2)}</div><h2>{employeeDisplayName}</h2><p>کارشناس امور اداری</p><div className="profile-list"><button onClick={()=>setScreen("account-settings")}><span>نام کاربری، رمز و اطلاعات حساب</span>←</button><button onClick={()=>setScreen("notification-settings")}><span>تنظیمات اعلان‌ها</span><b>{employeeNotificationEnabled?"فعال":"غیرفعال"}</b></button><button onClick={()=>setScreen("notifications")}><span>درخواست‌های باز</span><b>{notificationCounts.open.toLocaleString("fa-IR")}</b></button><button onClick={() => syncQueued().catch(() => undefined)}><span>همگام‌سازی اطلاعات</span><b>{pendingSync ? `${pendingSync.toLocaleString("fa-IR")} مورد` : "همگام"}</b></button><button><span>راهنمای استفاده</span>←</button><button className="logout" onClick={() => logoutEmployee().catch(() => notify("خروج انجام نشد؛ دوباره تلاش کنید."))}><span>خروج از حساب</span>←</button></div></div>}
         </div>
 
         <nav className="bottom-nav" aria-label="ناوبری اپ">

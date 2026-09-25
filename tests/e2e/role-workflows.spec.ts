@@ -304,6 +304,107 @@ test("simplified employee action still respects active-shift and three-mission l
   await expect(page.locator(".mission-main-action")).toBeDisabled();
 });
 
+// GPS incident regressions render the real page. Location and API responses are synthetic.
+type GpsHarnessWindow = Window & { gpsTest: { success: PositionCallback[]; errors: PositionErrorCallback[]; cleared: number[] } };
+async function workStartIncident(page: Page, baseURL: string, native?: "approximate" | "denied" | "off" | "http") {
+  await page.clock.install();
+  await page.addInitScript(({native}) => {
+    const w = window as unknown as GpsHarnessWindow;
+    w.gpsTest = {success:[],errors:[],cleared:[]};
+    Object.defineProperty(navigator,"geolocation",{configurable:true,value:{
+      watchPosition:(success:PositionCallback,error:PositionErrorCallback)=>{w.gpsTest.success.push(success);w.gpsTest.errors.push(error);return w.gpsTest.success.length;},
+      clearWatch:(id:number)=>w.gpsTest.cleared.push(id),
+    }});
+    if(native) Object.assign(window,{TapraAndroid:{isNativeApp:()=>true,isLocationPermissionGranted:()=>native!=="denied",isPreciseLocationPermissionGranted:()=>native!=="approximate",getLocationServiceState:()=>native==="off"?"disabled":"enabled",setAuthenticatedUser:()=>{},setTrackingActive:()=>{},openLocationSettings:()=>{}}});
+  },{native});
+  await install(page,"employee",workflowState());
+  const posts:Record<string,unknown>[]=[];
+  await page.route("**/api/work-sessions",route=>{
+    if(route.request().method()==="POST") {
+      const body=route.request().postDataJSON();posts.push(body);
+      return route.fulfill({status:201,contentType:"application/json",body:JSON.stringify({session:{id:body.clientSessionId,status:"active",startedAt:new Date().toISOString()}})});
+    }
+    return route.fulfill({contentType:"application/json",body:JSON.stringify({current:null,today:{activeSeconds:0,activeMinutes:0,unverifiedGpsMinutes:0,pendingCorrectionMinutes:0,firstStartAt:null,lastEndAt:null}})});
+  });
+  let origin=baseURL;
+  if(native && native!=="http") {
+    origin="https://gps-test.invalid";
+    await page.route("https://gps-test.invalid/**",async route=>{
+      const url=new URL(route.request().url());
+      if(url.pathname.startsWith("/api/")) return route.fallback();
+      const response=await route.fetch({url:`${baseURL}${url.pathname}${url.search}`});
+      await route.fulfill({response});
+    });
+  }
+  await page.goto(`${origin}/?panel=employee&screen=home`);
+  const start=page.locator(".work-toggle"); await expect(start).toBeEnabled();
+  const deliver=(accuracy:number,age=0,index=0)=>page.evaluate(({accuracy,age,index})=>{
+    (window as unknown as GpsHarnessWindow).gpsTest.success[index]({timestamp:Date.now()-age,coords:{latitude:35.7,longitude:51.4,accuracy,altitude:null,altitudeAccuracy:null,heading:null,speed:null}} as GeolocationPosition);
+  },{accuracy,age,index});
+  return {posts,start,deliver};
+}
+
+test("GPS H/I: absent callbacks time out, unlock Retry and ignore late success/error",async({page,baseURL})=>{
+  const h=await workStartIncident(page,baseURL!); await h.start.click();
+  await expect(h.start).toBeDisabled(); await expect(page.locator(".work-gps-feedback")).toContainText("۲۵ ثانیه");
+  await page.clock.fastForward(25_001);
+  await expect(h.start).toBeEnabled(); await expect(h.start).toContainText("شروع فعالیت");
+  await expect(page.locator(".work-gps-feedback")).toContainText("در مهلت تعیین‌شده");
+  await h.deliver(49);
+  await page.evaluate(()=>(window as unknown as GpsHarnessWindow).gpsTest.errors[0]({code:1,message:"late"} as GeolocationPositionError));
+  expect(h.posts).toHaveLength(0); await expect(h.start).toContainText("شروع فعالیت");
+  expect(await page.evaluate(()=>(window as unknown as GpsHarnessWindow).gpsTest.cleared)).toContain(1);
+  await h.start.click(); await h.deliver(49,0,1);
+  await expect(h.start).toContainText("پایان فعالیت"); expect(h.posts).toHaveLength(1);
+});
+test("GPS B/C: 101m explains accuracy, expires safely; retry at 100m starts once",async({page,baseURL})=>{
+  const h=await workStartIncident(page,baseURL!); await h.start.click(); await h.deliver(101);
+  await expect(page.locator(".work-gps-feedback")).toContainText("۱۰۱");
+  expect(h.posts).toHaveLength(0); await page.clock.fastForward(25_001);
+  await expect(h.start).toBeEnabled(); await expect(page.locator(".work-gps-feedback")).toContainText("دقت GPS به ۱۰۰ متر نرسید");
+  await h.start.click(); await h.deliver(100,0,1);
+  await expect(h.start).toContainText("پایان فعالیت"); expect(h.posts).toHaveLength(1);
+});
+
+test("logout cancels an in-flight acquisition before logout network acknowledgement",async({page,baseURL})=>{
+  const h=await workStartIncident(page,baseURL!); await h.start.click();
+  await page.route("**/api/auth/logout",()=>{});
+  await page.getByRole("button",{name:"پروفایل",exact:true}).click();
+  await page.locator(".logout").click();
+  await h.deliver(49);
+  expect(h.posts).toHaveLength(0);
+  expect(await page.evaluate(()=>(window as unknown as GpsHarnessWindow).gpsTest.cleared)).toContain(1);
+});
+for(const [code,message] of [[1,"مجوز موقعیت مسدود"],[2,"سرویس مکان‌یابی موقعیت را در دسترس قرار نداد"],[3,"در مهلت تعیین‌شده"]] as const) {
+  test(`GPS error ${code} immediately unlocks work-start and reports its reason`,async({page,baseURL})=>{
+    const h=await workStartIncident(page,baseURL!); await h.start.click();
+    await page.evaluate(code=>(window as unknown as GpsHarnessWindow).gpsTest.errors[0]({code,message:"synthetic"} as GeolocationPositionError),code);
+    await expect(h.start).toBeEnabled(); await expect(page.locator(".work-gps-feedback")).toContainText(message); expect(h.posts).toHaveLength(0);
+  });
+}
+for(const [native,message] of [["approximate","Precise Location"],["denied","مجوز موقعیت مسدود"],["off","موقعیت مکانی گوشی خاموش"],["http","HTTPS"]] as const) {
+  test(`native GPS preflight ${native} fails fast without starting a watch/session`,async({page,baseURL})=>{
+    const h=await workStartIncident(page,baseURL!,native); await h.start.click();
+    await expect(h.start).toBeEnabled(); await expect(page.locator(".work-gps-feedback")).toContainText(message);
+    expect(await page.evaluate(()=>(window as unknown as GpsHarnessWindow).gpsTest.success.length)).toBe(0); expect(h.posts).toHaveLength(0);
+  });
+}
+test("hung start response uses a separate bounded state and retries the SAME session id",async({page,baseURL})=>{
+  const h=await workStartIncident(page,baseURL!); const attempts:string[]=[];
+  await page.route("**/api/work-sessions",async route=>{
+    if(route.request().method()!=="POST") return route.fallback();
+    const body=route.request().postDataJSON(); attempts.push(body.clientSessionId);
+    if(attempts.length===1) return; // No response, even though GPS acquisition succeeded.
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({session:{id:body.clientSessionId,status:"active",startedAt:new Date().toISOString()}})});
+  });
+  await h.start.click(); await h.deliver(49);
+  await expect(h.start).toContainText("در حال ثبت فعالیت"); await expect.poll(()=>attempts.length).toBe(1);
+  await page.clock.fastForward(15_001); await expect(h.start).toBeEnabled();
+  await expect(page.getByText(/پاسخ ثبت فعالیت نرسید/)).toBeVisible();
+  await h.start.click(); await h.deliver(49,0,1); await expect(h.start).toContainText("پایان فعالیت");
+  expect(attempts).toHaveLength(2); expect(attempts[1]).toBe(attempts[0]);
+});
+
 test("fresh precise 49m GPS starts exactly one work session and enters the active state",async({page,context})=>{
   await context.grantPermissions(["geolocation"]);
   await context.setGeolocation({latitude:35.7,longitude:51.4,accuracy:49});
@@ -357,7 +458,7 @@ test("stale accurate GPS is not submitted; a fresh fix from the same start attem
     success?.({coords:{latitude:35.7,longitude:51.4,accuracy:49,altitude:null,altitudeAccuracy:null,heading:null,speed:null},timestamp:when} as GeolocationPosition);
   },timestamp);
   await deliver(Date.now()-3*60_000);
-  await expect(page.getByText(/موقعیت قبلی قدیمی است/)).toBeVisible();
+  await expect(page.locator(".work-gps-feedback")).toContainText("موقعیت قبلی قدیمی است");
   expect(posts).toHaveLength(0);
   await deliver(Date.now());
   await expect(page.locator(".work-toggle")).toContainText("پایان فعالیت");
